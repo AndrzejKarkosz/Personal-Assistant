@@ -172,6 +172,11 @@ Before Claude is woken, Jev answers one question: is this worth interrupting you
 your quiet hours (`23:00–07:00`) and when you last spoke into account. Only a "yes" calls Claude, and every
 decision is logged. To try it, say *"przypomnij mi za 2 minuty, żeby się napić wody"* and keep the UI open.
 
+**Routines** (`config/routines.yaml`) are things Alfred does on his own, without the gate: at a set time
+(`schedule: "0 8 * * 1-5"`, cron) or once every time the app starts (`schedule: "@start"`). Each one is a
+`prompt` written as if you said it, plus an optional `module`. Edits apply within a minute. Whatever
+Alfred says while the UI is closed waits for you, and you get it when you open the app.
+
 ## The 3D brain view
 
 The centre of the UI is a 3D model of the brain. Drag to rotate it and scroll to zoom. You (**Ty**) are on

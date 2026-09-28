@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -67,9 +68,14 @@ class EventBus:
     def __init__(self, log: ActivityLog | None = None):
         self.log = log
         self._subscribers: set[asyncio.Queue[Event]] = set()
+        # What Alfred said on his own (routines, reminders) while nobody was listening: the next
+        # subscriber - the UI being opened - gets it first.
+        self.unheard: deque[Event] = deque(maxlen=20)
 
     def subscribe(self) -> asyncio.Queue[Event]:
         queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=500)
+        while self.unheard:
+            queue.put_nowait(self.unheard.popleft())
         self._subscribers.add(queue)
         return queue
 
@@ -81,6 +87,8 @@ class EventBus:
         event = Event(kind=kind, node=node, data=data, request_id=request_id, session_id=session_id)
         if self.log:
             self.log.write(event)
+        if not self._subscribers and kind == "answer" and data.get("source") != "user":
+            self.unheard.append(event)
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(event)

@@ -118,3 +118,15 @@ def test_subscription_status_reads_claude_auth(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="not json"))
     assert llm.subscription_status()["ok"] is False
+
+
+def test_what_alfred_says_to_an_empty_room_waits_for_the_ui():
+    bus = EventBus()
+    bus.emit("answer", "voice", text="Brief gotowy.", source="routine")      # the UI is closed
+    bus.emit("answer", "voice", text="Odpowiedź", source="user")
+    bus.emit("ack", "voice", text="Już")
+    ui = bus.subscribe()
+    assert [ui.get_nowait().data["text"] for _ in range(ui.qsize())] == ["Brief gotowy."]
+    assert bus.subscribe().empty()                                          # handed over once
+    bus.emit("answer", "voice", text="Przypomnienie", source="proactive")   # someone is listening now
+    assert not bus.unheard

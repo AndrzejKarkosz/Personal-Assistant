@@ -112,6 +112,7 @@ function onEvent(ev) {
   switch (ev.kind) {
     case "transcript":
       if (d.source === "proactive") addMsg("system", "⏰ Alfred zaczyna sam (zadanie zaplanowane)");
+      else if (d.source === "routine") addMsg("system", `🔁 Rutyna: ${d.text}`);
       else addMsg("user", d.text);
       break;
     case "classified": {
@@ -128,7 +129,9 @@ function onEvent(ev) {
     case "confirm_result": $("#confirm").classList.add("hidden"); break;
     case "answer": {
       const u = d.usage || {};
-      addMsg("alfred", d.text, `${d.model || ""} · in ${u.input || 0} / out ${u.output || 0} / cache ${u.cache_read || 0}` +
+      // Alfred speaking first (maybe while the UI was closed): show when it happened.
+      const when = d.source && d.source !== "user" ? `${ev.ts.slice(11, 16)} · ` : "";
+      addMsg("alfred", d.text, `${when}${d.model || ""} · in ${u.input || 0} / out ${u.output || 0} / cache ${u.cache_read || 0}` +
         (d.tools?.length ? ` · ${d.tools.join(", ")}` : ""));
       speak(d.text, d.audio_b64, d.language);
       refreshTasks();

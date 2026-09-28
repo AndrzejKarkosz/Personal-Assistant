@@ -3,12 +3,14 @@
 Triggers
   - one-off tasks whose `due` has passed   (checked every minute, no LLM involved)
   - recurring tasks with a cron `schedule`  (APScheduler cron jobs, re-synced every minute)
+  - routines in config/routines.yaml        (cron or "@start"; the file is re-read every minute)
   - heartbeat                               (every N minutes: overdue tasks nudge)
   - idle session closer                     (writes the session summary to memory)
 
 Gate
-  Before waking Claude, Jev answers one yes/no question: "is this worth interrupting him now?"
-  Only a yes runs the pipeline. Every decision is written to the activity log.
+  Before waking Claude for a task, Jev answers one yes/no question: "is this worth interrupting him now?"
+  Only a yes runs the pipeline. Routines skip the gate: the user scheduled them on purpose.
+  Every decision is written to the activity log.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from datetime import datetime, time as dtime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -26,6 +29,8 @@ if TYPE_CHECKING:
     from ..memory import Task
 
 log = logging.getLogger("alfred.proactive")
+
+START = "@start"        # a routine's schedule: run once every time the app starts
 
 
 def in_quiet_hours(now: datetime, quiet: list[str] | None) -> bool:
@@ -51,6 +56,10 @@ class ProactiveEngine:
                                minutes=int(self.settings.get("proactive.heartbeat_minutes", 30)), id="heartbeat")
         self.scheduler.start()
         self.sync_recurring()
+        for r in self.routines():
+            if r["schedule"] == START:      # no trigger = once, right away, without blocking the start
+                self.scheduler.add_job(self.run_routine, args=[r["id"]], id=f"start:{r['id']}",
+                                       replace_existing=True)
 
     def shutdown(self) -> None:
         if self.scheduler.running:
@@ -58,19 +67,45 @@ class ProactiveEngine:
 
     # ---------------------------------------------------------------- triggers
     def sync_recurring(self) -> None:
-        wanted = {f"task:{t.id}": t for t in self.brain.store.list_tasks("open") if t.schedule}
+        # The cron is part of the job id, so an edited schedule replaces its job.
+        wanted = {f"task:{t.id}@{t.schedule}": (t.schedule, self.fire, [t.id, "schedule"])
+                  for t in self.brain.store.list_tasks("open") if t.schedule}
+        wanted |= {f"routine:{r['id']}@{r['schedule']}": (r["schedule"], self.run_routine, [r["id"]])
+                   for r in self.routines() if r["schedule"] != START}
         for job in self.scheduler.get_jobs():
-            if job.id.startswith("task:") and job.id not in wanted:
+            if job.id.startswith(("task:", "routine:")) and job.id not in wanted:
                 job.remove()
-        for job_id, task in wanted.items():
+        for job_id, (cron, func, args) in wanted.items():
             if self.scheduler.get_job(job_id):
                 continue
             try:
-                trigger = CronTrigger.from_crontab(task.schedule, timezone=self.scheduler.timezone)
+                trigger = CronTrigger.from_crontab(cron, timezone=self.scheduler.timezone)
             except ValueError:
-                log.warning("Bad cron for task %s: %s", task.id, task.schedule)
+                log.warning("Bad cron for %s: %s", job_id, cron)
                 continue
-            self.scheduler.add_job(self.fire, trigger, args=[task.id, "schedule"], id=job_id)
+            self.scheduler.add_job(func, trigger, args=args, id=job_id)
+
+    def routines(self) -> list[dict]:
+        """The routines file, read fresh on every call so edits apply without a restart."""
+        path = self.settings.path("proactive.routines") if self.settings.get("proactive.routines") else None
+        if not path or not path.exists():
+            return []
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            log.warning("Ignoring %s: %s", path, exc)
+            return []
+        items = (data.get("routines") if isinstance(data, dict) else None) or []
+        good = [r for r in items if isinstance(r, dict) and r.get("id") and r.get("prompt")
+                and isinstance(r.get("schedule"), str)]
+        if len(good) != len(items):
+            log.warning("%s: skipped %d routine(s) without id, prompt or schedule", path, len(items) - len(good))
+        return good
+
+    async def run_routine(self, routine_id: str) -> None:
+        routine = next((r for r in self.routines() if r["id"] == routine_id), None)
+        if routine:                         # gone from the file since it was scheduled -> nothing to do
+            await self.brain.handle_text(routine["prompt"], source="routine", module_hint=routine.get("module"))
 
     async def check_due(self) -> None:
         if not self.settings.get("proactive.enabled", True):

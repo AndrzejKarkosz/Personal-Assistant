@@ -272,7 +272,7 @@
         break;
       case "transcript":
         if (d.confirmation) { send("user", "guard", `„${d.text}”`, c.text); step("Twoja odpowiedź trafia do strażnika", `„${d.text}”`, "guard"); break; }
-        if (d.source === "proactive") { newFlow(rid); send("proactive", "router", "zadanie z harmonogramu", c.route); step("Alfred zaczyna sam", short(d.text, 90), "proactive"); break; }
+        if (d.source === "proactive" || d.source === "routine") { newFlow(rid); send("proactive", "router", d.source === "routine" ? "rutyna" : "zadanie z harmonogramu", c.route); step("Alfred zaczyna sam", short(d.text, 90), "proactive"); break; }
         newFlow(rid);
         send("user", "ears", `„${d.text}”`, c.text);
         setTimeout(() => send("ears", "router", `tekst · ${d.language || ""}`, c.text), 450);

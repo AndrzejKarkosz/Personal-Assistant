@@ -51,6 +51,7 @@ proactive:
   enabled: true
   heartbeat_minutes: 30        # periodic check of due tasks
   quiet_hours: ["23:00", "07:00"]
+  routines: config/routines.yaml   # what Alfred does on his own: at set times or when the app starts
 
 logging:
   dir: data/logs               # activity log, one JSONL file per day

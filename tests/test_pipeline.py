@@ -195,9 +195,55 @@ async def test_recurring_tasks_become_cron_jobs(make_brain):
     brain.proactive.start()
     try:
         ids = {j["id"] for j in brain.proactive.status()}
-        assert ids == {"due-check", "idle-close", "heartbeat", f"task:{daily.id}"}   # the bad cron is skipped
+        assert ids == {"due-check", "idle-close", "heartbeat", f"task:{daily.id}@0 8 * * 1-5"}   # bad cron skipped
+        brain.store.update_task(daily.id, schedule="30 7 * * *")               # a new schedule replaces the job
+        brain.proactive.sync_recurring()
+        assert {j["id"] for j in brain.proactive.status()} - ids == {f"task:{daily.id}@30 7 * * *"}
         brain.store.update_task(daily.id, status="done")
         brain.proactive.sync_recurring()
-        assert f"task:{daily.id}" not in {j["id"] for j in brain.proactive.status()}
+        assert not [j for j in brain.proactive.status() if j["id"].startswith("task:")]
+    finally:
+        brain.proactive.shutdown()
+
+
+ROUTINES = """
+routines:
+  - {id: powitanie, schedule: "@start", prompt: Przywitaj mnie}
+  - {id: brief, schedule: "0 8 * * 1-5", module: calendar, prompt: Daj mi poranny brief}
+  - {id: zly-cron, schedule: kiedyś, prompt: x}
+  - {id: bez-promptu, schedule: "0 9 * * *"}
+"""
+
+
+async def test_routines_run_on_start_and_on_schedule(make_brain):
+    brain, _ = make_brain([text_response("Dzień dobry, szefie."), text_response("Brief gotowy.")])
+    routines = brain.settings.path("proactive.routines")
+    routines.write_text(ROUTINES, encoding="utf-8")
+    brain.proactive.start()
+    try:
+        for _ in range(250):                                  # the @start routine runs in the background
+            if brain.bus.unheard:
+                break
+            await asyncio.sleep(0.02)
+        said = brain.bus.subscribe().get_nowait()             # nobody was listening: it waited for the UI
+        assert (said.data["text"], said.data["source"]) == ("Dzień dobry, szefie.", "routine")
+        ids = {j["id"] for j in brain.proactive.status()}
+        assert "routine:brief@0 8 * * 1-5" in ids and not any("zly-cron" in i or "bez-promptu" in i for i in ids)
+
+        drain = collect(brain)
+        await brain.proactive.run_routine("brief")            # what the cron job does at 8:00
+        events = drain()
+        assert next(e for e in events if e.kind == "classified").data["module"] == "calendar"
+        assert next(e for e in events if e.kind == "answer").data["text"] == "Brief gotowy."
+
+        routines.write_text(ROUTINES.replace("0 8 * * 1-5", "30 7 * * *"), encoding="utf-8")   # edited file
+        brain.proactive.sync_recurring()
+        ids = {j["id"] for j in brain.proactive.status()}
+        assert "routine:brief@30 7 * * *" in ids and "routine:brief@0 8 * * 1-5" not in ids
+
+        routines.write_text("routines: [", encoding="utf-8")                 # broken YAML: ignored, not fatal
+        assert brain.proactive.routines() == []
+        await brain.proactive.run_routine("brief")
+        assert not drain()
     finally:
         brain.proactive.shutdown()

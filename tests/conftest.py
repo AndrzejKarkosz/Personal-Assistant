@@ -80,6 +80,7 @@ def settings(tmp_path: Path, monkeypatch) -> Settings:
     s.data["llm"] = {"backend": "api"}
     s.data["map"] = {"dir": str(tmp_path / "brain_map"), "topic_sources": []}
     s.data["memory"]["dir"] = str(tmp_path / "memory")
+    s.data["proactive"]["routines"] = str(tmp_path / "routines.yaml")
     s.data["logging"]["dir"] = str(tmp_path / "logs")
     empty = tmp_path / "mcp.json"
     empty.write_text('{"mcpServers": {}}')

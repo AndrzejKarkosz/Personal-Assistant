@@ -133,7 +133,10 @@ def test_websocket_streams_events_and_takes_answers(api):
             pass
         return event
 
+    brain.bus.emit("answer", "voice", text="Brief gotowy.", source="routine")    # said while the UI was closed
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["data"]["text"] == "Brief gotowy."              # first thing on opening
+
         ws.send_json({"type": "audio", "b64": "AAAA", "mime": "audio/ogg"})
         assert until(ws, "error")["data"]["message"] == "Nothing was transcribed."
 

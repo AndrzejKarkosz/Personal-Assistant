@@ -1,0 +1,20 @@
+# Alfred's routines - things he does on his own. Edits apply within a minute, no restart needed.
+#
+#   id        unique name
+#   schedule  when: cron in quotes, 5 fields, local time ("0 8 * * 1-5" = weekdays at 8:00),
+#             or "@start" = once every time the app starts
+#   prompt    what Alfred should do - written as if you said it
+#   module    optional: which module handles it (calendar, tasks, research, ...); otherwise the router decides
+#
+# Alfred speaks the result in the UI. Anything he says while the UI is closed waits for you:
+# you get it when you open the app.
+
+routines:
+  - id: poranny-brief
+    schedule: "0 8 * * 1-5"
+    module: calendar
+    prompt: Daj mi poranny brief na dziś - co mam w kalendarzu i jakie zadania są otwarte.
+
+  - id: powitanie
+    schedule: "@start"
+    prompt: Przywitaj mnie krótko i powiedz, co się wydarzyło od ostatniej sesji i co jest otwarte.
