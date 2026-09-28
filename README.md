@@ -155,9 +155,11 @@ press reload, or restart.
 ## MCP servers — `config/mcp.json`
 
 - **knowledge-base**: enabled, runs `E:/Knowledge-Base/server/kb_server.py` read-only.
-- **google-calendar**: disabled. Create a Google Cloud OAuth client (Desktop app, Calendar API enabled),
-  save the JSON to the path in `GOOGLE_OAUTH_CREDENTIALS`, set `"enabled": true` and restart. The first
-  start opens a browser window so you can sign in.
+- **google-calendar**: disabled. Create a Google Cloud OAuth client (Desktop app, Calendar API enabled, your
+  e-mail added as a test user), save the JSON to the path in `GOOGLE_OAUTH_CREDENTIALS`, sign in once with
+  `npx @cocal/google-calendar-mcp auth` (with that variable set), then set `"enabled": true` and restart. The
+  same connection feeds Claude's calendar tools and the calendar in the **Dzień** view (`GET /api/calendar`).
+  In test mode Google tokens expire after 7 days; run the `auth` command again.
 - **browser**: disabled. Playwright MCP for bookings. Needs Node.js; set `"enabled": true`.
 
 ## Proactive
@@ -177,14 +179,20 @@ decision is logged. To try it, say *"przypomnij mi za 2 minuty, żeby się napi�
 `prompt` written as if you said it, plus an optional `module`. Edits apply within a minute. Whatever
 Alfred says while the UI is closed waits for you, and you get it when you open the app.
 
-## The 3D brain view
+## The UI
 
-The centre of the UI is a 3D model of the brain. Drag to rotate it and scroll to zoom. You (**Ty**) are on
-the left. The pipeline runs through the middle (Ears → Router → Executor → Voice, and back to you). Modules
-orbit the router→executor axis, and their skills and MCP servers float further out. Memory, the guard and
-the proactive layer sit below.
+Two views, switched in the header. In both: the **to-do list** and today's **routines** on the left (✓ ran,
+✗ failed or missed, ○ next run), the **conversation** at the bottom, and next to it how **Jev classified** the
+last request — module, capabilities and signals (urgency, acts on the world, needs memory) as probability
+bars. The speaker icon on the right of the header lights up while Alfred talks; click it to stop him.
 
-Every event travels as a glowing **packet labelled with what it carries**: your sentence, the route with
-its probability, the tool name, the result, "wymaga zgody", the answer. The **Przepływ informacji** panel
-narrates each step in plain words. Click a node to see what it does and what goes in and out of it.
-**▶ Pokaż przepływ** plays a sample restaurant booking, so you can watch the full flow without any API keys.
+- **Dzień**: the week in Google Calendar together with tasks that have a due time (click an empty slot to ask
+  Alfred to add an event there), a summary of the day with *Brief dnia* / *Podsumuj tydzień*, and the
+  summaries of recent sessions.
+- **Mózg 3D**: the app as a brain. Every vertical level is one part of it, bottom to top: the brainstem
+  (the pipeline: ears, router, executor, guard, voice), memory, knowledge, MCP servers, the technical brain
+  (skills, routines, code, tests), modules, and Alfred's personality at the crown. Each level keeps its
+  contents in folders. White threads fire like neurons, the levels that are working light up, and events
+  travel as labelled packets. Click a level or a node to see what it is; **▶ Pokaż przepływ** plays a sample
+  restaurant booking without any API keys. The side tabs hold memory, the brain map, persona, modules, the
+  log and settings.

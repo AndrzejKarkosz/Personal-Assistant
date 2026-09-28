@@ -17,6 +17,31 @@ from typing import Any
 log = logging.getLogger("alfred.llm")
 
 
+# $ per 1M tokens: input, output, cache read, cache write (5-min TTL). Anthropic list prices, 2026-06.
+# First matching prefix wins, so longer ids come first.
+PRICES = {
+    "claude-fable-5-1": (10, 50, 0.25, 12.5),
+    "claude-fable-5": (10, 50, 1, 12.5),
+    "claude-opus-5-5": (4, 20, 0.2, 5),
+    "claude-opus-5": (5, 25, 0.5, 6.25),
+    "claude-opus-4-8": (5, 25, 0.5, 6.25),
+    "claude-opus-4-7": (5, 25, 0.5, 6.25),
+    "claude-opus-4-6": (5, 25, 0.5, 6.25),
+    "claude-sonnet-5": (2, 10, 0.2, 2.5),
+    "claude-sonnet-4": (3, 15, 0.3, 3.75),
+    "claude-haiku-4-5": (1, 5, 0.1, 1.25),
+}
+
+
+def cost_usd(model: str, usage: dict[str, int]) -> float | None:
+    """What a call costs at API list prices; None for a model missing from PRICES."""
+    price = next((p for prefix, p in PRICES.items() if (model or "").startswith(prefix)), None)
+    if price is None:
+        return None
+    tokens = [usage.get(k, 0) for k in ("input", "output", "cache_read", "cache_write")]
+    return sum(t * p for t, p in zip(tokens, price)) / 1e6
+
+
 def backend(settings) -> str:
     return settings.get("llm.backend", "subscription")
 
@@ -41,17 +66,17 @@ class _SubscriptionMessages:
         fmt = (output_config or {}).get("format")
         options = ClaudeAgentOptions(
             system_prompt=system or None, tools=[], allowed_tools=[], permission_mode="dontAsk",
-            setting_sources=[], model=model, max_turns=3,
+            setting_sources=[], strict_mcp_config=True, model=model, max_turns=3,
             output_format={"type": "json_schema", "schema": fmt["schema"]} if fmt else None,
             cwd=str(self.settings.path("memory.dir").parent),
         )
-        text, usage = "", {}
+        text, usage, cost = "", {}, None
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 parts = [b.text for b in message.content if isinstance(b, TextBlock)]
                 text = " ".join(parts) or text
             elif isinstance(message, ResultMessage):
-                usage = message.usage or {}
+                usage, cost = message.usage or {}, message.total_cost_usd
                 if fmt and message.structured_output is not None:
                     text = json.dumps(message.structured_output, ensure_ascii=False)
                 elif message.result:
@@ -59,7 +84,8 @@ class _SubscriptionMessages:
         return SimpleNamespace(
             content=[SimpleNamespace(type="text", text=text)],
             usage=SimpleNamespace(input_tokens=int(usage.get("input_tokens", 0) or 0),
-                                  output_tokens=int(usage.get("output_tokens", 0) or 0)),
+                                  output_tokens=int(usage.get("output_tokens", 0) or 0),
+                                  cost_usd=cost),        # Claude Code's own figure, cache included
         )
 
 

@@ -15,7 +15,7 @@ requires_confirmation: false
 status: online
 params: [type, tag, status, stale_only]
 tags: [tool, knowledge-base]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-28T18:45:56+02:00'
 ---
 
 # kb_list

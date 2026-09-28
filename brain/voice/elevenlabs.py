@@ -56,7 +56,8 @@ class ElevenLabs:
         voice = self.settings.voice_id
         model = self.settings.get("voice.tts_model", "eleven_multilingual_v2")
         fmt = self.settings.get("voice.output_format", "mp3_44100_128")
-        key = hashlib.sha1(f"{voice}|{model}|{fmt}|{text}".encode()).hexdigest()
+        tuning = self.settings.get("voice.settings") or {}   # speed, stability, similarity_boost, style
+        key = hashlib.sha1(f"{voice}|{model}|{fmt}|{sorted(tuning.items())}|{text}".encode()).hexdigest()
         cached = self.cache_dir / f"{key}.mp3"
         if cached.exists():
             return base64.b64encode(cached.read_bytes()).decode()
@@ -64,7 +65,7 @@ class ElevenLabs:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(
                     f"{API}/text-to-speech/{voice}", params={"output_format": fmt},
-                    headers=self._headers(), json={"text": text, "model_id": model},
+                    headers=self._headers(), json={"text": text, "model_id": model, **({"voice_settings": tuning} if tuning else {})},
                 )
             resp.raise_for_status()
         except httpx.HTTPError:

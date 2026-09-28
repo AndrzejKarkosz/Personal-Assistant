@@ -103,3 +103,38 @@
 - changed servers/alfred.md
 - changed servers/anthropic.md
 - changed servers/knowledge-base.md
+
+## 2026-09-28T18:43:45+02:00
+- changed modules/bookings.md
+- changed modules/calendar.md
+- changed modules/knowledge.md
+- changed modules/memory.md
+- changed modules/research.md
+- changed modules/smalltalk.md
+- changed modules/tasks.md
+- changed capabilities/knowledge.search.md
+- changed capabilities/knowledge.learning.md
+- changed tools/knowledge-base/kb-audit.md
+- changed tools/knowledge-base/kb-due.md
+- changed tools/knowledge-base/kb-find.md
+- changed tools/knowledge-base/kb-graph.md
+- changed tools/knowledge-base/kb-health.md
+- changed tools/knowledge-base/kb-list.md
+- changed tools/knowledge-base/kb-pending.md
+- changed tools/knowledge-base/kb-read.md
+- changed tools/knowledge-base/kb-source.md
+- changed servers/knowledge-base.md
+
+## 2026-09-28T18:45:56+02:00
+- changed capabilities/knowledge.search.md
+- changed capabilities/knowledge.learning.md
+- changed tools/knowledge-base/kb-find.md
+- changed tools/knowledge-base/kb-read.md
+- changed tools/knowledge-base/kb-list.md
+- changed tools/knowledge-base/kb-graph.md
+- changed tools/knowledge-base/kb-health.md
+- changed tools/knowledge-base/kb-audit.md
+- changed tools/knowledge-base/kb-due.md
+- changed tools/knowledge-base/kb-pending.md
+- changed tools/knowledge-base/kb-source.md
+- changed servers/knowledge-base.md

@@ -10,13 +10,13 @@ uses: []
 skills: [knowledge.study-session]
 servers: [knowledge-base]
 examples: ['co wiem o architekturze event-driven?', znajdź w mojej bazie notatki o
-    Databricks, what did I write about Power BI, 'jak idzie mi nauka hiszpańskiego?']
+    Databricks, what did I write about Power BI, 'jak idzie mi nauka hiszpańskiego?',
+  wytłumacz mi jak w hiszpańskim działa subjuntivo]
 enabled: true
 model: null
 effort: medium
-acknowledge: true
 tags: [module]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-28T18:43:45+02:00'
 ---
 
 # Personal knowledge library
@@ -38,3 +38,4 @@ Questions answered from the user's own knowledge base (notes, concepts, topics, 
 - znajdź w mojej bazie notatki o Databricks
 - what did I write about Power BI
 - jak idzie mi nauka hiszpańskiego?
+- wytłumacz mi jak w hiszpańskim działa subjuntivo

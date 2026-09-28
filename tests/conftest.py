@@ -45,6 +45,7 @@ class FakeMessages:
     def __init__(self, script: list):
         self.script = script
         self.calls: list[dict] = []
+        self.breach = False                         # what the shield fallback says about every input
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -53,9 +54,10 @@ class FakeMessages:
             return text_response(json.dumps(self._structured(kwargs)))
         return self.script.pop(0) if self.script else text_response("Gotowe.")
 
-    @staticmethod
-    def _structured(kwargs) -> dict:
+    def _structured(self, kwargs) -> dict:
         props = kwargs["output_config"]["format"]["schema"]["properties"]
+        if "breach" in props:
+            return {"breach": self.breach}
         if "module" in props:
             return {"module": "tasks", "second_module": "none", "capabilities": ["tasks.manage"], "skill": "none",
                     "topic": "none", "confidence": 0.9, "urgency": 1, "acts_on_world": False, "needs_history": False}
@@ -78,6 +80,7 @@ def settings(tmp_path: Path, monkeypatch) -> Settings:
     monkeypatch.setattr(config, "OVERRIDES_FILE", tmp_path / "settings.json")
     s = Settings.load()
     s.data["llm"] = {"backend": "api"}
+    s.data["models"]["executor"] = "claude-opus-5"      # tests pin the model, config/brain.yaml is yours to change
     s.data["map"] = {"dir": str(tmp_path / "brain_map"), "topic_sources": []}
     s.data["memory"]["dir"] = str(tmp_path / "memory")
     s.data["proactive"]["routines"] = str(tmp_path / "routines.yaml")

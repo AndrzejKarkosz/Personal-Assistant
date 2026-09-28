@@ -8,7 +8,7 @@ tools: [knowledge-base__kb_find, knowledge-base__kb_read, knowledge-base__kb_lis
   knowledge-base__kb_graph, knowledge-base__kb_health, knowledge-base__kb_audit, knowledge-base__kb_due,
   knowledge-base__kb_pending, knowledge-base__kb_source]
 tags: [server, mcp]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-28T18:45:56+02:00'
 ---
 
 # knowledge-base

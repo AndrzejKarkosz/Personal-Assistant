@@ -116,7 +116,7 @@ class MapBuilder:
         self._put(p, {"type": "Module", "title": m.label, "description": m.description, "id": m.id,
                       "capabilities": own, "uses": borrowed, "skills": [s.id for s in m.skills],
                       "servers": servers, "examples": m.examples, "enabled": m.enabled,
-                      "model": m.model, "effort": m.effort, "acknowledge": m.acknowledge,
+                      "model": m.model, "effort": m.effort,
                       "tags": ["module"], "timestamp": _now()}, "\n\n".join(body))
 
     def _capability_page(self, c, names, tools, used_by) -> None:

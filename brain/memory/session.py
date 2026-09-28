@@ -58,7 +58,7 @@ class Session:
     last_activity: datetime = field(default_factory=datetime.now)
     turns: list[Turn] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)      # tool calls that changed something
-    usage: dict[str, int] = field(default_factory=lambda: {"input": 0, "output": 0, "cache_read": 0, "jev": 0})
+    usage: dict[str, float] = field(default_factory=lambda: {"input": 0, "output": 0, "cache_read": 0, "jev": 0})
     briefing: str = ""
     language: str = "pl"
 
@@ -69,7 +69,7 @@ class Session:
     def add_usage(self, usage: dict[str, Any]) -> None:
         for key, value in usage.items():
             if isinstance(value, (int, float)):
-                self.usage[key] = self.usage.get(key, 0) + int(value)
+                self.usage[key] = self.usage.get(key, 0) + value      # tokens are ints, cost_usd a float
 
     def recent_text(self, n: int = 6) -> str:
         return "\n".join(f"{t.role}: {t.text}" for t in self.turns[-n:])

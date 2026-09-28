@@ -1,6 +1,7 @@
 id: smalltalk
 label: Conversation and quick answers
-description: Greetings, thanks, jokes, opinions, general knowledge questions and anything that needs no tools.
+description: Greetings, thanks, jokes, opinions and quick trivia that needs no tools. Not for subjects the user is
+  learning or keeps notes on (languages, courses, tech topics) - those go to the knowledge library.
 examples:
   - cześć Alfred, jak się masz?
   - dzięki, to wszystko
@@ -12,6 +13,5 @@ capabilities:
     description: Conversation, general knowledge and quick reasoning - no tools needed.
     tools: []
     examples: ["cześć", "dzięki", "ile to 15% z 240?"]
-acknowledge: false
 effort: low
 enabled: true

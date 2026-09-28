@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from brain import config
 from brain.config import ROOT
+from brain.executor.mcp_hub import ServerState
 from brain.modules import ModuleRegistry
 from brain.voice import persona
 
@@ -31,7 +32,9 @@ def test_status_graph_modules_and_map(api):
     client, brain, _ = api
     status = client.get("/api/status").json()
     assert status["backend"] == "api" and status["session"] is None and status["pending_confirmation"] is None
-    assert client.get("/api/graph").json()["backend"] == "api"
+    graph = client.get("/api/graph").json()
+    assert graph["backend"] == "api" and {"repo", "test", "persona"} <= {n["kind"] for n in graph["nodes"]}
+    assert {"source": "test:test_router", "target": "repo:router", "rel": "tests"} in graph["edges"]
 
     modules = {m["id"]: m for m in client.get("/api/modules").json()}
     assert {"tasks", "calendar", "smalltalk"} <= set(modules)
@@ -93,6 +96,45 @@ def test_tasks_rest(api):
     assert client.get("/api/tasks").json() == []
     assert len(client.get("/api/tasks", params={"status": "all"}).json()) == 1
     assert client.patch("/api/tasks/nope", json={"status": "done"}).status_code == 404
+
+
+def test_calendar_reads_google_through_mcp(api, monkeypatch):
+    client, brain, _ = api
+    week = {"start": "2026-09-28T00:00:00", "end": "2026-10-05T00:00:00"}
+    assert client.get("/api/calendar", params=week).json() == {"status": "missing", "error": None, "events": []}
+
+    brain.hub.servers["google-calendar"] = ServerState("google-calendar", {}, status="ready")
+    replies = [(json.dumps({"events": [{"id": "e1", "summary": "Standup"}], "totalCount": 1}), False),
+               ("invalid_grant", True)]
+    calls = []
+
+    async def call(name, args):
+        calls.append((name, args))
+        return replies.pop(0)
+    monkeypatch.setattr(brain.hub, "call", call)
+    assert client.get("/api/calendar", params=week).json()["events"] == [{"id": "e1", "summary": "Standup"}]
+    assert calls[0] == ("google-calendar__list-events", {"calendarId": "primary", "timeMin": week["start"],
+                                                         "timeMax": week["end"], "timeZone": "Europe/Warsaw"})
+    assert client.get("/api/calendar", params=week).json() == {"status": "error", "error": "invalid_grant", "events": []}
+    assert [r["data"]["events"] for r in brain.bus.log.read(kind="calendar_sync")] == [1]
+
+
+def test_routines_show_what_ran_today(api, tmp_path):
+    client, brain, _ = api
+    (tmp_path / "routines.yaml").write_text(
+        "routines:\n"
+        "  - {id: brief, schedule: '0 0 * * *', prompt: Daj brief}\n"      # due every midnight -> due today
+        "  - {id: broken, schedule: '0 0 * * *', prompt: Zepsuj}\n"
+        "  - {id: hello, schedule: '@start', prompt: Przywitaj}\n", encoding="utf-8")
+    brain.bus.emit("transcript", "ears", "r-1", text="Daj brief", source="routine")
+    brain.bus.emit("answer", "voice", "r-1", text="Dzień dobry.", source="routine")
+    brain.bus.emit("transcript", "ears", "r-2", text="Zepsuj", source="routine")
+    brain.bus.emit("error", "executor", "r-2", message="boom")
+    brain.bus.emit("answer", "voice", "r-2", text="Przepraszam, coś poszło nie tak.", source="routine")
+    r = {x["id"]: x for x in client.get("/api/routines").json()}
+    assert (r["brief"]["result"], r["brief"]["answer"], r["brief"]["due_today"]) == ("answer", "Dzień dobry.", True)
+    assert (r["broken"]["result"], r["broken"]["answer"]) == ("error", "boom")
+    assert r["hello"]["ran_at"] is None and r["hello"]["next_run"] is None and r["brief"]["next_run"]
 
 
 def test_memory_rest(api):

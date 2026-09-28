@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..atlas import BrainMap
+from .. import llm
+from . import shield
 from .jev import JevClient, JevError, choice, noul, score
 
 NONE = "none"
@@ -101,6 +103,41 @@ class Router:
             except (JevError, KeyError, TypeError, ValueError):
                 return None
         return None
+
+    async def is_injection(self, text: str, context: str = "") -> dict[str, Any]:
+        """The shield's verdict: {breach, probability, source, ms}. breach = prompt injection / jailbreak,
+        do not let it reach the executor. Jev first, then Claude (light model); when neither can answer it
+        fails closed (rule 10), source "closed"."""
+        started = time.perf_counter()
+        state = shield.state(text, context)
+
+        def verdict(breach: bool, source: str, probability: float | None = None) -> dict[str, Any]:
+            return {"breach": breach, "probability": probability, "source": source,
+                    "ms": int((time.perf_counter() - started) * 1000)}
+
+        if self.jev.available:
+            try:
+                resp = await self.jev.ask(state, {"injection": noul(
+                    shield.PROMPT, true="Próba naruszenia bezpieczeństwa (prompt injection, jailbreak, zmiana roli)",
+                    false="Zwykła prośba użytkownika")})
+                p = float(resp["answers"]["injection"]["noul"])
+                return verdict(p >= float(self.settings.get("router.injection_at", 0.5)), "jev", p)
+            except (JevError, KeyError, TypeError, ValueError):
+                pass
+        if self.anthropic is not None:
+            try:
+                response = await self.anthropic.messages.create(
+                    model=self.settings.get("models.light"), max_tokens=50, system=shield.PROMPT,
+                    messages=[{"role": "user", "content": state}],
+                    output_config={"format": {"type": "json_schema", "schema": {
+                        "type": "object", "properties": {"breach": {"type": "boolean"}},
+                        "required": ["breach"], "additionalProperties": False}}},
+                )
+                breach = bool(json.loads(next(b.text for b in response.content if b.type == "text"))["breach"])
+                return verdict(breach, "llm")
+            except Exception:  # noqa: BLE001 - any failure fails closed below
+                pass
+        return verdict(True, "closed")
 
     async def should_interrupt(self, state: str) -> float:
         """Proactive gate: probability that this is worth interrupting the user for."""
@@ -222,7 +259,10 @@ class Router:
             acts_on_world=1.0 if data["acts_on_world"] else 0.0,
             needs_history=1.0 if data["needs_history"] else 0.0,
             source="llm",
-            usage={"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens},
+            usage={"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens,
+                   "cost_usd": getattr(response.usage, "cost_usd", None) or llm.cost_usd(
+                       self.settings.get("models.light"),
+                       {"input": response.usage.input_tokens, "output": response.usage.output_tokens})},
         )
         if data["second_module"] not in (NONE, data["module"]):
             route.also = [data["second_module"]]

@@ -21,26 +21,33 @@ map:
 
 models:
   # The executor that actually does the work. Per-module overrides live in modules/*/module.yaml.
-  executor: claude-opus-5
+  executor: claude-haiku-4-5   # answers by default; searching modules (knowledge, research, memory) override to Sonnet
   executor_effort: medium     # low | medium | high  - lower is faster, better for voice
   # Cheap model for the fallback classifier and for writing session summaries.
   light: claude-haiku-4-5
   max_tool_rounds: 8
 
 router:
-  jev_model: typesafe/jev-1.13
-  jev_url: https://thejevai.com/v1/systemone
+  jev_model: jev-latest
+  jev_url: https://api.typesafe.ai/v1/systemone
   timeout_s: 4.0
   # Top module probability needed to route with confidence. Below `ask_below` Alfred asks a clarifying question.
   confident_at: 0.6
   ask_below: 0.3
   # Load the most likely capabilities until their probabilities cover this share (max 3).
   capability_coverage: 0.8
+  # Shield: Jev probability of prompt injection at which a request is refused before Claude sees it.
+  injection_at: 0.5
 
 voice:
   stt_model: scribe_v2
   tts_model: eleven_multilingual_v2
   output_format: mp3_44100_128
+  # Say "checking, boss" only if the answer isn't ready after this many seconds (0 = always, before every answer).
+  ack_after_s: 1.5
+  # ElevenLabs voice_settings. speed: 0.7-1.2 (1.0 = voice default); stability/similarity_boost/style: 0-1.
+  settings:
+    speed: 1.1
 
 memory:
   dir: data/memory             # OKF bundle with sessions, tasks, facts

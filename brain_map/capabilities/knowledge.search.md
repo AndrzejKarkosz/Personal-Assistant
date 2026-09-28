@@ -16,7 +16,7 @@ examples: ['co wiem o PySpark?', znajdź notatki o SQL, show me the concept of d
     lake]
 used_by: ['skill:knowledge.study-session']
 tags: [capability, knowledge]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-28T18:45:56+02:00'
 ---
 
 # Search and read the library

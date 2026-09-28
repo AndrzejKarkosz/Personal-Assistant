@@ -16,7 +16,7 @@ examples: ['co mam dziś do powtórki?', what's pending in my curriculum, 'skąd
     ta strona?']
 used_by: ['skill:knowledge.study-session']
 tags: [capability, knowledge]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-28T18:45:56+02:00'
 ---
 
 # Learning progress

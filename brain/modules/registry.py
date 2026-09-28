@@ -6,7 +6,7 @@ A module declares (authoring source for the brain map):
                                         each with tool name patterns, examples and a confirm flag
   - capabilities it borrows             uses: [tasks.manage, memory.recall]
   - its skills                          skills/*.md - procedures, with `uses:` capabilities
-  - model / effort / acknowledge
+  - model / effort
 
 The brain map compiler (brain/atlas) joins this with the live tool catalogue into an OKF bundle.
 """
@@ -60,7 +60,6 @@ class Module:
     uses: list[str] = field(default_factory=list)
     model: str | None = None
     effort: str | None = None
-    acknowledge: bool = True
     enabled: bool = True
     prompt: str = ""
     skills: list[Skill] = field(default_factory=list)
@@ -94,7 +93,6 @@ class ModuleRegistry:
                 uses=data.get("uses", []),
                 model=data.get("model"),
                 effort=data.get("effort"),
-                acknowledge=data.get("acknowledge", True),
                 enabled=data.get("enabled", True),
                 prompt=prompt_file.read_text(encoding="utf-8").strip() if prompt_file.exists() else "",
                 path=folder,

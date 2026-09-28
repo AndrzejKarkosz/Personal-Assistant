@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +18,7 @@ from pydantic import BaseModel
 from . import llm
 from .config import ROOT
 from .pipeline import Brain
+from .proactive.scheduler import START
 from .voice import persona
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -230,6 +234,57 @@ async def patch_task(task_id: str, body: TaskPatch) -> dict[str, Any]:
     return task.to_dict()
 
 
+@app.get("/api/calendar")
+async def calendar(start: str, end: str) -> dict[str, Any]:
+    """Google Calendar events between two local times ("2026-09-28T00:00:00"), read through the
+    google-calendar MCP server - the same connection Claude uses, so there is one sign-in."""
+    server = brain.hub.servers.get("google-calendar")
+    if not server or server.status != "ready":
+        return {"status": server.status if server else "missing", "error": server.error if server else None,
+                "events": []}
+    try:
+        text, is_error = await brain.hub.call("google-calendar__list-events", {
+            "calendarId": "primary", "timeMin": start, "timeMax": end,
+            "timeZone": brain.settings.get("assistant.timezone", "Europe/Warsaw")})
+        events = None if is_error else json.loads(text)["events"]
+    except Exception as exc:  # noqa: BLE001 - an outside server; the UI shows why
+        text, events = f"{type(exc).__name__}: {exc}", None
+    if events is None:
+        return {"status": "error", "error": text[:300], "events": []}
+    brain.bus.emit("calendar_sync", "mcp:google-calendar", events=len(events))
+    return {"status": "ready", "error": None, "events": events}
+
+
+@app.get("/api/routines")
+async def routines() -> list[dict[str, Any]]:
+    """Routines with today's state, read from the activity log: ran (answer / error), due, next run."""
+    events = brain.bus.log.read(limit=100_000)
+    tz = brain.proactive.scheduler.timezone
+    now = datetime.now(tz)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    out = []
+    for r in brain.proactive.routines():
+        runs = [e for e in events if e["kind"] == "transcript" and e["data"].get("source") == "routine"
+                and e["data"].get("text") == r["prompt"]]
+        rid = runs[-1]["request_id"] if runs else None
+        errors = [e for e in events if e["kind"] == "error" and rid and e["request_id"] == rid]
+        answer = next((e for e in events if e["kind"] == "answer" and rid and e["request_id"] == rid), None)
+        first = next_run = None
+        if r["schedule"] != START:
+            try:
+                trigger = CronTrigger.from_crontab(r["schedule"], timezone=tz)
+                first, next_run = trigger.get_next_fire_time(None, midnight), trigger.get_next_fire_time(None, now)
+            except ValueError:
+                pass
+        # a failed run still ends with an (apologising) answer, so any error decides the result
+        out.append({**r, "ran_at": runs[-1]["ts"] if runs else None,
+                    "result": "error" if errors else "answer" if answer else None,
+                    "answer": errors[-1]["data"].get("message") if errors else answer["data"].get("text") if answer else None,
+                    "due_today": bool(first and first <= now),
+                    "next_run": next_run.isoformat() if next_run else None})
+    return out
+
+
 @app.get("/api/memory/briefing")
 async def briefing() -> dict[str, str]:
     return {"briefing": brain.store.briefing(int(brain.settings.get("memory.recall_sessions", 3)))}
@@ -287,6 +342,15 @@ async def put_settings(patch: dict[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------------- UI
 UI_DIR = ROOT / "ui"
 app.mount("/static", StaticFiles(directory=UI_DIR), name="static")
+
+
+@app.middleware("http")
+async def fresh_ui(request, call_next):
+    """Revalidate UI files on every load, so an updated UI never mixes with cached old files."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/")

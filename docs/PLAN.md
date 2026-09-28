@@ -4,7 +4,7 @@
 > pipeline, Jev router, acknowledgement, executor with MCP, guard, OKF session memory, activity log,
 > scheduler with the Jev gate, and the brain UI. Not yet done: the Google Calendar and browser MCP
 > setup (needs your OAuth / Node), phone delivery, and always-on hosting.
-> Deviation from the draft: the UI is plain HTML/JS with a 3D brain (3d-force-graph / three.js) served by FastAPI (no Node build step)
+> Deviation from the draft: the UI is plain HTML/JS with a 3D brain (three.js) served by FastAPI (no Node build step)
 > instead of React Flow. Session memory lives in `data/memory`, separate from the Knowledge-Base.
 > Working name for the assistant: **Alfred**. You are Batman.
 

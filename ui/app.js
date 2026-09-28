@@ -1,4 +1,5 @@
-// Alfred brain UI: conversation + voice, live brain graph, tasks / memory / modules / log / settings.
+// Alfred UI: conversation + voice (both views); the day view - summary, Google calendar, to-do, sessions;
+// the brain view - 3D brain map, memory / map / persona / modules / log / settings.
 const $ = (s) => document.querySelector(s);
 const api = async (path, opts = {}) => {
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
@@ -6,9 +7,9 @@ const api = async (path, opts = {}) => {
   return res.json();
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const Brain3D = window.Brain3D;          // missing when three.js could not load - the day view still works
 
-let status = { keys: {} };
+let status = { keys: {}, mcp: [] };
 let ws;
 
 // ---------------------------------------------------------------- messages
@@ -23,12 +24,24 @@ function addMsg(kind, text, meta = "") {
 // ------------------------------------------------------------------- audio
 const audioQueue = [];
 let playing = null;
+let thinking = false, talking = false;
+function mood() {                         // the avatar above the conversation: listening / thinking / speaking
+  const s = talking ? "speaking" : thinking ? "thinking" : "idle";
+  $("#alfred").dataset.state = s;
+  $("#alfred-state").textContent = { idle: "słucham", thinking: "myśli…", speaking: "mówi" }[s];
+}
+function setSpeaking(on) {                // the speaker icon (and the brain's voice) light up while Alfred talks
+  $("#speaking").classList.toggle("on", on);
+  Brain3D?.speaking(on);
+  talking = on; mood();
+}
 function speak(text, b64, lang) {
   audioQueue.push({ text, b64, lang });
   if (!playing) playNext();
 }
 function playNext() {
   const item = audioQueue.shift();
+  setSpeaking(Boolean(item));
   if (!item) { playing = null; return; }
   if (item.b64) {
     playing = new Audio(`data:audio/mpeg;base64,${item.b64}`);
@@ -38,7 +51,7 @@ function playNext() {
   } else if ("speechSynthesis" in window) {
     const u = new SpeechSynthesisUtterance(item.text);
     u.lang = item.lang === "en" ? "en-GB" : "pl-PL";
-    u.onend = playNext;
+    u.onend = u.onerror = playNext;
     playing = u;
     speechSynthesis.speak(u);
   } else playNext();
@@ -48,7 +61,9 @@ function stopSpeaking() {                 // barge-in: you start talking, Alfred
   if (playing instanceof Audio) playing.pause();
   if ("speechSynthesis" in window) speechSynthesis.cancel();
   playing = null;
+  setSpeaking(false);
 }
+$("#speaking").onclick = stopSpeaking;
 
 // ------------------------------------------------------------- microphone
 let recorder = null, chunks = [], recognition = null;
@@ -84,12 +99,13 @@ function stopRec() {
   if (recorder && recorder.state === "recording") recorder.stop();
 }
 const isRecording = () => $("#mic").classList.contains("rec");
+const typing = (e) => e.target.closest?.("input, textarea, select");
 $("#mic").onclick = () => (isRecording() ? stopRec() : startRec());
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && !e.repeat && document.activeElement.tagName !== "INPUT") { e.preventDefault(); startRec(); }
+  if (e.code === "Space" && !e.repeat && !typing(e)) { e.preventDefault(); startRec(); }
 });
 document.addEventListener("keyup", (e) => {
-  if (e.code === "Space" && document.activeElement.tagName !== "INPUT" && isRecording()) { e.preventDefault(); stopRec(); }
+  if (e.code === "Space" && !typing(e) && isRecording()) { e.preventDefault(); stopRec(); }
 });
 
 function sendText(text) {
@@ -101,23 +117,31 @@ $("#yes").onclick = () => ws.send(JSON.stringify({ type: "confirm", approved: tr
 $("#no").onclick = () => ws.send(JSON.stringify({ type: "confirm", approved: false }));
 
 // ------------------------------------------------------------------ graph
-async function loadGraph() { Brain3D.init(await api("/api/graph")); }
-const flash = (id) => Brain3D.flash(id);
-$("#demo").onclick = () => Brain3D.demo();
+async function loadGraph() { Brain3D?.init(await api("/api/graph"), { openPage: openMapPage, openMemory: openMemoryPage }); }
+$("#demo").onclick = () => Brain3D?.demo();
 
 // ---------------------------------------------------------------- events
 function onEvent(ev) {
   const d = ev.data || {};
-  Brain3D.event(ev);
+  Brain3D?.event(ev);
   switch (ev.kind) {
     case "transcript":
+      said[ev.request_id] = d.text;
+      if (!d.confirmation) { thinking = true; mood(); }
       if (d.source === "proactive") addMsg("system", "⏰ Alfred zaczyna sam (zadanie zaplanowane)");
-      else if (d.source === "routine") addMsg("system", `🔁 Rutyna: ${d.text}`);
+      else if (d.source === "routine") { addMsg("system", `🔁 Rutyna: ${d.text}`); loadRoutines(); }
       else addMsg("user", d.text);
+      break;
+    case "shield":
+      shields[ev.request_id] = d;
+      $("#jev-dock").innerHTML = `<div class="jev-head"><b>Jev → osłona</b><span class="said">${said[ev.request_id] ? `„${esc(said[ev.request_id])}”` : ""}</span>${shieldPill(d)}</div>
+        <p class="sub">${d.breach ? "Zapytanie zatrzymane — Claude go nie zobaczy." : "Czyste. Alfred potwierdza, a Jev w tym czasie kieruje zapytanie do właściwej części mózgu…"}</p>`;
+      if (d.breach) addMsg("system", `🛡 Osłona zablokowała zapytanie (${SHIELD_SRC[d.source] || d.source})`);
       break;
     case "classified": {
       $("#route-info").textContent = `→ ${d.module}${d.also?.length ? " + " + d.also.join(", ") : ""}` +
         `${d.skill ? " · " + d.skill : ""} · ${Math.round(d.confidence * 100)}% · ${d.source} · ${d.latency_ms} ms`;
+      showRoute(d, said[ev.request_id], shields[ev.request_id]);
       break;
     }
     case "ack": addMsg("ack", d.text); speak(d.text, d.audio_b64, d.language); break;
@@ -128,16 +152,21 @@ function onEvent(ev) {
       break;
     case "confirm_result": $("#confirm").classList.add("hidden"); break;
     case "answer": {
+      thinking = false; mood();
       const u = d.usage || {};
       // Alfred speaking first (maybe while the UI was closed): show when it happened.
-      const when = d.source && d.source !== "user" ? `${ev.ts.slice(11, 16)} · ` : "";
-      addMsg("alfred", d.text, `${when}${d.model || ""} · in ${u.input || 0} / out ${u.output || 0} / cache ${u.cache_read || 0}` +
-        (d.tools?.length ? ` · ${d.tools.join(", ")}` : ""));
+      const at = d.source && d.source !== "user" ? `${ev.ts.slice(11, 16)} · ` : "";
+      addMsg("alfred", d.text, `${at}${d.model || ""} · ${tokens(u)} tok. (in ${u.input || 0} · cache ${u.cache_read || 0}` +
+        ` odczyt / ${u.cache_write || 0} zapis · out ${u.output || 0}${u.router ? ` · router ${u.router}` : ""})` +
+        (d.cost_usd != null ? ` · ${usd(d.cost_usd)}` : "") + (d.tools?.length ? ` · ${d.tools.join(", ")}` : ""));
+      loadStatus();                         // session total in the header
       speak(d.text, d.audio_b64, d.language);
-      refreshTasks();
+      if (d.source === "routine") showBrief(d.text, ev.ts.slice(11, 16), "rutyna");
+      refreshLeft();                        // Alfred may have changed the tasks or the calendar
+      if (view === "day") refreshDay();
       break;
     }
-    case "error": addMsg("system", `⚠ ${d.message}`); break;
+    case "error": thinking = false; mood(); addMsg("system", `⚠ ${d.message}`); loadRoutines(); break;
     case "session_closed": addMsg("system", `Sesja zapisana: ${d.title || ""}`); loadBriefing(); break;
     case "proactive_gate": if (!d.fired) addMsg("system", `Pominięto przypomnienie „${d.task}” (bramka ${Math.round(d.probability * 100)}%)`); break;
   }
@@ -161,33 +190,160 @@ async function loadStatus() {
       status.claude?.detail || "") + pill("Jev", status.keys.jev, "bez klucza: fallback na Claude Haiku") +
     pill("ElevenLabs", status.keys.elevenlabs, "bez klucza: głos przeglądarki") +
     status.mcp.map((s) => s.status === "disabled" ? "" : pill(s.name, s.status === "ready", s.error || "")).join("") +
-    (status.session ? `<span class="pill">sesja · ${status.session.turns} tur · ${status.session.usage.input + status.session.usage.output} tok.</span>` : "");
+    (status.session ? `<span class="pill">sesja · ${status.session.turns} tur · ${tokens(status.session.usage)} tok. · ` +
+      `${usd(status.session.usage.cost_usd || 0)}</span>` : "");
+}
+const tokens = (u) => ["input", "output", "cache_read", "cache_write", "router", "jev"].reduce((s, k) => s + (u[k] || 0), 0);
+// Subscription: no per-token bill, the figure is what the same call would cost on the API.
+const usd = (v) => `${status.backend === "subscription" ? "≈" : ""}$${v.toFixed(4)}`;
+
+// --------------------------------------------------------------------- views
+let view = "day";
+function setView(v) {
+  view = v;
+  $("main").dataset.view = v;
+  document.querySelectorAll(".views button").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
+  try { localStorage.setItem("view", v); } catch { /* private mode */ }
+  if (v === "day") refreshDay(); else loadBriefing();
+}
+document.querySelectorAll(".views button").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
+const warn = (e) => addMsg("system", `⚠ ${e.message}`);
+const refreshLeft = () => Promise.all([refreshTasks(), loadRoutines()]).catch(warn);
+const refreshDay = () => Promise.all([loadCalendar(), loadSessions()]).catch(warn);
+
+// ---------------------------------------------------------------- Jev panel
+const said = {};                                  // request_id -> what was said
+const SOURCE = { jev: "Jev", llm: "Claude Haiku — Jev niedostępny", rules: "reguły słów — Jev i Claude niedostępne", hint: "moduł wskazany przez rutynę" };
+const shields = {};                               // request_id -> the shield's verdict
+const SHIELD_SRC = { jev: "Jev", llm: "Claude Haiku — Jev niedostępny", closed: "nikt nie odpowiedział — zablokowano z ostrożności" };
+function shieldPill(s) {
+  if (!s) return "";
+  const risk = s.probability != null ? ` · ryzyko ${Math.round(s.probability * 100)}%` : "";
+  return `<span class="pill ${s.breach ? "bad" : "ok"}" title="Sprawdzenie prompt injection · ${esc(SHIELD_SRC[s.source] || s.source)}">🛡 ${s.breach ? "zablokowano" : "bezpieczne"}${risk} · ${esc(s.source)} · ${s.ms} ms</span>`;
+}
+function showRoute(d, text, shield) {
+  const pct = (v) => `${Math.round((v || 0) * 100)}%`;
+  const top = (probs) => Object.entries(probs || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const bars = (rows, chosen = []) => rows.map(([k, v]) => `<div class="meter-row${chosen.includes(k) ? " on" : ""}">
+    <span title="${esc(k)}">${esc(k)}</span><b>${pct(v)}</b><div class="meter"><i style="width:${Math.max(1, (v || 0) * 100)}%"></i></div></div>`).join("");
+  const urgency = ["niska", "dziś", "teraz"][Math.max(0, Math.min(2, Math.round(d.urgency || 0)))];
+  $("#jev-dock").innerHTML = `<div class="jev-head"><b>Jev → ${esc(d.module)}</b><span class="said">${text ? `„${esc(text)}”` : ""}</span>
+      ${shieldPill(shield)}<span class="pill ${d.source === "jev" ? "ok" : "bad"}">${esc(SOURCE[d.source] || d.source)} · ${d.latency_ms} ms</span></div>
+    <div class="jev-cols">
+      <div class="c-blue"><h5>Moduł · pewność ${pct(d.confidence)}</h5>${bars(top(d.probabilities), [d.module, ...(d.also || [])])}</div>
+      <div class="c-purple"><h5>Możliwości</h5>${bars(top(d.capability_probabilities), d.capabilities) || '<p class="sub">wszystkie możliwości modułu</p>'}</div>
+      <div class="c-green"><h5>Sygnały</h5>${bars([[`pilność · ${urgency}`, (d.urgency || 0) / 2], ["akcja w świecie", d.acts_on_world], ["potrzebna pamięć", d.needs_history]])}
+        <p class="sub">umiejętność: <b>${esc(d.skill || "—")}</b> · temat: <b>${esc(d.topic ? d.topic.replace("topic:", "") : "—")}</b>${d.clarify ? " · <b>za mało pewne — Alfred dopyta</b>" : ""}</p></div>
+    </div>`;
+}
+async function loadLastRoute() {                  // after a reload: the last classification of today
+  const [last] = await api("/api/logs?kind=classified&limit=1");
+  if (!last) return;
+  const heard = (await api("/api/logs?kind=transcript&limit=50")).find((r) => r.request_id === last.request_id);
+  const shield = (await api("/api/logs?kind=shield&limit=50")).find((r) => r.request_id === last.request_id);
+  showRoute(last.data, heard?.data.text, shield?.data);
 }
 
-// -------------------------------------------------------------------- tabs
-document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => {
-  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== `tab-${b.dataset.tab}`));
-  ({ tasks: refreshTasks, memory: loadBriefing, map: loadMap, persona: loadPersona, modules: loadModules, log: loadLog, settings: loadSettings })[b.dataset.tab]();
-}));
+// -------------------------------------------------------------- routines
+async function loadRoutines() {
+  const routines = await api("/api/routines");
+  const at = (iso) => hhmm(new Date(iso));
+  const state = (r) => r.result === "answer" ? ["done", `✓ wykonana ${at(r.ran_at)}`]
+    : r.result === "error" ? ["err", `✗ błąd ${at(r.ran_at)}`]
+    : r.ran_at ? ["run", "⏳ w trakcie"]
+    : r.due_today ? ["err", "✗ nie wykonana"]
+    : r.schedule === "@start" ? ["wait", "○ przy starcie aplikacji"]
+    : ["wait", `○ ${new Date(r.next_run).toLocaleString("pl-PL", { weekday: "short", hour: "2-digit", minute: "2-digit" })}`];
+  $("#routines").innerHTML = routines.map((r) => {
+    const [cls, label] = state(r);
+    return `<div class="routine ${cls}" title="${esc(r.prompt)}"><div class="row between"><span class="title">${esc(r.id)}</span><span class="state">${esc(label)}</span></div>
+      <div class="sub">${esc(r.schedule === "@start" ? "przy każdym starcie" : `cron ${r.schedule}`)}${r.module ? ` · ${esc(r.module)}` : ""}</div>
+      ${r.answer ? `<div class="sub answer">${esc(r.answer)}</div>` : ""}</div>`;
+  }).join("") || '<div class="sub">Brak rutyn — dodaj je w config/routines.yaml.</div>';
+}
 
-// Tasks
+// ================================================================ day view
+const DAY_MS = 864e5, OPEN = ["todo", "in_progress", "waiting"];
+const STATUS_PL = { todo: "do zrobienia", in_progress: "w toku", waiting: "czeka", done: "zrobione", cancelled: "anulowane" };
+const isOpen = (t) => OPEN.includes(t.status);
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const localIso = (d) => new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 19);
+const hhmm = (d) => d.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+const when = (x) => (x?.dateTime ? new Date(x.dateTime) : x?.date ? new Date(`${x.date}T00:00:00`) : null);
+const day = { tasks: [], cal: null, today: null, items: [] };
+
+// Summary
+function renderStats() {
+  const now = new Date(), open = day.tasks.filter(isOpen);
+  const overdue = open.filter((t) => t.due && new Date(t.due) < now);
+  const done = day.tasks.filter((t) => t.status === "done" && now - new Date(t.updated) < 7 * DAY_MS);
+  const next = day.today?.find((e) => (when(e.end) || when(e.start)) > now);
+  const tile = (n, label, sub, cls) => `<div class="tile ${cls}"><b>${n}</b><span>${label}</span><small>${esc(sub)}</small></div>`;
+  $("#stats").innerHTML =
+    tile(day.today ? day.today.length : "—", "dziś w kalendarzu", next ? `następne: ${next.start?.dateTime ? hhmm(when(next.start)) : "cały dzień"} ${next.summary || ""}`
+      : day.today ? "nic więcej dziś" : "Google niepołączony", "blue") +
+    tile(open.length, "otwarte zadania", open.find((t) => t.status === "in_progress")?.title || "", "purple") +
+    tile(overdue.length, "po terminie", overdue[0]?.title || "wszystko na czas", overdue.length ? "err" : "green") +
+    tile(done.length, "zrobione · 7 dni", "", "green");
+  $("#greeting").textContent = `${now.getHours() < 18 && now.getHours() >= 5 ? "Dzień dobry" : "Dobry wieczór"} · ` +
+    now.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" });
+}
+
+const BRIEFS = {
+  day: "Podsumuj mój dzień: co mam dziś w kalendarzu, które zadania są na dziś albo po terminie i jaki otwarty wątek warto domknąć.",
+  week: "Podsumuj mój tydzień: najważniejsze spotkania, zadania na ten tydzień i co udało się zamknąć.",
+};
+function showBrief(text, at, source) {
+  $("#brief").innerHTML = `<p>${esc(text)}</p><span class="meta">${esc(source)} · ${esc(at)}</span>`;
+  try { localStorage.setItem("brief", JSON.stringify({ text, at, source, day: new Date().toDateString() })); } catch { /* private mode */ }
+}
+document.querySelectorAll("[data-brief]").forEach((b) => (b.onclick = async () => {
+  $("#brief").innerHTML = '<p class="sub pulse">Alfred przygotowuje podsumowanie…</p>';
+  try {
+    const { answer } = await api("/api/ask", { method: "POST", body: JSON.stringify({ text: BRIEFS[b.dataset.brief] }) });
+    showBrief(answer, hhmm(new Date()), b.textContent.toLowerCase());
+  } catch (e) { $("#brief").innerHTML = `<p class="sub">⚠ ${esc(e.message)}</p>`; }
+}));
+async function loadBrief() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem("brief")); } catch { /* private mode */ }
+  if (saved?.day === new Date().toDateString()) return showBrief(saved.text, saved.at, saved.source);
+  const routine = (await api("/api/logs?kind=answer&limit=50")).reverse().find((r) => r.data.source === "routine");
+  if (routine) showBrief(routine.data.text, routine.ts.slice(11, 16), "rutyna");
+  else $("#brief").innerHTML = '<p class="sub">Poproś Alfreda o brief dnia albo tygodnia — odpowie głosem, a podsumowanie zostanie tutaj.</p>';
+}
+
+// To-do
 async function refreshTasks() {
-  const tasks = await api(`/api/tasks?status=${$("#task-filter").value}`);
-  const now = new Date();
-  $("#tasks").innerHTML = tasks.map((t) => {
-    const overdue = t.due && new Date(t.due) < now && !["done", "cancelled"].includes(t.status);
-    return `<div class="card"><div class="row"><span class="title">${esc(t.title)}</span>
-      <span class="badge ${t.status}">${t.status}</span>${overdue ? '<span class="badge overdue">po terminie</span>' : ""}</div>
-      <div class="sub">${t.due ? "termin " + esc(t.due.replace("T", " ").slice(0, 16)) : ""}${t.schedule ? " · co " + esc(t.schedule) : ""}${t.module ? " · " + esc(t.module) : ""}</div>
-      ${t.description ? `<div class="sub">${esc(t.description)}</div>` : ""}
-      <div class="actions">${["in_progress", "waiting", "done", "cancelled"].filter((s) => s !== t.status)
-        .map((s) => `<button data-id="${t.id}" data-status="${s}">${s}</button>`).join("")}</div></div>`;
+  day.tasks = await api("/api/tasks?status=all");
+  const filter = $("#task-filter").value, now = new Date(), today = startOfDay(now);
+  const shown = day.tasks.filter((t) => filter === "all" || (filter === "open" ? isOpen(t) : t.status === filter));
+  const bucket = (t) => {
+    const due = t.due && new Date(t.due);
+    if (!due) return "Bez terminu";
+    if (due < now && isOpen(t)) return "Po terminie";
+    return due < today ? "Wcześniej" : due < addDays(today, 1) ? "Dziś" : due < addDays(today, 2) ? "Jutro" : "Później";
+  };
+  const row = (t) => `<div class="todo-row ${t.status}${bucket(t) === "Po terminie" ? " overdue" : ""}">
+    <input type="checkbox" data-id="${esc(t.id)}" ${t.status === "done" ? "checked" : ""} aria-label="Zrobione">
+    <div><div class="title">${esc(t.title)}</div><div class="sub">${[t.due && new Date(t.due).toLocaleString("pl-PL",
+      { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }), t.schedule && `co ${t.schedule}`, t.module]
+      .filter(Boolean).map(esc).join(" · ")}</div></div>
+    <select data-id="${esc(t.id)}" aria-label="Status">${Object.entries(STATUS_PL).map(([k, v]) =>
+      `<option value="${k}" ${k === t.status ? "selected" : ""}>${v}</option>`).join("")}</select></div>`;
+  $("#tasks").innerHTML = ["Po terminie", "Dziś", "Jutro", "Później", "Bez terminu", "Wcześniej"].map((g) => {
+    const ts = shown.filter((t) => bucket(t) === g);
+    return ts.length ? `<div class="todo-group">${g}</div>${ts.map(row).join("")}` : "";
   }).join("") || '<div class="sub">Brak zadań.</div>';
-  $("#tasks").querySelectorAll("button").forEach((b) => (b.onclick = async () => {
-    await api(`/api/tasks/${b.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: b.dataset.status }) });
-    refreshTasks();
-  }));
+  $("#tasks").querySelectorAll("input").forEach((c) => (c.onchange = () => setTaskStatus(c.dataset.id, c.checked ? "done" : "todo")));
+  $("#tasks").querySelectorAll("select").forEach((s) => (s.onchange = () => setTaskStatus(s.dataset.id, s.value)));
+  renderStats();
+  renderCalendar();
+}
+async function setTaskStatus(id, value) {
+  await api(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ status: value }) });
+  refreshTasks();
 }
 $("#task-filter").onchange = refreshTasks;
 $("#task-form").onsubmit = async (e) => {
@@ -199,20 +355,137 @@ $("#task-form").onsubmit = async (e) => {
   refreshTasks();
 };
 
+// Calendar: Google events + tasks with a due time, a week (a day on narrow screens) at a time.
+const calDays = () => (innerWidth < 760 ? 1 : 7);
+const firstDay = (d) => (calDays() === 1 ? startOfDay(d) : addDays(startOfDay(d), -((d.getDay() + 6) % 7)));
+let calFrom = firstDay(new Date());
+async function loadCalendar() {
+  const from = calFrom, to = addDays(from, calDays()), now = new Date();
+  const cal = await api(`/api/calendar?start=${localIso(from)}&end=${localIso(to)}`);
+  if (from !== calFrom) return;                        // the user moved on while this was loading
+  day.cal = cal;
+  if (from <= now && now < to) {
+    day.today = cal.status === "ready" ? cal.events.filter((e) => when(e.start) < addDays(startOfDay(now), 1) && (when(e.end) || when(e.start)) > startOfDay(now))
+      .sort((a, b) => when(a.start) - when(b.start)) : null;
+  }
+  const s = status.mcp.find((x) => x.name === "google-calendar")?.status || cal.status;
+  $("#cal-status").className = `pill ${cal.status === "ready" ? "ok" : "bad"}`;
+  $("#cal-status").textContent = cal.status === "ready" ? `Google · ${hhmm(now)}` : s === "disabled" || s === "missing" ? "Google · niepołączony" : "Google · błąd";
+  $("#cal-status").title = cal.error || (cal.status === "ready" ? "zsynchronizowano" : "");
+  renderCalendar();
+  renderStats();
+}
+$("#cal-prev").onclick = () => { calFrom = addDays(calFrom, -calDays()); loadCalendar(); };
+$("#cal-next").onclick = () => { calFrom = addDays(calFrom, calDays()); loadCalendar(); };
+$("#cal-today").onclick = () => { calFrom = firstDay(new Date()); loadCalendar(); };
+
+function renderCalendar() {
+  if (!day.cal) return;
+  const n = calDays(), days = [...Array(n)].map((_, i) => addDays(calFrom, i)), end = addDays(calFrom, n);
+  const now = new Date(), H = 44;
+  const items = [
+    ...day.cal.events.map((e) => {
+      const start = when(e.start), allDay = !e.start?.dateTime;
+      return { kind: "event", title: e.summary || "(bez tytułu)", start, end: when(e.end) || addDays(start, allDay ? 1 : 0), allDay, e };
+    }),
+    ...day.tasks.filter((t) => t.due && isOpen(t)).map((t) => ({ kind: "task", title: t.title, start: new Date(t.due), end: new Date(+new Date(t.due) + 30 * 6e4), t })),
+  ].filter((i) => i.start && i.start < end && i.end > calFrom);
+  day.items = items;
+  const timed = items.filter((i) => !i.allDay);
+  const endHour = (i) => (startOfDay(i.end) - startOfDay(i.start) ? 24 : i.end.getHours() + (i.end.getMinutes() ? 1 : 0));
+  const from = Math.min(7, ...timed.map((i) => i.start.getHours()));
+  const to = Math.max(21, ...timed.map(endHour));
+  const chip = (i) => `<div class="ev ${i.kind} allday" data-i="${items.indexOf(i)}">${esc(i.title)}</div>`;
+  const cols = days.map((d) => {
+    const evs = timed.filter((i) => startOfDay(i.start) - d === 0).sort((a, b) => a.start - b.start);
+    // side by side only where events overlap: each group of overlapping events shares its own lanes
+    let lanes = [], group = [];
+    const close = () => { group.forEach((i) => (i.lanes = lanes.length)); lanes = []; group = []; };
+    evs.forEach((i) => {
+      if (lanes.length && lanes.every((e) => e <= i.start)) close();
+      let k = lanes.findIndex((e) => e <= i.start);
+      if (k < 0) k = lanes.push(0) - 1;
+      lanes[k] = i.end; i.lane = k; group.push(i);
+    });
+    close();
+    const boxes = evs.map((i) => {
+      const top = (i.start.getHours() + i.start.getMinutes() / 60 - from) * H, w = 100 / i.lanes;
+      const h = Math.max(20, (Math.min(i.end, addDays(d, 1)) - i.start) / 36e5 * H - 2);
+      const late = i.kind === "task" && i.start < now ? " overdue" : "";
+      return `<div class="ev ${i.kind}${late}" data-i="${items.indexOf(i)}" style="top:${top}px;height:${h}px;left:calc(${i.lane * w}% + 2px);width:calc(${w}% - 4px)"><b>${hhmm(i.start)}</b> ${esc(i.title)}</div>`;
+    }).join("");
+    const nowLine = startOfDay(now) - d === 0 ? `<div class="now-line" style="top:${(now.getHours() + now.getMinutes() / 60 - from) * H}px"></div>` : "";
+    return `<div class="cal-day" data-day="${+d}" style="height:${(to - from) * H}px">${boxes}${nowLine}</div>`;
+  }).join("");
+  const cal = $("#calendar");
+  cal.style.setProperty("--days", n);
+  cal.style.setProperty("--h", `${H}px`);
+  cal.innerHTML = `<div class="cal-head"></div>` +
+    days.map((d) => `<div class="cal-head${startOfDay(now) - d === 0 ? " today" : ""}">${d.toLocaleDateString("pl-PL", { weekday: "short", day: "numeric" })}</div>`).join("") +
+    `<div class="cal-allday cal-label">cały dzień</div>` +
+    days.map((d) => `<div class="cal-allday">${items.filter((i) => i.allDay && i.start < addDays(d, 1) && i.end > d).map(chip).join("")}</div>`).join("") +
+    `<div class="cal-hours">${Array.from({ length: to - from }, (_, k) => `<div>${from + k}:00</div>`).join("")}</div>` + cols;
+  $("#cal-range").textContent = n === 1 ? calFrom.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" })
+    : `${calFrom.toLocaleDateString("pl-PL", { day: "numeric", month: "short" })} – ${addDays(end, -1).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" })}`;
+  $("#cal-note").classList.toggle("hidden", day.cal.status === "ready");
+  $("#cal-note").textContent = `Kalendarz Google nie jest połączony${day.cal.error ? ` (${day.cal.error})` : ""} — widać tylko zadania z terminem. Jak połączyć: README → „MCP servers”.`;
+  cal.querySelectorAll(".ev").forEach((x) => (x.onclick = (e) => { e.stopPropagation(); showEvent(day.items[x.dataset.i]); }));
+  cal.querySelectorAll(".cal-day").forEach((c) => (c.onclick = (e) => {    // empty slot: ask Alfred to add an event there
+    const d = new Date(+c.dataset.day), h = Math.floor(from + (e.clientY - c.getBoundingClientRect().top) / H);
+    $("#text").value = `Dodaj do kalendarza: ${d.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" })} o ${h}:00 — `;
+    $("#text").focus();
+  }));
+  if (!cal.dataset.scrolled) { cal.scrollTop = Math.max(0, (Math.min(now.getHours(), to - 3) - from - 1) * H); cal.dataset.scrolled = 1; }
+}
+
+function showEvent(i) {
+  const card = $("#event-card"), e = i.e || {}, t = i.t;
+  const time = i.allDay ? "cały dzień" : `${i.start.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" })}, ${hhmm(i.start)}` + (t ? "" : ` – ${hhmm(i.end)}`);
+  card.innerHTML = `<button class="x" aria-label="Zamknij">×</button><span class="crumb">${t ? "zadanie" : "Google Calendar"}</span><b>${esc(i.title)}</b>
+    <p>${esc(time)}${e.location ? ` · ${esc(e.location)}` : ""}</p>
+    ${e.description ? `<p>${esc(e.description.slice(0, 400))}</p>` : ""}
+    ${t ? `<p>${esc(STATUS_PL[t.status])}${t.description ? ` · ${esc(t.description)}` : ""}</p><button class="link" data-done>✓ Oznacz jako zrobione</button>` : ""}
+    ${/^https:\/\//.test(e.htmlLink || "") ? `<a class="link" href="${esc(e.htmlLink)}" target="_blank" rel="noopener">Otwórz w Google Calendar →</a>` : ""}`;
+  card.classList.remove("hidden");
+  card.querySelector(".x").onclick = () => card.classList.add("hidden");
+  const done = card.querySelector("[data-done]");
+  if (done) done.onclick = () => { card.classList.add("hidden"); setTaskStatus(t.id, "done"); };
+}
+
+// Session summaries
+async function loadSessions() {
+  const sessions = await api("/api/memory/sessions?limit=6");
+  $("#sessions").innerHTML = sessions.map((s) => `<div class="card"><div class="row between"><span class="title">${esc(s.title)}</span>
+    <span class="sub">${esc(String(s.ended || "").slice(0, 16).replace("T", " "))}</span></div>
+    <div class="sub">${esc(s.description || "")}</div>
+    ${(s.open_threads || []).length ? `<div class="threads">${s.open_threads.map((x) => `<span class="badge">${esc(x)}</span>`).join("")}</div>` : ""}</div>`).join("")
+    || '<div class="sub">Jeszcze nie ma zapisanych sesji. Alfred podsumowuje sesję po 15 minutach ciszy.</div>';
+}
+
+// ============================================================== brain view
+document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== `tab-${b.dataset.tab}`));
+  ({ memory: loadBriefing, map: loadMap, persona: loadPersona, modules: loadModules, log: loadLog, settings: loadSettings })[b.dataset.tab]();
+}));
+
 // Memory
 async function loadBriefing() { $("#briefing").textContent = (await api("/api/memory/briefing")).briefing; }
 $("#close-session").onclick = async () => { await api("/api/session/close", { method: "POST" }); loadBriefing(); };
+async function openMemoryPage(path) {
+  const page = await api(`/api/memory/page?path=${encodeURIComponent(path)}`);
+  if (view !== "brain") setView("brain");
+  document.querySelector('.tabs button[data-tab="memory"]').click();
+  $("#mem-page").textContent = page.content;
+  $("#mem-page").classList.remove("hidden");
+}
 $("#mem-search").onsubmit = async (e) => {
   e.preventDefault();
   const hits = await api(`/api/memory/search?q=${encodeURIComponent($("#mem-q").value)}`);
   $("#mem-results").innerHTML = hits.map((h) => `<div class="card" data-path="${esc(h.path)}" style="cursor:pointer">
     <span class="title">${esc(h.title)}</span><span class="sub">${esc(h.type)} · ${esc(h.path)}</span>
     <span class="sub">${esc(h.description || "")}</span></div>`).join("") || '<div class="sub">Nic nie znaleziono.</div>';
-  $("#mem-results").querySelectorAll(".card").forEach((c) => (c.onclick = async () => {
-    const page = await api(`/api/memory/page?path=${encodeURIComponent(c.dataset.path)}`);
-    $("#mem-page").textContent = page.content;
-    $("#mem-page").classList.remove("hidden");
-  }));
+  $("#mem-results").querySelectorAll(".card").forEach((c) => (c.onclick = () => openMemoryPage(c.dataset.path)));
 };
 
 // Modules + router tester
@@ -242,7 +515,7 @@ $("#classify-form").onsubmit = async (e) => {
   $("#classify-out").innerHTML = `<div class="card"><div class="sub">${esc(r.source)} · ${r.latency_ms} ms · skill: ${esc(r.skill || "—")}
     · pilność ${r.urgency.toFixed(1)} · działanie ${Math.round(r.acts_on_world * 100)}% · historia ${Math.round(r.needs_history * 100)}%</div>
     <div class="probs">${probs.map(([k, v]) => `<span>${esc(k)}</span><div class="bar" style="width:${Math.max(2, v * 100)}%"></div><span>${Math.round(v * 100)}%</span>`).join("")}</div></div>`;
-  flash(`module:${r.module}`);
+  Brain3D?.flash(`module:${r.module}`);
 };
 
 // Brain map (OKF)
@@ -280,25 +553,22 @@ function renderMd(text, base) {
   close();
   return (fm ? `<div class="fm">${esc(fm)}</div>` : "") + html.join("");
 }
-const mapHistory = [];
-async function openMapPage(path, push = true) {
+async function openMapPage(path) {
   const page = await api(`/api/map/page?path=${encodeURIComponent(path)}`);
-  if (push) mapHistory.push(path);
   $("#map-crumbs").innerHTML = [`<a data-page="index.md">brain_map</a>`, ...path.split("/").map((x) => esc(x))].join(" / ");
   $("#map-page").innerHTML = renderMd(page.content, path);
   document.querySelectorAll("#map-page a[data-page], #map-crumbs a[data-page]").forEach((a) => (a.onclick = () => openMapPage(a.dataset.page)));
   document.querySelector('.tabs button[data-tab="map"]').classList.contains("active") ||
     document.querySelector('.tabs button[data-tab="map"]').click();
   const id = page.content.match(/\nid: (.+)/)?.[1]?.trim();
-  if (id) ["module:", "cap:", "skill:", "tool:", "mcp:", ""].forEach((p) => Brain3D.flash(p + id));
+  if (id) ["module:", "cap:", "skill:", "tool:", "mcp:", ""].forEach((p) => Brain3D?.flash(p + id));
 }
 async function loadMap() {
   const m = await api("/api/map");
   $("#map-backend").textContent = `Claude: ${status.backend === "subscription" ? "subskrypcja (Claude Code)" : "API (tokeny)"}`;
   $("#map-counts").innerHTML = Object.entries({ modules: "moduły", capabilities: "możliwości", skills: "umiejętności", tools: "narzędzia", servers: "serwery", topics: "tematy" })
     .map(([k, l]) => `<div><b>${m.counts[k]}</b>${l}</div>`).join("");
-  const q = m.jev;
-  $("#jev-cats").innerHTML = Object.entries(q).map(([k, v]) => {
+  $("#jev-cats").innerHTML = Object.entries(m.jev).map(([k, v]) => {
     const crit = Array.isArray(v.criteria) ? v.criteria : Object.keys(v.criteria || {});
     return `<li><b>${esc(k)}</b> <span class="muted">(${esc(v.type)})</span> — ${esc(v.instructions)}${crit.length ? `<br><span class="muted">${crit.map(esc).join(" · ")}</span>` : ""}</li>`;
   }).join("");
@@ -385,8 +655,15 @@ $("#settings-form").onsubmit = async (e) => {
 // ---------------------------------------------------------------- boot
 (async () => {
   await loadStatus();
-  await loadGraph();
   connect();
-  refreshTasks();
+  let saved = null;
+  try { saved = localStorage.getItem("view"); } catch { /* private mode */ }
+  setView(saved === "brain" ? "brain" : "day");
+  refreshLeft();
+  loadBrief().catch(() => {});
+  loadLastRoute().catch(() => {});
+  loadGraph().catch((e) => addMsg("system", `⚠ Mózg 3D: ${e.message}`));
   setInterval(loadStatus, 15000);
+  setInterval(loadRoutines, 60e3);                   // "due" changes with the clock
+  setInterval(() => view === "day" && loadCalendar(), 5 * 60e3);
 })();

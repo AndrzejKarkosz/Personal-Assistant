@@ -72,6 +72,7 @@ class SubscriptionExecutor(BaseExecutor):
             allowed_tools=[sdk_name(t.name) for t in sdk_tools] + web,
             permission_mode="dontAsk",                     # anything not listed above is denied
             setting_sources=[],                            # no user settings, hooks or CLAUDE.md
+            strict_mcp_config=True,                        # nor the account's claude.ai connectors (~270k tokens)
             model=model,
             effort=effort,
             max_turns=int(self.settings.get("models.max_tool_rounds", 8)) + 1,

@@ -1,8 +1,9 @@
 ---
 type: Module
 title: Conversation and quick answers
-description: Greetings, thanks, jokes, opinions, general knowledge questions and anything
-  that needs no tools.
+description: Greetings, thanks, jokes, opinions and quick trivia that needs no tools.
+  Not for subjects the user is learning or keeps notes on (languages, courses, tech
+  topics) - those go to the knowledge library.
 id: smalltalk
 capabilities: [smalltalk.chat]
 uses: []
@@ -13,14 +14,13 @@ examples: ['cześć Alfred, jak się masz?', 'dzięki, to wszystko', 'ile to jes
 enabled: true
 model: null
 effort: low
-acknowledge: false
 tags: [module]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-28T18:43:45+02:00'
 ---
 
 # Conversation and quick answers
 
-Greetings, thanks, jokes, opinions, general knowledge questions and anything that needs no tools.
+Greetings, thanks, jokes, opinions and quick trivia that needs no tools. Not for subjects the user is learning or keeps notes on (languages, courses, tech topics) - those go to the knowledge library.
 
 ## Capabilities
 - [Talk without tools](../capabilities/smalltalk.chat.md) (`smalltalk.chat`)

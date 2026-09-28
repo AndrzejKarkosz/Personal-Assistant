@@ -53,6 +53,10 @@ async def test_api_errors_become_a_spoken_apology(make_brain):
         raise anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
 
     fake.messages.create = down
+
+    async def clean(*_):
+        return {"breach": False, "probability": None, "source": "llm", "ms": 0}
+    brain.router.is_injection = clean              # the shield would fail closed with Claude down
     queue = brain.bus.subscribe()
     answer = await brain.handle_text("co słychać", module_hint="smalltalk")
     assert answer == "Coś poszło nie tak po mojej stronie, szefie. Spróbuj proszę za chwilę."

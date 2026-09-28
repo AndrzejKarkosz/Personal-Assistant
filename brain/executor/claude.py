@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import anthropic
 
+from .. import llm
 from ..memory import MemoryStore, Session
 from ..modules import Module, ModuleRegistry
 from ..router import Route
@@ -212,6 +213,8 @@ class ApiExecutor(BaseExecutor):
             usage = _usage_dict(response.usage)
             for k, v in usage.items():
                 result.usage[k] = result.usage.get(k, 0) + v
+            # ponytail: priced as `model`; a refusal fallback served by another model is priced at this rate too
+            result.cost_usd = llm.cost_usd(model, result.usage)
             self.bus.emit("llm_call", "executor", request_id, session.id, round=round_no,
                           stop_reason=response.stop_reason, ms=int((time.perf_counter() - started) * 1000),
                           usage=usage)

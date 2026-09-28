@@ -13,9 +13,8 @@ examples: ['o czym rozmawialiśmy wczoraj?', 'co ustaliliśmy w sprawie wyjazdu?
 enabled: true
 model: null
 effort: low
-acknowledge: true
 tags: [module]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-28T18:43:45+02:00'
 ---
 
 # Our past conversations

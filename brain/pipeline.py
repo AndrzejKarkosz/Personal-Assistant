@@ -1,6 +1,6 @@
 """The brain pipeline:
 
-  ears (STT) -> router (Jev) -> acknowledgement ("On it, boss") -> executor (Claude + module tools)
+  ears (STT) -> shield (Jev: prompt injection?) -> acknowledgement ("On it, boss") + router (Jev) -> executor (Claude + module tools)
              -> guard (confirm side effects) -> voice (TTS) -> memory (session turns, tasks, log)
 
 Every step emits events to the bus: the UI draws them on the brain graph and the activity log
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from . import llm
@@ -17,7 +18,7 @@ from .atlas import BrainMap, MapBuilder
 from .config import ROOT, Settings
 from .events import ActivityLog, EventBus, new_id
 from .executor import ApiExecutor, Guard, MCPHub
-from .memory import MemoryStore, SessionManager
+from .memory import MemoryStore, SessionManager, okf
 from .modules import ModuleRegistry
 from .proactive import ProactiveEngine
 from .router import JevClient, Route, Router
@@ -25,6 +26,9 @@ from .voice import persona
 from .voice.elevenlabs import ElevenLabs
 
 log = logging.getLogger("alfred")
+
+_BLOCKED = {"pl": "Tego nie wykonam - wygląda to na próbę manipulacji moimi instrukcjami.",
+            "en": "I won't do that - it looks like an attempt to tamper with my instructions."}
 
 
 class Brain:
@@ -114,59 +118,133 @@ class Brain:
         lang = session.language
         self.bus.emit("transcript", "ears", request_id, session.id, text=text, language=lang, source=source)
 
-        # 1. Router - one fast typed decision.
-        if module_hint and module_hint in self.map.modules:
-            route = Route(module=module_hint, confidence=1.0, probabilities={module_hint: 1.0}, source="hint")
-            self.router.apply_policy(route)
-        else:
-            route = await self.router.classify(text, context=session.recent_text(4))
-        session.add_usage({"jev": int((route.usage or {}).get("input_tokens", 0))
-                           + int((route.usage or {}).get("output_tokens", 0))})
-        self.bus.emit("classified", "router", request_id, session.id, **route.to_dict())
-
-        # 2. Instant acknowledgement while the real work starts.
-        lead = self.registry.get(route.module)
+        # 0. Shield - every user utterance is checked for prompt injection (Jev) before Claude sees it.
+        #    The router starts at the same time; its answer is only used once the shield has passed.
+        routing = asyncio.create_task(self._route(text, session, module_hint))
         ack_task = None
-        if source == "user" and lead and lead.acknowledge and not route.clarify:
-            ack_task = asyncio.create_task(self._acknowledge(request_id, session.id, lang))
+        ack_after = float(self.settings.get("voice.ack_after_s", 1.5))
+        if source == "user":
+            verdict = await self.router.is_injection(text, session.recent_text(4))
+            self.bus.emit("shield", "shield", request_id, session.id, **verdict)
+            if verdict["breach"]:
+                routing.cancel()
+                reply = _BLOCKED.get(lang, _BLOCKED["en"])
+                self.bus.emit("blocked", "shield", request_id, session.id, text=text)
+                self.bus.emit("answer", "voice", request_id, session.id, text=reply,
+                              audio_b64=await self.voice.synthesize(reply), language=lang, model="shield",
+                              usage={}, source=source)
+                return reply
+            # 1. "Of course, boss, checking" - only if the answer takes longer than voice.ack_after_s.
+            ack_task = asyncio.create_task(self._acknowledge(request_id, session.id, lang, ack_after))
+
+        # 2. Router - one fast typed decision over the whole brain map.
+        route = await routing
+        route_usage = route.usage or {}
+        router_tokens = int(route_usage.get("input_tokens", 0)) + int(route_usage.get("output_tokens", 0))
+        session.add_usage({"jev": router_tokens})
+        self.bus.emit("classified", "router", request_id, session.id, **route.to_dict())
+        if ack_task and route.module == "smalltalk":
+            ack_task.cancel()   # conversation needs no "checking, boss"
 
         # 3. Executor - Claude with only this route's tools.
         result = await self.executor.run(text, route, session, request_id)
         if ack_task:
-            await ack_task      # never let the answer overtake the acknowledgement
+            if ack_after > 0:
+                ack_task.cancel()   # the answer is ready - a late "on it" would only get in the way
+            await asyncio.gather(ack_task, return_exceptions=True)  # never let the answer overtake a started ack
 
         # 4. Memory - remember the turn and what changed.
         session.add("user", text if source == "user" else f"(proactive) {text[:200]}", route.module)
         session.add("assistant", result.text, route.module)
         session.actions.extend(result.actions)
-        session.add_usage(result.usage)
+        # Jev is billed by its own provider, so only the Claude router fallback has a dollar figure.
+        cost = None if result.cost_usd is None else result.cost_usd + (route_usage.get("cost_usd") or 0)
+        session.add_usage({**result.usage, "cost_usd": cost or 0})
 
         # 5. Voice.
         audio = await self.voice.synthesize(result.text)
         self.bus.emit("answer", "voice", request_id, session.id, text=result.text, audio_b64=audio,
-                      language=lang, model=result.model, usage=result.usage, actions=result.actions,
+                      language=lang, model=result.model, usage={**result.usage, "router": router_tokens},
+                      cost_usd=cost, actions=result.actions,
                       tools=result.tools_used, source=source)
         return result.text
 
-    async def _acknowledge(self, request_id: str, session_id: str, lang: str) -> None:
+    async def _route(self, text: str, session, module_hint: str | None) -> Route:
+        if module_hint and module_hint in self.map.modules:
+            route = Route(module=module_hint, confidence=1.0, probabilities={module_hint: 1.0}, source="hint")
+            self.router.apply_policy(route)
+            return route
+        return await self.router.classify(text, context=session.recent_text(4))
+
+    async def _acknowledge(self, request_id: str, session_id: str, lang: str, delay: float = 0) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
         phrase = persona.ack_phrase(self.settings, lang)
         audio = await self.voice.synthesize(phrase)
         self.bus.emit("ack", "voice", request_id, session_id, text=phrase, audio_b64=audio, language=lang)
 
     # ------------------------------------------------------------------- graph
     def graph(self) -> dict[str, Any]:
-        """Nodes and edges for the brain view: the pipeline core plus the compiled brain map."""
+        """Nodes and edges for the brain view: the pipeline core, the compiled brain map and the rest of
+        the brain's anatomy (code, tests, routines, persona, memory)."""
         core = [
-            ("ears", "Ears (speech-to-text)"), ("router", "Router (Jev)"), ("executor", "Executor (Claude)"),
+            ("ears", "Ears (speech-to-text)"), ("shield", "Shield (Jev)"), ("router", "Router (Jev)"), ("executor", "Executor (Claude)"),
             ("guard", "Guard"), ("voice", "Voice (Alfred)"), ("memory", "Session memory (OKF)"),
             ("proactive", "Proactive"),
         ]
         nodes = [{"id": i, "label": l, "kind": "core"} for i, l in core]
         edges = [{"source": a, "target": b, "rel": "flow"} for a, b in (
-            ("ears", "router"), ("router", "executor"), ("executor", "guard"), ("executor", "voice"),
+            ("ears", "shield"), ("shield", "router"), ("shield", "voice"), ("router", "executor"), ("executor", "guard"), ("executor", "voice"),
             ("executor", "memory"), ("proactive", "router"), ("memory", "executor"), ("mcp:alfred", "memory"))]
         m = self.map.graph()
-        nodes += m["nodes"]
+        more_nodes, more_edges = self._anatomy()
+        nodes += m["nodes"] + more_nodes
         known = {n["id"] for n in nodes}
-        edges = [e for e in edges if e["source"] in known and e["target"] in known] + m["edges"]
+        edges = [e for e in edges + more_edges if e["source"] in known and e["target"] in known] + m["edges"]
         return {"nodes": nodes, "edges": edges, "backend": self.executor.backend}
+
+    def _anatomy(self) -> tuple[list[dict], list[dict]]:
+        """Brain-view nodes beyond the map. `group` is the folder the UI shows them in."""
+        nodes: list[dict] = []
+        edges: list[dict] = []
+
+        def node(nid: str, label: str, kind: str, description: str = "", **extra: Any) -> None:
+            nodes.append({"id": nid, "label": label, "kind": kind, "description": description, **extra})
+
+        for p in sorted((ROOT / "brain").iterdir()):
+            files = sorted(f.name for f in p.glob("*.py") if f.name != "__init__.py") if p.is_dir() else [p.name]
+            if not p.name.startswith("_") and files and (p.is_dir() or p.suffix == ".py"):
+                node(f"repo:{p.stem}", f"brain/{p.name}", "repo", ", ".join(files))
+        for f in sorted((ROOT / "tests").glob("test_*.py")):
+            names = re.findall(r"^(?:async )?def (test_\w+)", f.read_text(encoding="utf-8"), re.M)
+            node(f"test:{f.stem}", f.name, "test", f"{len(names)} testów: " + ", ".join(names))
+            edges.append({"source": f"test:{f.stem}", "target": f"repo:{f.stem[5:]}", "rel": "tests"})
+        for r in self.proactive.routines():
+            node(f"routine:{r['id']}", r["id"], "routine", f"{r['schedule']} · {r['prompt']}", prompt=r["prompt"])
+            edges += [{"source": "proactive", "target": f"routine:{r['id']}", "rel": "runs"},
+                      {"source": f"routine:{r['id']}", "target": f"module:{r.get('module')}", "rel": "runs in"}]
+
+        meta, body = persona.load()
+        address, acks = meta.get("address") or {}, meta.get("acks") or {}
+        facets = [("Tożsamość", "Imię", meta.get("name")), ("Tożsamość", "Szef", meta.get("user_name")),
+                  ("Tożsamość", "Zwrot PL", address.get("pl")), ("Tożsamość", "Zwrot EN", address.get("en")),
+                  ("Zwroty", "Potwierdzenia PL", " · ".join(acks.get("pl") or [])),
+                  ("Zwroty", "Potwierdzenia EN", " · ".join(acks.get("en") or [])),
+                  ("Zwroty", "Pytanie o zgodę", (meta.get("confirm") or {}).get("pl"))]
+        for section in re.split(r"^# ", body, flags=re.M)[1:]:
+            title, _, text = section.partition("\n")
+            facets.append(("Charakter", title, text))
+        for i, (group, label, text) in enumerate(facets):
+            node(f"persona:{i}", label.strip(), "persona", str(text or "").strip()[:500], group=group)
+
+        for t in self.store.list_tasks("open"):
+            node(f"task:{t.id}", t.title, "memory", t.status + (f", termin {t.due}" if t.due else ""),
+                 group="Zadania", mem_path=f"tasks/{t.id}.md")
+        for i, (meta, _) in enumerate(self.store.recent_sessions(8)):
+            node(f"session:{i}", meta.get("title", ""), "memory", meta.get("description", ""), group="Sesje")
+        for f in sorted((self.store.root / "facts").rglob("*.md"))[:40]:   # ponytail: first 40, newest first if it grows
+            rel = f.relative_to(self.store.root).as_posix()
+            fact, _ = okf.read(f)
+            node(f"fact:{rel}", fact.get("title", f.stem), "memory", fact.get("description", ""),
+                 group="Fakty", mem_path=rel)
+        return nodes, edges
