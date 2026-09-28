@@ -1,0 +1,22 @@
+id: knowledge
+label: Personal knowledge library
+description: Questions answered from the user's own knowledge base (notes, concepts, topics, courses, sources, what he
+  has learned or written down) - the library of everything Alfred should know.
+examples:
+  - co wiem o architekturze event-driven?
+  - znajdź w mojej bazie notatki o Databricks
+  - what did I write about Power BI
+  - jak idzie mi nauka hiszpańskiego?
+capabilities:
+  search:
+    label: Search and read the library
+    description: Find pages by meaning or keywords, read a page, list pages by type or tag, follow links between concepts.
+    tools: ["knowledge-base__kb_find", "knowledge-base__kb_read", "knowledge-base__kb_list", "knowledge-base__kb_graph"]
+    examples: ["co wiem o PySpark?", "znajdź notatki o SQL", "show me the concept of delta lake"]
+  learning:
+    label: Learning progress
+    description: What is due for review, pending items, the health and audit of the library, sources behind pages.
+    tools: ["knowledge-base__kb_due", "knowledge-base__kb_pending", "knowledge-base__kb_health", "knowledge-base__kb_audit", "knowledge-base__kb_source"]
+    examples: ["co mam dziś do powtórki?", "what's pending in my curriculum", "skąd pochodzi ta strona?"]
+effort: medium
+enabled: true

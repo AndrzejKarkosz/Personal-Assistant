@@ -1,0 +1,18 @@
+id: tasks
+label: Tasks, reminders and follow-ups
+description: Remember to do something, remind me later, recurring routines, what is still open, mark something
+  done, what did we agree to pick up.
+examples:
+  - przypomnij mi jutro o 9 żeby zadzwonić do mamy
+  - co mam jeszcze otwarte?
+  - every weekday at 8 give me a morning brief
+  - oznacz fakturę jako zrobioną
+capabilities:
+  manage:
+    label: Manage tasks and reminders
+    description: Create a task or reminder (one-off due time or recurring cron), list open tasks, change status, add notes.
+    tools: [task_create, task_update, task_list]
+    examples: ["przypomnij mi za godzinę", "co mam otwarte?", "oznacz jako zrobione"]
+uses: [memory.recall]
+effort: low
+enabled: true

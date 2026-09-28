@@ -1,0 +1,24 @@
+id: calendar
+label: Calendar and schedule
+description: Meetings, events, appointments, free time, what is planned for a day or week; creating, moving
+  or cancelling events.
+examples:
+  - co mam jutro w kalendarzu?
+  - przesuń spotkanie z Tomkiem na piątek
+  - what's on my schedule this week
+  - add a dentist appointment on Monday at 10
+capabilities:
+  read:
+    label: Read the calendar
+    description: List, search and open events, check free/busy time and the current time.
+    tools: ["google-calendar__list-*", "google-calendar__search-*", "google-calendar__get-*"]
+    examples: ["co mam jutro?", "kiedy mam wolne w czwartek?", "what's my next meeting"]
+  write:
+    label: Change the calendar
+    description: Create, move, update, cancel events and answer invitations.
+    tools: ["google-calendar__create-*", "google-calendar__update-*", "google-calendar__delete-*", "google-calendar__respond-*"]
+    examples: ["dodaj spotkanie w poniedziałek o 10", "przesuń spotkanie na piątek", "cancel tomorrow's call"]
+    confirm: true
+uses: [tasks.manage, memory.recall, bookings.confirm]
+effort: low
+enabled: true

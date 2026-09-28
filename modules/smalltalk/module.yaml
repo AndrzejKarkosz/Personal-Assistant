@@ -1,0 +1,17 @@
+id: smalltalk
+label: Conversation and quick answers
+description: Greetings, thanks, jokes, opinions, general knowledge questions and anything that needs no tools.
+examples:
+  - cześć Alfred, jak się masz?
+  - dzięki, to wszystko
+  - ile to jest 15% z 240?
+  - tell me something interesting
+capabilities:
+  chat:
+    label: Talk without tools
+    description: Conversation, general knowledge and quick reasoning - no tools needed.
+    tools: []
+    examples: ["cześć", "dzięki", "ile to 15% z 240?"]
+acknowledge: false
+effort: low
+enabled: true

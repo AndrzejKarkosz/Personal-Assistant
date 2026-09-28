@@ -1,0 +1,93 @@
+"""Event bus + activity log.
+
+Every step of the brain publishes an Event. Subscribers (the UI WebSocket, tests) get them
+live, and every event is also appended to the activity log: one JSONL file per day, so
+everything Alfred ever did can be replayed and audited.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+
+def now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+@dataclass
+class Event:
+    kind: str                     # e.g. "transcript", "classified", "ack", "tool_call", "answer"
+    node: str                     # brain-graph node the event belongs to: "ears", "router", "module:calendar", ...
+    data: dict[str, Any] = field(default_factory=dict)
+    request_id: str | None = None
+    session_id: str | None = None
+    ts: str = field(default_factory=now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+# Payload keys never written to disk (large binary blobs).
+_UNLOGGED_KEYS = {"audio_b64"}
+
+
+class ActivityLog:
+    def __init__(self, directory: Path):
+        self.dir = directory
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def _file(self, day: str | None = None) -> Path:
+        return self.dir / f"{day or datetime.now().strftime('%Y-%m-%d')}.jsonl"
+
+    def write(self, event: Event) -> None:
+        record = event.to_dict()
+        record["data"] = {k: v for k, v in record["data"].items() if k not in _UNLOGGED_KEYS}
+        with self._file().open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+    def read(self, day: str | None = None, limit: int = 200, kind: str | None = None) -> list[dict]:
+        path = self._file(day)
+        if not path.exists():
+            return []
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if kind:
+            rows = [r for r in rows if r["kind"] == kind]
+        return rows[-limit:]
+
+    def days(self) -> list[str]:
+        return sorted((p.stem for p in self.dir.glob("*.jsonl")), reverse=True)
+
+
+class EventBus:
+    def __init__(self, log: ActivityLog | None = None):
+        self.log = log
+        self._subscribers: set[asyncio.Queue[Event]] = set()
+
+    def subscribe(self) -> asyncio.Queue[Event]:
+        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=500)
+        self._subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[Event]) -> None:
+        self._subscribers.discard(queue)
+
+    def emit(self, kind: str, node: str, request_id: str | None = None,
+             session_id: str | None = None, **data: Any) -> Event:
+        event = Event(kind=kind, node=node, data=data, request_id=request_id, session_id=session_id)
+        if self.log:
+            self.log.write(event)
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # a slow UI never blocks the brain
+        return event
+
+
+def new_id(prefix: str = "") -> str:
+    return f"{prefix}{uuid.uuid4().hex[:10]}"

@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "enabled": true,
+      "type": "stdio",
+      "command": "python",
+      "args": ["server/kb_server.py", "--bundle", "wiki"],
+      "cwd": "E:/Knowledge-Base",
+      "description": "Andrzej's personal library (OKF wiki). Read-only from the brain."
+    },
+    "google-calendar": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@cocal/google-calendar-mcp"],
+      "env": { "GOOGLE_OAUTH_CREDENTIALS": "C:/Users/andrz/.config/google-calendar-mcp/gcp-oauth.keys.json" },
+      "description": "Google Calendar. Needs an OAuth client JSON - see README."
+    },
+    "browser": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "description": "Browser automation for bookings (restaurants, appointments)."
+    }
+  }
+}

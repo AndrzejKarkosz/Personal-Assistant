@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alfred Brain</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three-spritetext@1.9.6/dist/three-spritetext.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1.77.0/dist/3d-force-graph.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot" id="live-dot"></span> Alfred <small>brain</small></div>
+  <div class="pills" id="pills"></div>
+</header>
+
+<main>
+  <!-- Conversation -->
+  <section class="panel convo">
+    <div class="panel-title">Rozmowa</div>
+    <div id="messages" class="messages"></div>
+    <div id="confirm" class="confirm hidden">
+      <div id="confirm-text"></div>
+      <div class="row"><button id="yes" class="primary">Tak</button><button id="no">Nie</button></div>
+    </div>
+    <div class="composer">
+      <button id="mic" class="mic" title="Kliknij lub przytrzymaj spację">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+      </button>
+      <form id="text-form"><input id="text" autocomplete="off" placeholder="Napisz albo przytrzymaj spację i mów…"></form>
+    </div>
+  </section>
+
+  <!-- Brain graph -->
+  <section class="panel graph-panel">
+    <div class="panel-title row between">
+      <span>Mózg <span class="muted" id="route-info"></span></span>
+      <button id="demo" title="Pokaż przepływ informacji na przykładowej rezerwacji">▶ Pokaż przepływ</button>
+    </div>
+    <div class="stage">
+      <div id="graph"></div>
+      <div id="node-info" class="node-info hidden"></div>
+      <div class="flow">
+        <div class="flow-title">Przepływ informacji</div>
+        <ol id="flow-steps"><li class="hint"><span>Powiedz coś albo kliknij „Pokaż przepływ”. Kliknij kulę, żeby zobaczyć, co robi. Przeciągnij, żeby obrócić mózg.</span></li></ol>
+      </div>
+    </div>
+    <div class="legend">
+      <span><i class="k core"></i>rdzeń</span><span><i class="k module"></i>moduł</span>
+      <span><i class="k cap"></i>możliwość</span><span><i class="k tool"></i>narzędzie</span>
+      <span><i class="k needs-ok"></i>wymaga zgody</span><span><i class="k skill"></i>umiejętność</span>
+      <span><i class="k mcp"></i>serwer</span><span><i class="k topic"></i>temat wiedzy</span>
+      <span><i class="k packet"></i>pakiet informacji</span>
+    </div>
+  </section>
+
+  <!-- Side tabs -->
+  <section class="panel side">
+    <nav class="tabs">
+      <button data-tab="tasks" class="active">Zadania</button>
+      <button data-tab="memory">Pamięć</button>
+      <button data-tab="map">Mapa</button>
+      <button data-tab="persona">Osobowość</button>
+      <button data-tab="modules">Moduły</button>
+      <button data-tab="log">Log</button>
+      <button data-tab="settings">Ustawienia</button>
+    </nav>
+    <div class="tab" id="tab-tasks">
+      <form id="task-form" class="stack">
+        <input name="title" placeholder="Nowe zadanie" required>
+        <div class="row">
+          <input name="due" type="datetime-local" title="Termin">
+          <input name="schedule" placeholder="cron, np. 0 8 * * 1-5" title="Powtarzanie">
+        </div>
+        <button class="primary">Dodaj</button>
+      </form>
+      <div class="row filter">
+        <select id="task-filter"><option value="open">otwarte</option><option value="done">zrobione</option><option value="all">wszystkie</option></select>
+      </div>
+      <div id="tasks"></div>
+    </div>
+    <div class="tab hidden" id="tab-memory">
+      <div class="row"><button id="close-session">Zamknij sesję i zapisz</button></div>
+      <h4>Briefing na start sesji</h4>
+      <pre id="briefing" class="mono"></pre>
+      <h4>Szukaj w pamięci</h4>
+      <form id="mem-search"><input id="mem-q" placeholder="np. restauracja"></form>
+      <div id="mem-results"></div>
+      <pre id="mem-page" class="mono hidden"></pre>
+    </div>
+    <div class="tab hidden" id="tab-map">
+      <div class="row between"><span class="muted" id="map-backend"></span><button id="map-rebuild">Przebuduj mapę</button></div>
+      <div id="map-counts" class="counts"></div>
+      <h4>Kategorie Jev (z mapy)</h4>
+      <ul id="jev-cats" class="jev"></ul>
+      <h4>Strony mapy (OKF)</h4>
+      <div id="map-crumbs" class="crumbs"></div>
+      <div id="map-page" class="md"></div>
+    </div>
+    <div class="tab hidden" id="tab-persona">
+      <form id="persona-form" class="stack">
+        <div class="row"><label class="field">Imię asystenta<input name="name"></label><label class="field">Twoje imię<input name="user_name"></label></div>
+        <div class="row"><label class="field">Zwrot (PL)<input name="address.pl"></label><label class="field">Zwrot (EN)<input name="address.en"></label></div>
+        <label class="field">Rola, charakter, sposób mówienia i zasady pracy (to jest prompt systemowy; {name}, {user}, {addr_pl}, {addr_en} zostaną podstawione)
+          <textarea name="body" class="body"></textarea></label>
+        <label class="field">Potwierdzenia na start (PL) — jedno na linię, {addr} = zwrot<textarea name="acks.pl" class="lines"></textarea></label>
+        <label class="field">Potwierdzenia na start (EN)<textarea name="acks.en" class="lines"></textarea></label>
+        <label class="field">Pytanie o zgodę (PL) — {summary} = opis akcji<input name="confirm.pl"></label>
+        <label class="field">Pytanie o zgodę (EN)<input name="confirm.en"></label>
+        <button class="primary">Zapisz osobowość</button>
+      </form>
+      <h4>Podgląd promptu</h4>
+      <pre id="persona-preview" class="mono"></pre>
+    </div>
+    <div class="tab hidden" id="tab-modules">
+      <form id="classify-form" class="stack">
+        <input id="classify-text" placeholder="Przetestuj router: wpisz zdanie">
+      </form>
+      <div id="classify-out"></div>
+      <div id="modules"></div>
+      <h4>Serwery MCP</h4>
+      <div id="mcp"></div>
+    </div>
+    <div class="tab hidden" id="tab-log">
+      <div class="row"><select id="log-day"></select><select id="log-kind">
+        <option value="">wszystko</option><option>classified</option><option>tool_call</option><option>answer</option>
+        <option>proactive_gate</option><option>error</option><option>session_closed</option></select></div>
+      <div id="log" class="log mono"></div>
+    </div>
+    <div class="tab hidden" id="tab-settings">
+      <form id="settings-form" class="stack"></form>
+    </div>
+  </section>
+</main>
+<script src="/static/brain3d.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

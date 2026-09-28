@@ -1,0 +1,17 @@
+id: research
+label: Web research and current information
+description: Looking things up on the internet - news, prices, opening hours, reviews, facts that change, comparing
+  options.
+examples:
+  - sprawdź jaka jutro pogoda w Krakowie
+  - znajdź dobrą włoską restaurację na Kazimierzu
+  - what's the latest on the Claude API pricing
+capabilities:
+  web:
+    label: Search and read the web
+    description: Web search and reading pages for current information.
+    tools: [web_search, web_fetch]
+    examples: ["jaka jutro pogoda?", "godziny otwarcia apteki", "latest news about X"]
+uses: [memory.remember, tasks.manage]
+effort: medium
+enabled: true

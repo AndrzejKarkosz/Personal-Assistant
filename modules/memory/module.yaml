@@ -1,0 +1,23 @@
+id: memory
+label: Our past conversations
+description: What we talked about before, what Alfred did in earlier sessions, what was decided, remember a
+  fact about me, forget or correct something.
+examples:
+  - o czym rozmawialiśmy wczoraj?
+  - co ustaliliśmy w sprawie wyjazdu?
+  - zapamiętaj, że nie jem mięsa
+  - what did you do while I was away
+capabilities:
+  recall:
+    label: Recall past sessions and facts
+    description: Search and read Alfred's own memory - session summaries, the change log, facts about the user.
+    tools: [memory_search, memory_read]
+    examples: ["o czym rozmawialiśmy wczoraj?", "co zrobiłeś pod moją nieobecność?"]
+  remember:
+    label: Remember a fact about the user
+    description: Store a durable fact - a person, place, preference or project.
+    tools: [memory_remember]
+    examples: ["zapamiętaj, że nie jem mięsa", "my sister's name is Ola"]
+uses: [tasks.manage]
+effort: low
+enabled: true

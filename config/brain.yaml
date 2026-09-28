@@ -1,0 +1,58 @@
+# Alfred brain configuration. Secrets live in .env, not here.
+
+assistant:
+  name: Alfred
+  user_name: Andrzej
+  # How Alfred addresses you in each language.
+  address: { pl: "szefie", en: "boss" }
+  default_language: pl        # used when the language of a request can't be detected
+  timezone: Europe/Warsaw
+
+llm:
+  # subscription: Claude Agent SDK through your logged-in Claude Code (Pro/Max plan, no per-token billing)
+  # api:          Anthropic Messages API with ANTHROPIC_API_KEY (billed per token)
+  backend: subscription
+
+map:
+  dir: brain_map               # OKF map of modules, capabilities, skills, tools, servers and topics
+  # Knowledge-library topics the router can pick directly (Jev "topic" question).
+  topic_sources:
+    - { server: knowledge-base, capability: knowledge.search, path: "E:/Knowledge-Base/wiki/topics" }
+
+models:
+  # The executor that actually does the work. Per-module overrides live in modules/*/module.yaml.
+  executor: claude-opus-5
+  executor_effort: medium     # low | medium | high  - lower is faster, better for voice
+  # Cheap model for the fallback classifier and for writing session summaries.
+  light: claude-haiku-4-5
+  max_tool_rounds: 8
+
+router:
+  jev_model: typesafe/jev-1.13
+  jev_url: https://thejevai.com/v1/systemone
+  timeout_s: 4.0
+  # Top module probability needed to route with confidence. Below `ask_below` Alfred asks a clarifying question.
+  confident_at: 0.6
+  ask_below: 0.3
+  # Load the most likely capabilities until their probabilities cover this share (max 3).
+  capability_coverage: 0.8
+
+voice:
+  stt_model: scribe_v2
+  tts_model: eleven_multilingual_v2
+  output_format: mp3_44100_128
+
+memory:
+  dir: data/memory             # OKF bundle with sessions, tasks, facts
+  session_idle_minutes: 15     # a pause longer than this closes the session and writes its summary
+  recall_sessions: 3           # how many recent session summaries go into the briefing
+
+proactive:
+  enabled: true
+  heartbeat_minutes: 30        # periodic check of due tasks
+  quiet_hours: ["23:00", "07:00"]
+
+logging:
+  dir: data/logs               # activity log, one JSONL file per day
+
+mcp_config: config/mcp.json
