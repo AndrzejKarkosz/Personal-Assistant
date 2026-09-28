@@ -7,8 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
+from brain import config
 from brain.config import Settings
 from brain.executor import MCPHub
 
@@ -72,6 +74,8 @@ class FakeAnthropic:
 def settings(tmp_path: Path, monkeypatch) -> Settings:
     for key in ("ANTHROPIC_API_KEY", "JEV_API_KEY", "ELEVENLABS_API_KEY"):
         monkeypatch.delenv(key, raising=False)
+    # UI overrides (data/settings.json) would leak the developer's local settings into tests - and back.
+    monkeypatch.setattr(config, "OVERRIDES_FILE", tmp_path / "settings.json")
     s = Settings.load()
     s.data["llm"] = {"backend": "api"}
     s.data["map"] = {"dir": str(tmp_path / "brain_map"), "topic_sources": []}
@@ -81,6 +85,16 @@ def settings(tmp_path: Path, monkeypatch) -> Settings:
     empty.write_text('{"mcpServers": {}}')
     s.data["mcp_config"] = str(empty)
     return s
+
+
+@pytest.fixture
+def http(monkeypatch):
+    """Answer every httpx.AsyncClient request with a handler: http(lambda request: httpx.Response(200))."""
+    real = httpx.AsyncClient
+
+    def install(handler):
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    return install
 
 
 @pytest.fixture

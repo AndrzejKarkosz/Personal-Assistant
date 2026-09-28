@@ -1,12 +1,16 @@
-from pathlib import Path
+import json
 
+import httpx
 import pytest
+from conftest import FakeAnthropic
 
 from brain.atlas import BrainMap, MapBuilder
+from brain.atlas.catalog import side_effect
 from brain.config import ROOT
 from brain.executor import MCPHub
+from brain.memory import okf
 from brain.modules import ModuleRegistry
-from brain.router import JevClient, Router
+from brain.router import JevClient, JevError, Router
 
 
 class FakeJev(JevClient):
@@ -106,3 +110,90 @@ async def test_yes_no_keywords(settings, brain_map):
     assert await router.is_yes("tak, dawaj", "?") is True
     assert await router.is_yes("nie, anuluj", "?") is False
     assert await router.is_yes("yes please", "?") is True
+
+
+async def test_jev_client_turns_every_failure_into_jev_error(http):
+    sent = []
+
+    def ok(request):
+        sent.append(request)
+        return httpx.Response(200, json={"answers": {"module": {"choice": "tasks"}}})
+
+    client = JevClient("key", "https://jev.test/v1", "typesafe/jev-1.13")
+    http(ok)
+    assert (await client.ask("state", {"q": {}}))["answers"]["module"]["choice"] == "tasks"
+    assert sent[0].headers["Authorization"] == "Bearer key"
+    assert json.loads(sent[0].content) == {"model": "typesafe/jev-1.13", "state": "state", "questions": {"q": {}}}
+
+    def down(request):
+        raise httpx.ConnectError("offline")
+
+    for handler in (lambda r: httpx.Response(500, text="boom"), lambda r: httpx.Response(200, json={}), down):
+        http(handler)
+        with pytest.raises(JevError):
+            await client.ask("state", {})
+    with pytest.raises(JevError):
+        await JevClient(None, "", "").ask("state", {})
+
+
+async def test_malformed_jev_answer_falls_back_to_claude(settings, brain_map):
+    route = await Router(brain_map, FakeJev({"module": {}}), settings, FakeAnthropic()).classify("przypomnij mi")
+    assert route.source == "llm" and route.module == "tasks" and route.capabilities == ["tasks.manage"]
+
+
+async def test_unclear_yes_no_goes_to_jev(settings, brain_map):
+    router = Router(brain_map, FakeJev({"yes": {"noul": 0.9}, "interrupt": {"noul": 0.2}}), settings)
+    assert await router.is_yes("w porządku", "?") is True
+    assert await router.should_interrupt("state") == 0.2
+    assert await Router(brain_map, FakeJev({"yes": {"noul": 0.5}}), settings).is_yes("hmm", "?") is None
+    offline = Router(brain_map, JevClient(None, "", ""), settings)
+    assert await offline.is_yes("w porządku", "?") is None
+    assert await offline.should_interrupt("state") == 1.0                  # no gate -> never swallow a reminder
+
+
+async def test_unknown_module_goes_to_smalltalk_and_asks(settings, brain_map):
+    jev = FakeJev({"module": {"choice": "ghost", "confidence": 0.2, "probabilities": {"ghost": 0.2}}})
+    route = await Router(brain_map, jev, settings).classify("???")
+    assert route.module == "smalltalk" and route.clarify and route.capabilities == []
+
+
+def test_side_effects_of_tools():
+    assert side_effect("confirm_action") == "guard"
+    assert side_effect("x__delete_event", {"destructive": True}) == "destructive"
+    assert side_effect("x__create_note", {"read_only": True}) == "read"
+    assert side_effect("x__create_note") == "write" and side_effect("x__list_notes") == "read"
+
+
+def test_map_overrides_disabled_modules_and_page_sandbox(tmp_path, brain_map):
+    root = tmp_path / "map"
+    for rel, key, value in (("tools/alfred/task-create.md", "confirm_override", True),
+                            ("modules/research.md", "enabled", False)):
+        meta, body = okf.read(root / rel)
+        meta[key] = value
+        okf.write(root / rel, meta, body)
+    brain_map.reload()
+    assert brain_map.needs_confirmation("task_create")
+    assert "research" not in brain_map.module_criteria() and "research.web" not in brain_map.capability_criteria()
+    assert brain_map.page("index.md").startswith("---")
+    with pytest.raises(ValueError):
+        brain_map.page("../mcp.json")
+
+
+def test_tools_of_an_offline_server_stay_on_the_map(tmp_path):
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"notes": {"command": "notes-server"}}}))
+
+    def build(status, tools):
+        hub = MCPHub(cfg)
+        hub.servers["notes"].status, hub.servers["notes"].tools = status, tools
+        MapBuilder(tmp_path / "map", ModuleRegistry(ROOT / "modules"), hub).build()
+        return BrainMap(tmp_path / "map")
+
+    online = build("ready", [{"name": "notes__delete_note", "description": "Delete a note", "input_schema": {
+        "type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}])
+    tool = online.tools["notes__delete_note"]
+    assert (tool["status"], tool["side_effect"], tool["params"]) == ("online", "write", ["id"])
+
+    offline = build("error", [])
+    assert offline.tools["notes__delete_note"]["status"] == "offline"   # remembered, but not offered to Claude
+    assert offline.servers["notes"]["status"] == "error"

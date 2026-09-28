@@ -1,6 +1,11 @@
 import asyncio
+from datetime import datetime
 
 from conftest import text_response, tool_response
+
+from brain.proactive import scheduler
+from brain.proactive.scheduler import in_quiet_hours
+from brain.voice.elevenlabs import Transcript
 
 
 def collect(brain):
@@ -107,3 +112,92 @@ async def test_proactive_gate_fires_due_task(make_brain):
     await brain.proactive.check_due()                 # fires once only
     assert not any(e.kind == "proactive_gate" for e in drain())
     assert brain.store.get_task(task.id) is not None
+
+
+async def test_audio_in_goes_through_speech_to_text(make_brain, monkeypatch):
+    brain, _ = make_brain([text_response("Dzień dobry, szefie.")])
+    drain = collect(brain)
+    assert await brain.handle_audio(b"audio") is None                      # no ElevenLabs key: nothing heard
+    assert [e.data["message"] for e in drain() if e.kind == "error"] == ["Nothing was transcribed."]
+
+    async def broken(audio, filename):
+        raise RuntimeError("STT down")
+
+    monkeypatch.setattr(brain.voice, "transcribe", broken)
+    assert await brain.handle_audio(b"audio") is None
+    assert [e.data["message"] for e in drain() if e.kind == "error"] == ["STT failed: STT down"]
+
+    async def heard(audio, filename):
+        return Transcript("hello Alfred, how are you", "en")
+
+    monkeypatch.setattr(brain.voice, "transcribe", heard)
+    assert await brain.handle_audio(b"audio") == "Dzień dobry, szefie."
+    assert brain.sessions.current.language == "en"
+
+
+async def test_start_and_stop(make_brain):
+    brain, _ = make_brain([text_response("Ok.")])
+    await brain.start(with_scheduler=False)
+    await brain.handle_text("co słychać", module_hint="smalltalk")
+    await brain.stop()
+    kinds = {r["kind"] for r in brain.bus.log.read()}
+    assert {"brain_start", "mcp_status", "map_built", "session_closed", "brain_stop"} <= kinds
+
+
+def test_graph_joins_the_pipeline_and_the_map(make_brain):
+    brain, _ = make_brain()
+    g = brain.graph()
+    ids = {n["id"] for n in g["nodes"]}
+    assert {"ears", "router", "executor", "module:tasks", "cap:tasks.manage", "tool:task_create", "mcp:alfred"} <= ids
+    assert all(e["source"] in ids and e["target"] in ids for e in g["edges"]) and g["backend"] == "api"
+
+
+def test_quiet_hours_window():
+    quiet = ["23:00", "07:00"]
+    assert in_quiet_hours(datetime(2026, 9, 28, 23, 30), quiet) and in_quiet_hours(datetime(2026, 9, 28, 6, 59), quiet)
+    assert not in_quiet_hours(datetime(2026, 9, 28, 7, 0), quiet)
+    assert in_quiet_hours(datetime(2026, 9, 28, 13, 0), ["12:00", "14:00"])
+    assert not in_quiet_hours(datetime(2026, 9, 28, 3, 0), []) and not in_quiet_hours(datetime(2026, 9, 28, 3, 0), None)
+
+
+async def test_proactive_respects_quiet_hours_the_gate_and_restarts(make_brain, monkeypatch):
+    brain, fake = make_brain([text_response("Szefie, faktura.")])
+    monkeypatch.setattr(scheduler, "in_quiet_hours", lambda now, quiet: True)
+    normal = brain.store.create_task("Podlać kwiaty", due="2020-01-01T09:00:00+01:00")
+    urgent = brain.store.create_task("Faktura", due="2020-01-01T09:00:00+01:00", priority="high")
+    drain = collect(brain)
+
+    await brain.proactive.check_due()
+    gates = {e.data["task"]: e.data["fired"] for e in drain() if e.kind == "proactive_gate"}
+    assert gates == {"Podlać kwiaty": False, "Faktura": True}              # only high priority breaks the silence
+
+    restarted = scheduler.ProactiveEngine(brain, brain.proactive.state_file)
+    assert f"{urgent.id}@{urgent.due}" in restarted._fired                  # fired reminders survive a restart
+
+    async def not_now(state):
+        return 0.1
+
+    monkeypatch.setattr(brain.router, "should_interrupt", not_now)
+    await brain.proactive.fire(normal.id, "schedule")
+    assert [e.data["fired"] for e in drain() if e.kind == "proactive_gate"] == [False]
+    brain.store.update_task(normal.id, status="done")
+    await brain.proactive.fire(normal.id, "schedule")                     # closed task: nothing to say
+    assert not drain()
+
+    await brain.proactive.heartbeat()
+    assert [e.data for e in drain() if e.kind == "heartbeat"] == [{"open_tasks": 1, "overdue": 1}]
+
+
+async def test_recurring_tasks_become_cron_jobs(make_brain):
+    brain, _ = make_brain()
+    daily = brain.store.create_task("Poranny brief", schedule="0 8 * * 1-5", module="calendar")
+    brain.store.create_task("Zepsuty cron", schedule="kiedyś tam")
+    brain.proactive.start()
+    try:
+        ids = {j["id"] for j in brain.proactive.status()}
+        assert ids == {"due-check", "idle-close", "heartbeat", f"task:{daily.id}"}   # the bad cron is skipped
+        brain.store.update_task(daily.id, status="done")
+        brain.proactive.sync_recurring()
+        assert f"task:{daily.id}" not in {j["id"] for j in brain.proactive.status()}
+    finally:
+        brain.proactive.shutdown()

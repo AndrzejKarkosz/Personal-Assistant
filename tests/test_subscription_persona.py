@@ -70,3 +70,35 @@ def test_persona_file_drives_prompt_and_phrases(settings, tmp_path, monkeypatch)
     assert persona.system_prompt(settings) == "# Role\nYou are Jarvis, assistant of Tony. Say sir. Keep {unknown} as is."
     assert persona.ack_phrase(settings, "pl") == "Już, panie."
     assert persona.confirm_prompt(settings, "en", "book it") == "May I: book it?"
+
+
+async def test_subscription_failures_are_spoken_not_raised(make_brain, monkeypatch):
+    brain, _ = make_brain()
+    ex = _executor(brain)
+    queue = brain.bus.subscribe()
+
+    async def not_logged_in(*, prompt, options):
+        raise RuntimeError("Claude Code is not logged in")
+        yield  # noqa - makes this an async generator like the real query()
+
+    monkeypatch.setattr(claude_agent_sdk, "query", not_logged_in)
+    result = await ex.run("hej", Route(module="smalltalk"), Session(), "r-1")
+    assert result.text == "Coś poszło nie tak po mojej stronie, szefie. Spróbuj proszę za chwilę."
+
+    async def out_of_turns(*, prompt, options):
+        yield claude_agent_sdk.AssistantMessage(content=[claude_agent_sdk.TextBlock(text="Szukam jeszcze...")],
+                                                model="m", usage={"input_tokens": 5, "output_tokens": 2},
+                                                stop_reason="tool_use")
+        yield claude_agent_sdk.ResultMessage(subtype="error_max_turns", duration_ms=1, duration_api_ms=1,
+                                             is_error=True, num_turns=9, session_id="s", errors=["max turns"])
+
+    monkeypatch.setattr(claude_agent_sdk, "query", out_of_turns)
+    result = await ex.run("hej", Route(module="smalltalk"), Session(), "r-2")
+    assert result.text == "Szukam jeszcze..."                              # the last thing Claude said
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    errors = [e.data["message"] for e in events if e.kind == "error"]
+    assert errors[0] == "RuntimeError: Claude Code is not logged in" and "error_max_turns" in errors[1]
+    assert any(e.kind == "llm_call" and e.data["usage"] == {"input": 5, "output": 2} for e in events)
