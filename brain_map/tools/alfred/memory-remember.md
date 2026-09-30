@@ -14,7 +14,7 @@ requires_confirmation: false
 status: online
 params: [category, title, content]
 tags: [tool, alfred]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # memory_remember
@@ -28,7 +28,6 @@ Server: [alfred](../../servers/alfred.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `category` | string | yes |  |
 | `title` | string | yes | Short name, e.g. 'Favourite restaurant' |

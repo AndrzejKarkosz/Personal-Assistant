@@ -6,6 +6,8 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import claude_agent_sdk
+import pytest
+from conftest import result
 
 from brain import config, llm
 from brain.config import Settings
@@ -26,12 +28,12 @@ def test_settings_dotted_access_paths_and_persisted_overrides(tmp_path, monkeypa
 
 
 def test_secrets_come_from_the_environment(monkeypatch):
-    for key in ("ANTHROPIC_API_KEY", "JEV_API_KEY", "ELEVENLABS_API_KEY"):
+    for key in ("JEV_API_KEY", "ELEVENLABS_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("JEV_API_KEY", "jev")
     monkeypatch.setenv("ELEVENLABS_VOICE_ID", "env-voice")
     s = Settings({})
-    assert s.status() == {"anthropic": False, "jev": True, "elevenlabs": False}
+    assert s.keys() == {"jev": True, "elevenlabs": False}
     assert s.voice_id == "env-voice"
     s.data["voice"] = {"voice_id": "ui-voice"}
     assert s.voice_id == "ui-voice"
@@ -64,46 +66,35 @@ def test_a_slow_subscriber_never_blocks_the_bus():
     assert queue.qsize() == 500
 
 
-def test_subscription_mode_hides_the_api_key(monkeypatch):
+def test_the_api_key_is_hidden_so_the_subscription_is_used(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    llm.prepare_environment(Settings({"llm": {"backend": "api"}}))
-    assert os.environ["ANTHROPIC_API_KEY"] == "sk-test"
-    llm.prepare_environment(Settings({}))
+    llm.hide_api_key()
     assert "ANTHROPIC_API_KEY" not in os.environ
 
 
-def test_light_client_per_backend(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert isinstance(llm.light_client(Settings({})), llm.SubscriptionClient)
-    assert llm.light_client(Settings({"llm": {"backend": "api"}})) is None
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert type(llm.light_client(Settings({"llm": {"backend": "api"}}))).__name__ == "AsyncAnthropic"
-
-
-async def test_subscription_client_speaks_the_messages_api(tmp_path, monkeypatch):
+async def test_ask_json_runs_a_bare_claude_code(tmp_path, monkeypatch):
     seen = {}
 
     async def fake_query(*, prompt, options):
         seen["prompt"], seen["options"] = prompt, options
         yield claude_agent_sdk.AssistantMessage(content=[claude_agent_sdk.TextBlock(text="myślę")], model="m")
-        yield claude_agent_sdk.ResultMessage(
-            subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1, session_id="s",
-            usage={"input_tokens": 7, "output_tokens": 3}, result="plain text", structured_output={"module": "tasks"})
+        yield result("plain text", structured={"module": "tasks"})
 
     monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
-    client = llm.SubscriptionClient(Settings({"memory": {"dir": str(tmp_path / "memory")}}))
+    s = Settings({"memory": {"dir": str(tmp_path / "memory")}, "models": {"light": "claude-haiku-4-5"}})
     schema = {"type": "object"}
-    resp = await client.messages.create(model="claude-haiku-4-5", system="route",
-                                        messages=[{"role": "user", "content": "hej"}],
-                                        output_config={"format": {"type": "json_schema", "schema": schema}})
-    assert json.loads(resp.content[0].text) == {"module": "tasks"}
-    assert (resp.usage.input_tokens, resp.usage.output_tokens) == (7, 3)
+    answer, usage = await llm.ask_json(s, "hej", schema, system="route")
+    assert answer == {"module": "tasks"} and (usage["input"], usage["output"]) == (100, 20)
     opts = seen["options"]
     assert opts.output_format == {"type": "json_schema", "schema": schema} and seen["prompt"] == "hej"
     assert opts.tools == [] and opts.setting_sources == [] and opts.cwd == str(tmp_path)
+    assert opts.model == "claude-haiku-4-5" and opts.system_prompt == "route"
 
-    plain = await client.messages.create(model="claude-haiku-4-5", messages=[{"role": "user", "content": "hej"}])
-    assert plain.content[0].text == "plain text"
+    async def no_json(*, prompt, options):
+        yield result("plain text")
+    monkeypatch.setattr(claude_agent_sdk, "query", no_json)
+    with pytest.raises(RuntimeError):
+        await llm.ask_json(s, "hej", schema)
 
 
 def test_subscription_status_reads_claude_auth(monkeypatch):

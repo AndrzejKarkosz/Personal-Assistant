@@ -10,16 +10,13 @@ assistant:
   # brak zapytań przez after_minutes -> Alfred wita się przed odpowiedzią (TTS, bez LLM)
   welcome_back: { after_minutes: 120, pl: "Witaj z powrotem, szefie.", en: "Welcome back, boss." }
 
-llm:
-  backend: subscription
-
 map:
   dir: brain_map
   topic_sources:
     - { server: knowledge-base, capability: knowledge.search, path: "E:/Knowledge-Base/wiki/topics" }
 
 models:
-  executor: claude-haiku-4-5
+  executor: claude-opus-5-5         # every module (a module.yaml may override with model: / effort:)
   executor_effort: medium
   light: claude-haiku-4-5
   max_tool_rounds: 8
@@ -44,7 +41,7 @@ router:
 voice:
   tts_enabled: true        # false -> Alfred answers without ElevenLabs (browser voice); listening (STT) unaffected
   stt_model: scribe_v2
-  tts_model: eleven_multilingual_v2
+  tts_model: eleven_flash_v2_5     # fast; eleven_multilingual_v2 = slower but more natural
   output_format: mp3_44100_128
   settings:
     speed: 1.1

@@ -16,7 +16,7 @@ requires_confirmation: false
 status: online
 params: [tasks]
 tags: [tool, alfred]
-timestamp: '2026-09-29T19:36:03+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # task_create
@@ -30,6 +30,5 @@ Server: [alfred](../../servers/alfred.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `tasks` | array | yes |  |

@@ -21,5 +21,4 @@ capabilities:
     examples: ["dodaj rutynę: w dni robocze o 7:30 poranny brief", "przesuń rutynę na 8:00", "usuń rutynę powitanie"]
     confirm: true
 uses: [memory.recall]
-effort: low
 enabled: true

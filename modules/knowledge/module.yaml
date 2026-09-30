@@ -19,6 +19,4 @@ capabilities:
     description: What is due for review, pending items, the health and audit of the library, sources behind pages.
     tools: ["knowledge-base__kb_due", "knowledge-base__kb_pending", "knowledge-base__kb_health", "knowledge-base__kb_audit", "knowledge-base__kb_source"]
     examples: ["co mam dziś do powtórki?", "what's pending in my curriculum", "skąd pochodzi ta strona?"]
-model: claude-sonnet-5
-effort: medium
 enabled: true

@@ -14,7 +14,7 @@ requires_confirmation: false
 status: online
 params: [query, limit]
 tags: [tool, alfred]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # memory_search
@@ -28,7 +28,6 @@ Server: [alfred](../../servers/alfred.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `query` | string | yes |  |
 | `limit` | integer |  |  |

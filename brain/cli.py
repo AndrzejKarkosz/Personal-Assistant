@@ -1,3 +1,4 @@
+"""Command line:  alfred serve  (web UI)  |  alfred chat  (talk in the terminal)  |  alfred classify "text"  (test routing)."""
 from __future__ import annotations
 
 import argparse

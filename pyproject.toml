@@ -4,17 +4,14 @@ version = "0.1.0"
 description = "Alfred - a voice-first personal assistant brain (Jev routing, Claude execution, OKF session memory)."
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=1.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "pydantic>=2.7",
-    "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "apscheduler>=3.10,<4",
     "mcp>=1.9",
-    "python-multipart>=0.0.9",
     "claude-agent-sdk>=0.2.159",
 ]
 
@@ -34,3 +31,4 @@ packages = ["brain"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["live: real Jev + Claude Code + MCP servers; run with ALFRED_LIVE=1 (see tests/test_live.py)"]

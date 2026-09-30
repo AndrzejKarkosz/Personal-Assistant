@@ -13,5 +13,4 @@ capabilities:
     description: Conversation, general knowledge and quick reasoning - no tools needed.
     tools: []
     examples: ["cześć", "dzięki", "ile to 15% z 240?"]
-effort: low
 enabled: true

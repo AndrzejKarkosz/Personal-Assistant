@@ -3,8 +3,8 @@ import functools
 
 import httpx
 
-from brain.voice import persona
-from brain.voice.elevenlabs import ElevenLabs
+from brain import persona
+from brain.voice import ElevenLabs
 
 
 async def test_voice_is_off_without_a_key(settings, tmp_path):
@@ -50,4 +50,4 @@ def test_language_detection_and_persona_defaults(settings, tmp_path, monkeypatch
     persona.save({}, "", path)
     monkeypatch.setattr(persona, "load", functools.partial(persona.load, path))
     assert persona.system_prompt(settings) == "You are Alfred, the personal assistant of Andrzej."
-    assert persona.confirm_prompt(settings, "pl", "wyślę maila") == "Zanim to zrobię: wyślę maila. Potwierdzasz?"
+    assert persona.confirm_prompt("pl", "wyślę maila") == "Zanim to zrobię: wyślę maila. Potwierdzasz?"

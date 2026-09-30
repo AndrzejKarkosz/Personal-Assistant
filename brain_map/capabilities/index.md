@@ -1,10 +1,11 @@
 ---
 {type: Index, title: Capabilities, description: Groups of tools - the router's second
-    question. Only the chosen capabilities' tools are given to Claude., timestamp: '2026-09-25T14:22:57+02:00'}
+    question. Only the chosen capabilities' tools are given to Claude., timestamp: '2026-09-30T13:14:24+02:00'}
 ---
 
 # Capabilities
 Groups of tools - the router's second question. Only the chosen capabilities' tools are given to Claude.
+
 * [Operate a web browser](bookings.browse.md) - Open booking pages, read them, fill in forms, click through availability.
 * [Ask the user before an irreversible step](bookings.confirm.md) - Spoken yes/no before submitting a booking, payment or form.
 * [Read the calendar](calendar.read.md) - List, search and open events, check free/busy time and the current time.
@@ -16,3 +17,4 @@ Groups of tools - the router's second question. Only the chosen capabilities' to
 * [Search and read the web](research.web.md) - Web search and reading pages for current information.
 * [Talk without tools](smalltalk.chat.md) - Conversation, general knowledge and quick reasoning - no tools needed.
 * [Manage tasks and reminders](tasks.manage.md) - Create a task or reminder (one-off due time or recurring cron), list open tasks, change status, add notes.
+* [Manage routines](tasks.routines.md) - Create, change or remove Alfred's routines - prompts he runs by himself on a schedule (cron) or when the app starts (@st

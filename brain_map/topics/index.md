@@ -1,10 +1,11 @@
 ---
 {type: Index, title: Topics, description: What the knowledge library covers - lets
-    Jev route by subject., timestamp: '2026-09-25T14:22:57+02:00'}
+    Jev route by subject., timestamp: '2026-09-30T13:14:24+02:00'}
 ---
 
 # Topics
 What the knowledge library covers - lets Jev route by subject.
+
 * [Databricks](knowledge-base/databricks.md) - The lakehouse platform Delta Lake came from — Spark-first, notebook-centred, governed by Unity Catalog.
 * [Learning science](knowledge-base/learning-science.md) - The evidence behind how this wiki teaches — why testing beats rereading, why spacing works, and why the techniques that 
 * [Microsoft Fabric](knowledge-base/microsoft-fabric.md) - Microsoft's unified SaaS analytics platform — OneLake as the single store, with lakehouse, warehouse, eventhouse and Pow

@@ -20,5 +20,4 @@ capabilities:
     examples: ["dodaj spotkanie w poniedziałek o 10", "przesuń spotkanie na piątek", "cancel tomorrow's call"]
     confirm: true
 uses: [tasks.manage, memory.recall, bookings.confirm]
-effort: low
 enabled: true

@@ -1,17 +1,17 @@
 ---
 type: Claude server tools
 title: anthropic
-description: Tools executed by Anthropic's servers during a Claude request.
+description: Tools Claude runs itself during a request (web search and fetch).
 id: anthropic
 status: ready
 tools: [web_search, web_fetch]
 tags: [server, server]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # anthropic
 
-Tools executed by Anthropic's servers during a Claude request.
+Tools Claude runs itself during a request (web search and fetch).
 
 Status: **ready**
 

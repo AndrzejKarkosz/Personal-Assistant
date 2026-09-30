@@ -15,7 +15,7 @@ requires_confirmation: true
 status: online
 params: [account, calendarId, timeZone, sendUpdates, events]
 tags: [tool, google-calendar]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # create-events
@@ -29,7 +29,6 @@ Server: [google-calendar](../../servers/google-calendar.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `account` | string |  | Default account for all events. Individual events can override this. |
 | `calendarId` | string |  | Default calendar ID for all events (use 'primary' for the main calendar). Individual events can override this. Defaults to 'primary' if not specified. |

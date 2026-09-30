@@ -16,7 +16,7 @@ requires_confirmation: false
 status: online
 params: [id]
 tags: [tool, knowledge-base]
-timestamp: '2026-09-28T18:45:56+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # kb_read
@@ -30,6 +30,5 @@ Server: [knowledge-base](../../servers/knowledge-base.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `id` | string | yes | Page id, e.g. concepts/star-schema. |

@@ -1,17 +1,20 @@
 ---
 {type: Index, title: Tools, description: 'Every tool the brain can call, by server.',
-  timestamp: '2026-09-29T19:36:03+02:00'}
+  timestamp: '2026-09-30T13:14:24+02:00'}
 ---
 
 # Tools
 Every tool the brain can call, by server.
+
 * [confirm_action](alfred/confirm-action.md) - Ask the user for a spoken yes/no before an irreversible step that has no dedicated tool (e.g. pressing the final 'Book' 
 * [memory_read](alfred/memory-read.md) - Read one page of Alfred's memory by the path returned from memory_search (e.g. 'sessions/2026/09/s-....md', 'tasks/<id>.
 * [memory_remember](alfred/memory-remember.md) - Store a durable fact about the user (a person, place, preference or project) for future sessions.
 * [memory_search](alfred/memory-search.md) - Search Alfred's own memory (past sessions, tasks, facts about the user) by keywords. Returns titles, descriptions and pa
+* [routine_delete](alfred/routine-delete.md) - Remove a routine by its id.
+* [routine_save](alfred/routine-save.md) - Create a routine or change an existing one (same id): a prompt Alfred runs by himself on a schedule. Only for routines -
 * [task_create](alfred/task-create.md) - Create tasks or reminders Alfred should do or remind about later. Always pass a `tasks` list - several tasks go in ONE c
 * [task_list](alfred/task-list.md) - List tasks Alfred tracks for the user. status: open (default), all, or one status.
-* [task_update](alfred/task-update.md) - Update a task: change status (todo, in_progress, waiting, done, cancelled), due date, schedule, category, or add a progr
+* [task_update](alfred/task-update.md) - Update a task: change status (todo, in_progress, waiting, done, cancelled), due date, schedule, category, title, or add 
 * [web_fetch](anthropic/web-fetch.md) - Fetch and read a web page by URL.
 * [web_search](anthropic/web-search.md) - Search the web for current information.
 * [create-event](google-calendar/create-event.md) - Create a new calendar event.

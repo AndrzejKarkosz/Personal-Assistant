@@ -39,32 +39,35 @@ Without ElevenLabs the UI uses the browser's speech recognition and voice.
 
 ## How it thinks
 
+Start reading at `brain/pipeline.py` → `Brain.handle_text()`: it is the whole story of one request, top to bottom.
+
 | Step | Where | What happens |
 |---|---|---|
-| Listen | `brain/voice/elevenlabs.py` | Scribe transcribes the recording and detects PL/EN |
-| Classify | `brain/router/` | **one** Jev call over the categories of the **brain map**: `module`, `capability`, `skill`, `topic` (choices), `urgency` (score), `acts_on_world` and `needs_history` (noul). A close call loads the runner-up module too; a very unsure one makes Alfred ask. |
-| Acknowledge | `brain/voice/persona.py` | a short phrase in your language, spoken at once (cached audio) |
-| Execute | `brain/executor/` | Claude sees only the tools of the chosen capabilities (plus the skill's and "always" ones), the module prompt and the chosen skill. It runs on your **subscription** through the Claude Agent SDK (`agent.py`), or on the API (`claude.py`). |
-| Confirm | `brain/executor/guard.py` | tools in a `confirm: true` capability, destructive tools and `confirm_action` wait for your spoken "tak" / "nie" |
-| Speak | `brain/voice/elevenlabs.py` | the answer, 1–3 sentences written to be heard |
-| Remember | `brain/memory/` | turns are kept in the session; after 15 min idle the session is summarised into an OKF page |
+| Listen | `brain/voice.py` | Scribe transcribes the recording and detects PL/EN |
+| Check | `brain/router.py` | the shield asks **only Jev** whether this is a prompt injection. Nothing goes further until it passes; if Jev does not answer, Alfred does nothing (only an error in the log) |
+| Classify | `brain/router.py` | **one** Jev call over the categories of the **brain map**: `module`, `capability`, `skill`, `topic` (choices), `urgency` (score), `acts_on_world` and `needs_history` (noul). A close call loads the runner-up module too; a very unsure one makes Alfred ask. |
+| Execute | `brain/executor.py` | Claude sees only the tools of the chosen capabilities (plus the skill's and "always" ones), the module prompt and the chosen skill |
+| Confirm | `brain/executor.py` (`Guard`) | tools in a `confirm: true` capability, destructive tools and `confirm_action` wait for your spoken "tak" / "nie" |
+| Speak | `brain/voice.py` | the answer, 1–3 sentences written to be heard |
+| Remember | `brain/memory.py` | turns are kept in the session; after 15 min idle the session is summarised into an OKF page |
 
-## Claude account: subscription or API
+The other files: `app.py` (web server + API for the UI), `cli.py` (command line), `config.py` (settings),
+`events.py` (event bus + log), `llm.py` (Claude calls), `persona.py` (who Alfred is), `modules.py` (loads
+`modules/`), `tools.py` (Alfred's own tools), `mcp_hub.py` (MCP servers), `atlas.py` (brain map),
+`scheduler.py` (reminders and routines), `okf.py` (Markdown files with a YAML header). Each file starts with a
+short note saying what it does.
 
-`config/brain.yaml` → `llm.backend`:
+## Claude account: your subscription
 
-- **`subscription`** (default): the Claude Agent SDK runs your logged-in Claude Code, so requests count against
-  your Pro/Max plan limits, not API billing. Alfred's tools are passed in as an in-process MCP server. Claude
-  Code's own tools (Bash, file editing…) are switched off; only WebSearch/WebFetch stay on, and only when the
-  route needs them. No `CLAUDE.md`, hooks or settings are loaded. If an `ANTHROPIC_API_KEY` is set, it is
-  ignored in this mode, so the plan is always used.
-- **`api`**: the Anthropic Messages API with `ANTHROPIC_API_KEY`, billed per token, with prompt caching.
-
-Each request starts a Claude Code process, which adds roughly 1–2 s compared with the API.
+The Claude Agent SDK runs your logged-in Claude Code, so requests count against your Pro/Max plan limits, not
+API billing. Alfred's tools are passed in as an in-process MCP server. Claude Code's own tools (Bash, file
+editing…) are switched off; only WebSearch/WebFetch stay on, and only when the route needs them. No
+`CLAUDE.md`, hooks or settings are loaded. An `ANTHROPIC_API_KEY` in the environment is ignored, so the plan is
+always used. Each request starts a Claude Code process, which adds roughly 1–2 s.
 
 ## Brain map: what the brain is connected to (`brain_map/`, OKF)
 
-`brain/atlas` compiles `modules/*/module.yaml`, the skills, the **live** tool lists of the MCP servers and the
+`brain/atlas.py` compiles `modules/*/module.yaml`, the skills, the **live** tool lists of the MCP servers and the
 topics of your knowledge library into an OKF bundle. It is rebuilt at every start, from the **Mapa** tab, or
 with `POST /api/map/rebuild`.
 

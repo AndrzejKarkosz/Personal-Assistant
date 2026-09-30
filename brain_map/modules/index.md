@@ -1,10 +1,11 @@
 ---
 {type: Index, title: Modules, description: The brain's lobes. The router's first question
-    picks one., timestamp: '2026-09-28T18:43:45+02:00'}
+    picks one., timestamp: '2026-09-30T13:14:24+02:00'}
 ---
 
 # Modules
 The brain's lobes. The router's first question picks one.
+
 * [Reservations and bookings](bookings.md) - Booking a table in a restaurant, an appointment, tickets or a service; checking availability.
 * [Calendar and schedule](calendar.md) - Meetings, events, appointments, free time, what is planned for a day or week; creating, moving or cancelling events.
 * [Personal knowledge library](knowledge.md) - Questions answered from the user's own knowledge base (notes, concepts, topics, courses, sources, what he has learned or

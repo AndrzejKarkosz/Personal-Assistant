@@ -11,10 +11,10 @@ servers: [alfred]
 examples: ['o czym rozmawialiśmy wczoraj?', 'co ustaliliśmy w sprawie wyjazdu?', 'zapamiętaj,
     że nie jem mięsa', what did you do while I was away]
 enabled: true
-model: claude-sonnet-5
-effort: low
+model: null
+effort: null
 tags: [module]
-timestamp: '2026-09-29T09:45:34+02:00'
+timestamp: '2026-09-30T17:50:37+02:00'
 ---
 
 # Our past conversations

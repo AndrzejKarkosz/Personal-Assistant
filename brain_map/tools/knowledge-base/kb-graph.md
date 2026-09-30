@@ -16,7 +16,7 @@ requires_confirmation: false
 status: online
 params: [id, top]
 tags: [tool, knowledge-base]
-timestamp: '2026-09-28T18:45:56+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # kb_graph
@@ -30,7 +30,6 @@ Server: [knowledge-base](../../servers/knowledge-base.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `id` | string |  | Omit to get hubs instead. |
 | `top` | integer |  |  |

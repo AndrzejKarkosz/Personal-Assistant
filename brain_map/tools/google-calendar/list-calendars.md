@@ -13,7 +13,7 @@ requires_confirmation: false
 status: online
 params: [account]
 tags: [tool, google-calendar]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # list-calendars
@@ -27,6 +27,5 @@ Server: [google-calendar](../../servers/google-calendar.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `account` | any |  | Account nickname(s) to query (e.g., 'work' or ['work', 'personal']). Omit to query all accounts. |

@@ -14,7 +14,7 @@ requires_confirmation: false
 status: online
 params: [account, timeZone]
 tags: [tool, google-calendar]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # get-current-time
@@ -28,7 +28,6 @@ Server: [google-calendar](../../servers/google-calendar.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `account` | string |  | Account nickname (e.g., 'work'). Optional if only one account connected. |
 | `timeZone` | string |  | IANA timezone (e.g., 'America/Los_Angeles'). Defaults to calendar's timezone. |

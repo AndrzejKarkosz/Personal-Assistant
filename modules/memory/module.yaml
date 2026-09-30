@@ -19,6 +19,4 @@ capabilities:
     tools: [memory_remember]
     examples: ["zapamiętaj, że nie jem mięsa", "my sister's name is Ola"]
 uses: [tasks.manage]
-model: claude-sonnet-5
-effort: low
 enabled: true

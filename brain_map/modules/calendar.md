@@ -12,9 +12,9 @@ examples: ['co mam jutro w kalendarzu?', przesuń spotkanie z Tomkiem na piątek
     on my schedule this week, add a dentist appointment on Monday at 10]
 enabled: true
 model: null
-effort: low
+effort: null
 tags: [module]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-09-30T17:50:37+02:00'
 ---
 
 # Calendar and schedule

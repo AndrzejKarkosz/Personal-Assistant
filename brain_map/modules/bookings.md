@@ -12,9 +12,9 @@ examples: [zarezerwuj stolik dla dwóch na piątek na 19, book a haircut next we
   sprawdź czy są bilety do kina na sobotę]
 enabled: true
 model: null
-effort: medium
+effort: null
 tags: [module]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-09-30T17:50:37+02:00'
 ---
 
 # Reservations and bookings

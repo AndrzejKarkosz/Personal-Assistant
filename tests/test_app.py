@@ -5,14 +5,13 @@ import shutil
 import sys
 
 import pytest
-from conftest import text_response, tool_response
 from fastapi.testclient import TestClient
 
 from brain import config
 from brain.config import ROOT
-from brain.executor.mcp_hub import ServerState
+from brain import persona
+from brain.mcp_hub import ServerState
 from brain.modules import ModuleRegistry
-from brain.voice import persona
 
 
 @pytest.fixture
@@ -27,9 +26,9 @@ def api(make_brain, monkeypatch):
 def test_status_graph_modules_and_map(api):
     client, brain, _ = api
     status = client.get("/api/status").json()
-    assert status["backend"] == "api" and status["session"] is None and status["pending_confirmation"] is None
+    assert status["backend"] == "subscription" and status["session"] is None and status["pending_confirmation"] is None
     graph = client.get("/api/graph").json()
-    assert graph["backend"] == "api" and {"repo", "test", "persona"} <= {n["kind"] for n in graph["nodes"]}
+    assert graph["backend"] == "subscription" and {"repo", "test", "persona"} <= {n["kind"] for n in graph["nodes"]}
     assert {"source": "test:test_router", "target": "repo:router", "rel": "tests"} in graph["edges"]
 
     modules = {m["id"]: m for m in client.get("/api/modules").json()}
@@ -71,7 +70,7 @@ def test_persona_roundtrip(api, tmp_path, monkeypatch):
 
 def test_classify_ask_and_the_session(api):
     client, brain, fake = api
-    fake.messages.script.append(text_response("Dzień dobry, szefie."))
+    fake.script.append("Dzień dobry, szefie.")
     route = client.post("/api/classify", json={"text": "przypomnij mi jutro"}).json()
     assert route["module"] == "tasks" and route["source"] == "llm"
     assert client.post("/api/ask", json={"text": "cześć"}).json() == {"answer": "Dzień dobry, szefie."}
@@ -163,8 +162,8 @@ def test_ui_and_its_assets_are_served(api):
 
 def test_websocket_streams_events_and_takes_answers(api):
     client, brain, fake = api
-    fake.messages.script += [tool_response("confirm_action", {"summary": "Stolik w Nolicie o 19"}),
-                             text_response("Zarezerwowane.")]
+    fake.script += [("tool", "confirm_action", {"summary": "Stolik w Nolicie o 19"}), "Zarezerwowane."]
+    fake.routed.update(module="bookings", capabilities=["bookings.browse"])
 
     def until(ws, kind):
         while (event := ws.receive_json())["kind"] != kind:
@@ -189,7 +188,7 @@ def test_cli_classify_chat_and_serve(make_brain, monkeypatch, capsys):
 
     from brain import cli, pipeline
 
-    brain, _ = make_brain([text_response("Dzień dobry, szefie.")])
+    brain, _ = make_brain("Dzień dobry, szefie.")
     monkeypatch.setattr(pipeline, "Brain", lambda: brain)
 
     monkeypatch.setattr(sys, "argv", ["alfred", "classify", "przypomnij mi jutro"])

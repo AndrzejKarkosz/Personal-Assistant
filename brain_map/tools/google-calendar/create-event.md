@@ -17,7 +17,7 @@ params: [account, calendarId, eventId, summary, description, start, end, timeZon
   extendedProperties, attachments, source, calendarsToCheck, duplicateSimilarityThreshold,
   allowDuplicates, eventType, focusTimeProperties, outOfOfficeProperties, workingLocationProperties]
 tags: [tool, google-calendar]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # create-event
@@ -31,7 +31,6 @@ Server: [google-calendar](../../servers/google-calendar.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `account` | string |  | Account nickname (e.g., 'work'). Optional if only one account connected. |
 | `calendarId` | string | yes | ID of the calendar (use 'primary' for the main calendar) |

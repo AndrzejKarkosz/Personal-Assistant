@@ -2,13 +2,11 @@ import json
 
 import httpx
 import pytest
-from conftest import FakeAnthropic
 
-from brain.atlas import BrainMap, MapBuilder
-from brain.atlas.catalog import side_effect
+from brain import okf
+from brain.atlas import BrainMap, build_map, side_effect
 from brain.config import ROOT
-from brain.executor import MCPHub
-from brain.memory import okf
+from brain.mcp_hub import MCPHub
 from brain.modules import ModuleRegistry
 from brain.router import JevClient, JevError, Router
 
@@ -32,8 +30,8 @@ def brain_map(tmp_path) -> BrainMap:
     topics.mkdir()
     (topics / "spanish.md").write_text("---\ntype: Topic\ntitle: Spanish\ndescription: Learning Spanish\n---\n# Spanish\n",
                                        encoding="utf-8")
-    MapBuilder(tmp_path / "map", ModuleRegistry(ROOT / "modules"), MCPHub(empty),
-               [{"server": "knowledge-base", "capability": "knowledge.search", "path": str(topics)}]).build()
+    build_map(tmp_path / "map", ModuleRegistry(ROOT / "modules"), MCPHub(empty),
+              [{"server": "knowledge-base", "capability": "knowledge.search", "path": str(topics)}])
     return BrainMap(tmp_path / "map")
 
 
@@ -42,7 +40,7 @@ def test_registry_loads_capabilities_and_skills():
     assert {"calendar", "knowledge", "tasks", "bookings", "smalltalk"} <= set(reg.modules)
     assert reg.skill("bookings.restaurant-table").uses[0] == "memory.recall"
     assert reg.capability("calendar.write").confirm
-    assert "tasks.manage" in [c.id for c in reg.module_capabilities("calendar")]
+    assert "tasks.manage" in reg.modules["calendar"].uses
 
 
 def test_map_relations(brain_map):
@@ -64,7 +62,7 @@ def test_rebuild_keeps_curation_and_logs_changes(tmp_path, brain_map):
     text = page.read_text(encoding="utf-8").replace("available:", "examples_extra: [nie zapomnij o fakturze]\navailable:")
     page.write_text(text + "\n## Notes\nKeep reminders short.\n", encoding="utf-8")
     empty = tmp_path / "mcp.json"
-    MapBuilder(tmp_path / "map", ModuleRegistry(ROOT / "modules"), MCPHub(empty)).build()
+    build_map(tmp_path / "map", ModuleRegistry(ROOT / "modules"), MCPHub(empty))
     kept = page.read_text(encoding="utf-8")
     assert "nie zapomnij o fakturze" in kept and "Keep reminders short." in kept
     assert "removed topics/knowledge-base/spanish.md" in (tmp_path / "map" / "log.md").read_text(encoding="utf-8")
@@ -150,8 +148,9 @@ async def test_jev_client_turns_every_failure_into_jev_error(http):
         await JevClient(None, "", "").ask("state", {})
 
 
-async def test_malformed_jev_answer_falls_back_to_claude(settings, brain_map):
-    route = await Router(brain_map, FakeJev({"module": {}}), settings, FakeAnthropic()).classify("przypomnij mi")
+async def test_malformed_jev_answer_falls_back_to_claude(settings, brain_map, claude):
+    claude.online = True
+    route = await Router(brain_map, FakeJev({"module": {}}), settings).classify("przypomnij mi")
     assert route.source == "llm" and route.module == "tasks" and route.capabilities == ["tasks.manage"]
 
 
@@ -200,7 +199,7 @@ def test_tools_of_an_offline_server_stay_on_the_map(tmp_path):
     def build(status, tools):
         hub = MCPHub(cfg)
         hub.servers["notes"].status, hub.servers["notes"].tools = status, tools
-        MapBuilder(tmp_path / "map", ModuleRegistry(ROOT / "modules"), hub).build()
+        build_map(tmp_path / "map", ModuleRegistry(ROOT / "modules"), hub)
         return BrainMap(tmp_path / "map")
 
     online = build("ready", [{"name": "notes__delete_note", "description": "Delete a note", "input_schema": {

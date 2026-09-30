@@ -17,5 +17,4 @@ capabilities:
     tools: [confirm_action]
     always: true
 uses: [research.web, calendar.write, memory.recall, memory.remember, tasks.manage]
-effort: medium
 enabled: true

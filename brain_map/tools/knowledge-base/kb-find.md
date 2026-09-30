@@ -16,7 +16,7 @@ requires_confirmation: false
 status: online
 params: [query, type, tag, status, limit]
 tags: [tool, knowledge-base]
-timestamp: '2026-09-28T18:45:56+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # kb_find
@@ -30,7 +30,6 @@ Server: [knowledge-base](../../servers/knowledge-base.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `query` | string | yes | Natural-language question or keywords. |
 | `type` | string |  | Restrict to one OKF type, e.g. Concept. |

@@ -6,7 +6,7 @@ id: browser
 status: disabled
 tools: []
 tags: [server, mcp]
-timestamp: '2026-09-25T14:19:13+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # browser
@@ -18,3 +18,4 @@ Status: **disabled**
 Runs: `npx -y @playwright/mcp@latest`
 
 ## Tools
+- no tools discovered yet (server not connected)

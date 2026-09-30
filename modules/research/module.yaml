@@ -13,6 +13,4 @@ capabilities:
     tools: [web_search, web_fetch]
     examples: ["jaka jutro pogoda?", "godziny otwarcia apteki", "latest news about X"]
 uses: [memory.remember, tasks.manage]
-model: claude-sonnet-5
-effort: medium
 enabled: true

@@ -797,7 +797,7 @@ $("#log-kind").onchange = loadLog;
 
 // Settings
 const FIELDS = [
-  ["llm.backend", "Konto Claude: subscription (Twoja subskrypcja) / api (tokeny)"], ["assistant.default_language", "Domyślny język (pl/en)"],
+  ["assistant.default_language", "Domyślny język (pl/en)"],
   ["models.executor", "Model wykonawczy"], ["models.executor_effort", "Wysiłek (low/medium/high)"],
   ["models.light", "Model lekki"], ["router.confident_at", "Próg pewności routera"],
   ["router.ask_below", "Dopytaj poniżej"], ["voice.voice_id", "ElevenLabs voice ID"],

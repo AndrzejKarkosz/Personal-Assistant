@@ -15,7 +15,7 @@ requires_confirmation: false
 status: online
 params: [summary]
 tags: [tool, alfred]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # confirm_action
@@ -29,6 +29,5 @@ Server: [alfred](../../servers/alfred.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `summary` | string | yes | One sentence: exactly what will happen |

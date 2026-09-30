@@ -2,17 +2,15 @@ import json
 import sys
 import textwrap
 
-import anthropic
-import httpx
-from conftest import FakeBlock, text_response, tool_response
 
-from brain.atlas import BrainMap, MapBuilder
+from brain import mcp_hub, tools
+from brain.atlas import BrainMap, build_map
 from brain.config import ROOT
 from brain.events import EventBus
-from brain.executor import ApiExecutor, Guard, MCPHub, builtin, mcp_hub
-from brain.memory import MemoryStore, Session
+from brain.executor import Guard
+from brain.mcp_hub import MCPHub
+from brain.memory import MemoryStore
 from brain.modules import ModuleRegistry
-from brain.router import Route
 
 
 async def test_guard_treats_silence_as_no():
@@ -23,19 +21,18 @@ async def test_guard_treats_silence_as_no():
 
 
 async def test_builtin_memory_and_task_tools(tmp_path):
-    h = builtin.make_handlers(MemoryStore(tmp_path))
+    h = tools.make_handlers(MemoryStore(tmp_path))
     saved = await h["memory_remember"]({"category": "people", "title": "Mama", "content": "dzwoni w niedziele"}, "s-1")
     assert saved == "Remembered in facts/people/mama.md"
     hits = json.loads(await h["memory_search"]({"query": "niedziele"}, None))
     assert hits[0]["path"] == "facts/people/mama.md"
     assert "dzwoni" in await h["memory_read"]({"path": hits[0]["path"]}, None)
 
-    task_id = (await h["task_create"]({"title": "Faktura", "due": "2030-01-01T09:00:00+01:00"}, "s-1")).split()[-1]
+    task_id = (await h["task_create"]({"tasks": [{"title": "Faktura", "due": "2030-01-01T09:00:00+01:00"}]}, "s-1")).split()[-1]
     listed = json.loads(await h["task_list"]({}, None))
     assert [t["id"] for t in listed] == [task_id] and "history" not in listed[0]
     assert (await h["task_update"]({"task_id": task_id, "status": "waiting"}, None)).endswith("(still open)")
     assert await h["task_update"]({"task_id": task_id, "status": "done"}, None) == f"Task {task_id} is now done"
-    assert [t["name"] for t in builtin.select(["task_*"])] == ["task_list", "task_create", "task_update"]
 
     many = await h["task_create"]({"tasks": [{"title": "Fryzjer"}, {"title": "Trening", "category": "Reszta"}]}, "s-1")
     assert many.startswith("Created tasks ") and len(json.loads(await h["task_list"]({}, None))) == 2
@@ -43,7 +40,7 @@ async def test_builtin_memory_and_task_tools(tmp_path):
 
 async def test_task_and_routine_tools_refuse_what_went_wrong_on_2026_09_29(tmp_path):
     import pytest
-    h = builtin.make_handlers(MemoryStore(tmp_path / "mem"), tmp_path / "routines.yaml")
+    h = tools.make_handlers(MemoryStore(tmp_path / "mem"), tmp_path / "routines.yaml")
     with pytest.raises(ValueError, match="in the past"):  # "reminder today 17:00" said at 21:09
         await h["task_create"]({"tasks": [{"title": "Merge request", "due": "2020-09-29T17:00:00+02:00"}]}, "s")
     with pytest.raises(ValueError, match="timezone"):
@@ -87,75 +84,45 @@ def test_mcp_results_are_compacted():
     assert mcp_hub.compact("plain text", {"etag"}) == "plain text"
 
 
-async def test_without_an_api_key_alfred_says_so(make_brain):
-    brain, _ = make_brain()
-    ex = ApiExecutor(None, brain.settings, brain.registry, brain.map, brain.hub, brain.store, brain.guard, brain.bus)
-    result = await ex.run("hej", Route(module="smalltalk"), Session(), "r-1")
-    assert "ANTHROPIC_API_KEY" in result.text
-
-
-async def test_api_errors_become_a_spoken_apology(make_brain):
-    brain, fake = make_brain()
-
-    async def down(**_):
-        raise anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
-
-    fake.messages.create = down
-
-    async def clean(*_):
-        return {"breach": False, "probability": None, "source": "llm", "ms": 0}
-    brain.router.is_injection = clean
+async def test_when_claude_is_down_alfred_apologises(make_brain):
+    brain, claude = make_brain()
+    claude.online = False
     queue = brain.bus.subscribe()
-    answer = await brain.handle_text("co słychać", module_hint="smalltalk")
+    answer = await brain.handle_text("co słychać", source="routine", module_hint="smalltalk")   # no shield
     assert answer == "Coś poszło nie tak po mojej stronie, szefie. Spróbuj proszę za chwilę."
-    kinds = []
-    while not queue.empty():
-        kinds.append(queue.get_nowait().kind)
+    kinds = [queue.get_nowait().kind for _ in range(queue.qsize())]
     assert "error" in kinds and "answer" in kinds
 
 
-async def test_refusal_is_answered_politely(make_brain):
-    brain, _ = make_brain([text_response("", stop="refusal")])
-    assert await brain.handle_text("coś złego", module_hint="smalltalk") == "Niestety, z tym nie mogę pomóc."
-
-
 async def test_tool_errors_go_back_to_claude(make_brain):
-    calls = tool_response("task_update", {"task_id": "nope"}, call_id="a")
-    calls.content += [FakeBlock("tool_use", id="b", name="task_list", input={}),
-                      FakeBlock("tool_use", id="c", name="ghost_tool", input={})]
-    brain, fake = make_brain([calls, text_response("Nie ma takiego zadania.")])
+    brain, claude = make_brain(("tool", "task_update", {"task_id": "nope"}), ("tool", "task_list", {}),
+                               ("tool", "ghost_tool", {}), "Nie ma takiego zadania.")
     assert await brain.handle_text("zamknij zadanie", module_hint="tasks") == "Nie ma takiego zadania."
-
-    results = {b["tool_use_id"]: b for m in fake.messages.calls[-1]["messages"]
-               if m["role"] == "user" and isinstance(m["content"], list) for b in m["content"]}
-    assert results["a"]["is_error"] and "KeyError" in results["a"]["content"]
-    assert "is_error" not in results["b"] and results["b"]["content"] == "[]"
-    assert results["c"] == {"type": "tool_result", "tool_use_id": "c", "content": "Unknown tool ghost_tool",
-                            "is_error": True}
+    (update, update_err), (listed, list_err), (ghost, ghost_err) = [(o, e) for _, o, e in claude.tool_results]
+    assert update_err and "KeyError" in update
+    assert (listed, list_err) == ("[]", False)
+    assert ghost_err and "not found" in ghost      # Claude only ever gets the routed tools
 
 
-async def test_tool_loop_stops_after_max_rounds(make_brain):
-    brain, fake = make_brain([tool_response("task_list", {})] * 5)
-    brain.settings.data["models"]["max_tool_rounds"] = 1
-    assert await brain.handle_text("pokaż zadania", module_hint="tasks") == "Gotowe."
-    assert sum(1 for c in fake.messages.calls if "tools" in c) == 2
-
-
-async def test_request_options_follow_the_model(make_brain):
-    brain, fake = make_brain([text_response("a"), text_response("b")])
-    brain.settings.data["models"]["executor"] = "claude-haiku-4-5"
+async def test_request_options_follow_the_module(make_brain):
+    brain, claude = make_brain("a", "b")
+    brain.settings.data["models"].update(executor="claude-opus-5-5", executor_effort="medium", max_tool_rounds=3)
     await brain.handle_text("hej", module_hint="smalltalk")
-    call = fake.messages.calls[-1]
-    assert call["model"] == "claude-haiku-4-5" and "output_config" not in call and "fallbacks" not in call
+    opts = claude.calls[-1][1]
+    assert (opts.model, opts.effort, opts.max_turns) == ("claude-opus-5-5", "medium", 4)   # config/brain.yaml
+    brain.registry.modules["knowledge"].model = "claude-sonnet-5-5"                  # a module.yaml may override
+    await brain.handle_text("co wiem o SQL?", module_hint="knowledge")
+    assert claude.calls[-1][1].model == "claude-sonnet-5-5"
 
-    brain.settings.data["models"]["executor"] = "claude-sonnet-5"
-    await brain.handle_text("hej", module_hint="smalltalk")
-    call = fake.messages.calls[-1]
-    assert call["output_config"] == {"effort": "low"} and "fallbacks" not in call
+    opts = (await _options_for(brain, claude, module="research", capabilities=["research.web"]))
+    assert sorted(opts.tools) == ["WebFetch", "WebSearch"] and "WebSearch" in opts.allowed_tools
 
-    defs = brain.executor.tool_definitions(Route(module="research", capabilities=["research.web"]))
-    assert {d["name"]: d["type"] for d in defs} == {"web_fetch": "web_fetch_20260209",
-                                                   "web_search": "web_search_20260209"}
+
+async def _options_for(brain, claude, **route):
+    from brain.memory import Session
+    from brain.router import Route
+    await brain.executor.run("x", Route(**route), Session(), "r-1")
+    return claude.calls[-1][1]
 
 
 NOTES_SERVER = textwrap.dedent('''
@@ -195,13 +162,12 @@ async def test_mcp_hub_against_a_real_stdio_server(tmp_path):
         assert (status["notes"]["status"], status["off"]["status"], status["broken"]["status"]) == \
             ("ready", "disabled", "error")
         assert set(hub.all_tools()) == {"notes__find_note", "notes__delete_note"}
-        assert {t["name"] for t in hub.tools_for(["notes", "broken", "missing"])} == set(hub.all_tools())
         assert hub.owns("notes__find_note") and not hub.owns("task_create")
         assert await hub.call("notes__find_note", {"query": "x"}) == ("found x", False)
         text, is_error = await hub.call("notes__delete_note", {"note_id": "1"})
         assert is_error and "note is locked" in text
 
-        MapBuilder(tmp_path / "map", ModuleRegistry(ROOT / "modules"), hub).build()
+        build_map(tmp_path / "map", ModuleRegistry(ROOT / "modules"), hub)
         m = BrainMap(tmp_path / "map")
         assert m.tools["notes__delete_note"]["side_effect"] == "destructive"
         assert m.needs_confirmation("notes__delete_note") and not m.needs_confirmation("notes__find_note")

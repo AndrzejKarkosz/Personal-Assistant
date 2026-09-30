@@ -1,10 +1,9 @@
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
 
 from brain.memory import MemoryStore, Session, SessionManager
-from brain.memory import okf
+from brain import okf
 
 
 def test_task_lifecycle_is_logged_and_briefed(tmp_path):
@@ -97,12 +96,9 @@ def test_history_is_plain_alternating_turns():
     assert s.usage["input"] == 5 and "note" not in s.usage
 
 
-async def test_idle_session_is_saved_even_when_the_summary_fails(tmp_path, settings):
-    async def down(**_):
-        raise RuntimeError("light model unavailable")
-
+async def test_idle_session_is_saved_even_when_the_summary_fails(tmp_path, settings):   # Claude is offline
     store = MemoryStore(tmp_path)
-    manager = SessionManager(store, settings, SimpleNamespace(messages=SimpleNamespace(create=down)))
+    manager = SessionManager(store, settings)
     await manager.close()
     first = await manager.get()
     assert await manager.get() is first

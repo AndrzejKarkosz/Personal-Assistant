@@ -15,7 +15,7 @@ requires_confirmation: false
 status: online
 params: [type, tag, status, stale_only]
 tags: [tool, knowledge-base]
-timestamp: '2026-09-28T18:45:56+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # kb_list
@@ -29,7 +29,6 @@ Server: [knowledge-base](../../servers/knowledge-base.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `type` | string |  |  |
 | `tag` | string |  |  |

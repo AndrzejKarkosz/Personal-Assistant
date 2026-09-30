@@ -15,7 +15,7 @@ status: online
 params: [account, calendarId, timeMin, timeMax, timeZone, fields, privateExtendedProperty,
   sharedExtendedProperty]
 tags: [tool, google-calendar]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # list-events
@@ -29,7 +29,6 @@ Server: [google-calendar](../../servers/google-calendar.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `account` | any |  | Account nickname(s) to query (e.g., 'work' or ['work', 'personal']). Omit to query all accounts. |
 | `calendarId` | any | yes |  |

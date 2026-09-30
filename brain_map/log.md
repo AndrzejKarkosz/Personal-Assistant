@@ -170,3 +170,47 @@
 
 ## 2026-09-29T19:36:03+02:00
 - changed tools/alfred/task-create.md
+
+## 2026-09-30T13:14:24+02:00
+- changed modules/smalltalk.md
+- changed modules/tasks.md
+- added capabilities/tasks.routines.md
+- changed tools/alfred/memory-search.md
+- changed tools/alfred/memory-read.md
+- changed tools/alfred/memory-remember.md
+- changed tools/alfred/task-list.md
+- changed tools/alfred/task-create.md
+- changed tools/alfred/task-update.md
+- changed tools/alfred/confirm-action.md
+- added tools/alfred/routine-save.md
+- added tools/alfred/routine-delete.md
+- changed tools/knowledge-base/kb-find.md
+- changed tools/knowledge-base/kb-read.md
+- changed tools/knowledge-base/kb-list.md
+- changed tools/knowledge-base/kb-graph.md
+- changed tools/knowledge-base/kb-source.md
+- changed tools/google-calendar/list-calendars.md
+- changed tools/google-calendar/list-events.md
+- changed tools/google-calendar/search-events.md
+- changed tools/google-calendar/get-event.md
+- changed tools/google-calendar/list-colors.md
+- changed tools/google-calendar/create-event.md
+- changed tools/google-calendar/create-events.md
+- changed tools/google-calendar/update-event.md
+- changed tools/google-calendar/delete-event.md
+- changed tools/google-calendar/get-freebusy.md
+- changed tools/google-calendar/get-current-time.md
+- changed tools/google-calendar/respond-to-event.md
+- changed tools/google-calendar/manage-accounts.md
+- changed servers/alfred.md
+- changed servers/anthropic.md
+- changed servers/browser.md
+
+## 2026-09-30T17:50:37+02:00
+- changed modules/bookings.md
+- changed modules/calendar.md
+- changed modules/knowledge.md
+- changed modules/memory.md
+- changed modules/research.md
+- changed modules/smalltalk.md
+- changed modules/tasks.md

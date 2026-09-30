@@ -1,6 +1,6 @@
+"""Settings = config/brain.yaml, plus what you changed in the UI (data/settings.json), plus secrets from .env."""
 from __future__ import annotations
 
-import copy
 import json
 import os
 from pathlib import Path
@@ -16,14 +16,17 @@ CONFIG_FILE = ROOT / "config" / "brain.yaml"
 OVERRIDES_FILE = ROOT / "data" / "settings.json"
 
 
-def _deep_merge(base: dict, extra: dict) -> dict:
-    out = copy.deepcopy(base)
+def merge(base: dict, extra: dict) -> dict:
+    """Deep merge: nested dicts are merged key by key, any other value in `extra` wins."""
+    out = dict(base)
     for key, value in extra.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge(out[key], value)
-        else:
-            out[key] = value
+        both_dicts = isinstance(value, dict) and isinstance(out.get(key), dict)
+        out[key] = merge(out[key], value) if both_dicts else value
     return out
+
+
+def _saved_overrides() -> dict:
+    return json.loads(OVERRIDES_FILE.read_text(encoding="utf-8")) if OVERRIDES_FILE.exists() else {}
 
 
 class Settings:
@@ -31,13 +34,11 @@ class Settings:
         self.data = data
 
     @classmethod
-    def load(cls) -> "Settings":
-        data = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
-        if OVERRIDES_FILE.exists():
-            data = _deep_merge(data, json.loads(OVERRIDES_FILE.read_text(encoding="utf-8")))
-        return cls(data)
+    def load(cls) -> Settings:
+        return cls(merge(yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}, _saved_overrides()))
 
     def get(self, dotted: str, default: Any = None) -> Any:
+        """get("router.timeout_s") reads data["router"]["timeout_s"]."""
         node: Any = self.data
         for part in dotted.split("."):
             if not isinstance(node, dict) or part not in node:
@@ -46,19 +47,16 @@ class Settings:
         return node
 
     def path(self, dotted: str) -> Path:
-        p = Path(self.get(dotted))
-        return p if p.is_absolute() else ROOT / p
+        """A path from the config; relative paths are relative to the project folder."""
+        path = Path(self.get(dotted))
+        return path if path.is_absolute() else ROOT / path
 
     def update(self, patch: dict[str, Any]) -> None:
-        current = json.loads(OVERRIDES_FILE.read_text(encoding="utf-8")) if OVERRIDES_FILE.exists() else {}
-        current = _deep_merge(current, patch)
+        """Apply a change from the UI now and remember it in data/settings.json."""
         OVERRIDES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        OVERRIDES_FILE.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
-        self.data = _deep_merge(self.data, patch)
-
-    @property
-    def anthropic_key(self) -> str | None:
-        return os.getenv("ANTHROPIC_API_KEY") or None
+        OVERRIDES_FILE.write_text(json.dumps(merge(_saved_overrides(), patch), indent=2, ensure_ascii=False),
+                                  encoding="utf-8")
+        self.data = merge(self.data, patch)
 
     @property
     def jev_key(self) -> str | None:
@@ -72,9 +70,6 @@ class Settings:
     def voice_id(self) -> str:
         return self.get("voice.voice_id") or os.getenv("ELEVENLABS_VOICE_ID") or "JBFqnCBsd6RMkjVDRZzb"
 
-    def status(self) -> dict[str, bool]:
-        return {
-            "anthropic": bool(self.anthropic_key),
-            "jev": bool(self.jev_key),
-            "elevenlabs": bool(self.elevenlabs_key),
-        }
+    def keys(self) -> dict[str, bool]:
+        """Which optional services have a key in .env."""
+        return {"jev": bool(self.jev_key), "elevenlabs": bool(self.elevenlabs_key)}

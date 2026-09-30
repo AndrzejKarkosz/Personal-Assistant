@@ -15,7 +15,7 @@ status: online
 params: [calendarId, eventId, account, response, comment, modificationScope, originalStartTime,
   sendUpdates]
 tags: [tool, google-calendar]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-09-30T13:14:24+02:00'
 ---
 
 # respond-to-event
@@ -29,7 +29,6 @@ Server: [google-calendar](../../servers/google-calendar.md)
 
 ## Parameters
 | name | type | required | description |
-
 |---|---|---|---|
 | `calendarId` | string | yes | ID of the calendar (use 'primary' for the main calendar) |
 | `eventId` | string | yes | ID of the event to respond to |
