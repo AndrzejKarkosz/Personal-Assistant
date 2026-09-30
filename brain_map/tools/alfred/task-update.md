@@ -2,7 +2,7 @@
 type: Tool
 title: task_update
 description: 'Update a task: change status (todo, in_progress, waiting, done, cancelled),
-  due date, schedule, or add a progress note.'
+  due date, schedule, category, or add a progress note.'
 id: task_update
 server: alfred
 kind: builtin
@@ -12,14 +12,14 @@ modules: [tasks]
 side_effect: write
 requires_confirmation: false
 status: online
-params: [task_id, status, note, due, schedule]
+params: [task_id, status, note, due, schedule, category]
 tags: [tool, alfred]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-09-29T11:12:36+02:00'
 ---
 
 # task_update
 
-Update a task: change status (todo, in_progress, waiting, done, cancelled), due date, schedule, or add a progress note.
+Update a task: change status (todo, in_progress, waiting, done, cancelled), due date, schedule, category, or add a progress note.
 
 Server: [alfred](../../servers/alfred.md)
 
@@ -35,3 +35,4 @@ Server: [alfred](../../servers/alfred.md)
 | `note` | string |  |  |
 | `due` | string |  |  |
 | `schedule` | string |  |  |
+| `category` | string |  | Move to this group; empty string clears it |

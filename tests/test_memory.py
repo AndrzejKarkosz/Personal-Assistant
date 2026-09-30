@@ -70,16 +70,21 @@ def test_task_errors_ordering_and_filters(tmp_path):
     later = store.create_task("B", due="2030-01-02T10:00:00+01:00")
     sooner = store.create_task("A", due="2030-01-01T10:00:00+01:00", priority="low")
     undated = store.create_task("A", priority="high")
-    assert undated.id == f"{sooner.id}-2"                                   # same title -> unique id
-    assert [t.id for t in store.list_tasks()] == [sooner.id, later.id, undated.id]   # by due date, undated last
+    assert undated.id == f"{sooner.id}-2"
+    assert [t.id for t in store.list_tasks()] == [sooner.id, later.id, undated.id]
 
     with pytest.raises(ValueError):
         store.update_task(later.id, status="bogus")
-    assert store.update_task(later.id, status="todo").history == later.history     # no change, no write
+    assert store.update_task(later.id, status="todo").history == later.history
     store.update_task(later.id, schedule="0 8 * * 1-5", note="co tydzień")
     assert store.get_task(later.id).schedule == "0 8 * * 1-5"
+    tagged = store.create_task("C", category="Dom")
+    assert store.get_task(tagged.id).category == "Dom"
+    store.update_task(tagged.id, category="")
+    assert store.get_task(tagged.id).category is None
+    store.update_task(tagged.id, status="done")
     store.update_task(later.id, status="cancelled")
-    assert [t.id for t in store.list_tasks("cancelled")] == [later.id] and len(store.list_tasks("all")) == 3
+    assert [t.id for t in store.list_tasks("cancelled")] == [later.id] and len(store.list_tasks("all")) == 4
     assert store.due_tasks() == [] and store.get_task("missing") is None
 
 
@@ -98,7 +103,7 @@ async def test_idle_session_is_saved_even_when_the_summary_fails(tmp_path, setti
 
     store = MemoryStore(tmp_path)
     manager = SessionManager(store, settings, SimpleNamespace(messages=SimpleNamespace(create=down)))
-    await manager.close()                                                   # nothing open: no-op
+    await manager.close()
     first = await manager.get()
     assert await manager.get() is first
     first.add("user", "Zarezerwuj stolik")
@@ -108,5 +113,5 @@ async def test_idle_session_is_saved_even_when_the_summary_fails(tmp_path, setti
     await manager.close_if_idle()
     assert manager.current is None
     meta, _ = store.recent_sessions(1)[0]
-    assert meta["title"] == "Zarezerwuj stolik" and meta["turns"] == 2   # fallback summary, nothing lost
+    assert meta["title"] == "Zarezerwuj stolik" and meta["turns"] == 2
     assert await manager.get() is not first

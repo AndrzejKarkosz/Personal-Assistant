@@ -1,9 +1,3 @@
-"""BrainMap: the compiled OKF brain map, read back as a typed graph.
-
-The router asks it for Jev categories; the executor asks it which tools a route may use and
-which of them need a spoken "yes"; the UI asks it for the 3D graph. Everything comes from the
-pages on disk, so edits to the bundle (examples_extra, confirm_override, ...) take effect.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -48,12 +42,10 @@ class BrainMap:
             elif kind == "Topic":
                 self.topics[key] = meta
 
-    # ------------------------------------------------------------ relations
     def enabled_modules(self) -> list[dict]:
         return [m for m in self.modules.values() if m.get("enabled", True)]
 
     def capabilities_of(self, module_ids: list[str]) -> list[str]:
-        """Own + borrowed capabilities of the modules, in order, no duplicates."""
         out: list[str] = []
         for mid in module_ids:
             m = self.modules.get(mid) or {}
@@ -78,7 +70,6 @@ class BrainMap:
             return bool(tool["confirm_override"])
         return bool(tool.get("requires_confirmation"))
 
-    # --------------------------------------------------------- Jev criteria
     @staticmethod
     def _examples(meta: dict, n: int = 3) -> list[str]:
         return list(meta.get("examples") or [])[:n] + list(meta.get("examples_extra") or [])[:n]
@@ -117,7 +108,6 @@ class BrainMap:
     def topic_criteria(self) -> dict[str, str]:
         return {tid: f"{t['title']}: {t.get('description', '')}"[:200] for tid, t in self.topics.items()}
 
-    # ------------------------------------------------------------- UI graph
     def graph(self) -> dict[str, Any]:
         nodes, edges = [], []
 

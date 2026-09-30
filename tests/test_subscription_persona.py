@@ -1,4 +1,3 @@
-"""Subscription backend (Claude Agent SDK) with a fake `query`, and the editable persona."""
 import asyncio
 
 import claude_agent_sdk
@@ -62,13 +61,11 @@ def test_persona_file_drives_prompt_and_phrases(settings, tmp_path, monkeypatch)
     path = tmp_path / "persona.md"
     monkeypatch.setattr(persona, "PERSONA_FILE", path)
     persona.save({"name": "Jarvis", "user_name": "Tony", "address": {"pl": "panie", "en": "sir"},
-                  "acks": {"pl": ["Już, {addr}."], "en": ["At once, {addr}."]},
                   "confirm": {"pl": "Czy mogę: {summary}?", "en": "May I: {summary}?"}},
                  "# Role\nYou are {name}, assistant of {user}. Say {addr_en}. Keep {unknown} as is.", path)
     load = persona.load
     monkeypatch.setattr(persona, "load", lambda path=path: load(path))
     assert persona.system_prompt(settings) == "# Role\nYou are Jarvis, assistant of Tony. Say sir. Keep {unknown} as is."
-    assert persona.ack_phrase(settings, "pl") == "Już, panie."
     assert persona.confirm_prompt(settings, "en", "book it") == "May I: book it?"
 
 
@@ -79,7 +76,7 @@ async def test_subscription_failures_are_spoken_not_raised(make_brain, monkeypat
 
     async def not_logged_in(*, prompt, options):
         raise RuntimeError("Claude Code is not logged in")
-        yield  # noqa - makes this an async generator like the real query()
+        yield
 
     monkeypatch.setattr(claude_agent_sdk, "query", not_logged_in)
     result = await ex.run("hej", Route(module="smalltalk"), Session(), "r-1")
@@ -94,7 +91,7 @@ async def test_subscription_failures_are_spoken_not_raised(make_brain, monkeypat
 
     monkeypatch.setattr(claude_agent_sdk, "query", out_of_turns)
     result = await ex.run("hej", Route(module="smalltalk"), Session(), "r-2")
-    assert result.text == "Szukam jeszcze..."                              # the last thing Claude said
+    assert result.text == "Szukam jeszcze..."
 
     events = []
     while not queue.empty():

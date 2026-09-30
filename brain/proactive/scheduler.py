@@ -1,22 +1,8 @@
-"""Proactive layer: triggers + a cheap gate, so Alfred can speak first without burning tokens.
-
-Triggers
-  - one-off tasks whose `due` has passed   (checked every minute, no LLM involved)
-  - recurring tasks with a cron `schedule`  (APScheduler cron jobs, re-synced every minute)
-  - routines in config/routines.yaml        (cron or "@start"; the file is re-read every minute)
-  - heartbeat                               (every N minutes: overdue tasks nudge)
-  - idle session closer                     (writes the session summary to memory)
-
-Gate
-  Before waking Claude for a task, Jev answers one yes/no question: "is this worth interrupting him now?"
-  Only a yes runs the pipeline. Routines skip the gate: the user scheduled them on purpose.
-  Every decision is written to the activity log.
-"""
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,7 +16,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("alfred.proactive")
 
-START = "@start"        # a routine's schedule: run once every time the app starts
+START = "@start"
+LAST_ACTIVITY = "last_activity"
 
 
 def in_quiet_hours(now: datetime, quiet: list[str] | None) -> bool:
@@ -57,17 +44,15 @@ class ProactiveEngine:
         self.scheduler.start()
         self.sync_recurring()
         for r in self.routines():
-            if r["schedule"] == START:      # no trigger = once, right away, without blocking the start
-                self.scheduler.add_job(self.run_routine, args=[r["id"]], id=f"start:{r['id']}",
+            if r["schedule"] == START:
+                self.scheduler.add_job(self.run_start_routine, args=[r["id"]], id=f"start:{r['id']}",
                                        replace_existing=True)
 
     def shutdown(self) -> None:
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
 
-    # ---------------------------------------------------------------- triggers
     def sync_recurring(self) -> None:
-        # The cron is part of the job id, so an edited schedule replaces its job.
         wanted = {f"task:{t.id}@{t.schedule}": (t.schedule, self.fire, [t.id, "schedule"])
                   for t in self.brain.store.list_tasks("open") if t.schedule}
         wanted |= {f"routine:{r['id']}@{r['schedule']}": (r["schedule"], self.run_routine, [r["id"]])
@@ -86,7 +71,6 @@ class ProactiveEngine:
             self.scheduler.add_job(func, trigger, args=args, id=job_id)
 
     def routines(self) -> list[dict]:
-        """The routines file, read fresh on every call so edits apply without a restart."""
         path = self.settings.path("proactive.routines") if self.settings.get("proactive.routines") else None
         if not path or not path.exists():
             return []
@@ -104,8 +88,31 @@ class ProactiveEngine:
 
     async def run_routine(self, routine_id: str) -> None:
         routine = next((r for r in self.routines() if r["id"] == routine_id), None)
-        if routine:                         # gone from the file since it was scheduled -> nothing to do
+        if routine:
             await self.brain.handle_text(routine["prompt"], source="routine", module_hint=routine.get("module"))
+
+    async def run_start_routine(self, routine_id: str) -> None:
+        """@start: silent if Alfred was active within `min_idle_minutes`; the full (LLM) routine once a day,
+        afterwards (with `welcome_back: true`) just the static welcome-back line - no tokens."""
+        routine = next((r for r in self.routines() if r["id"] == routine_id), None)
+        if not routine:
+            return
+        idle = self.idle()
+        if idle is not None and idle < timedelta(minutes=float(routine.get("min_idle_minutes", 0))):
+            return
+        key = f"start:{routine_id}"
+        if routine.get("welcome_back") and self._fired.get(key, "").startswith(f"{datetime.now():%Y-%m-%d}"):
+            await self.brain.welcome_back()
+            return
+        self._remember(key)
+        await self.run_routine(routine_id)
+
+    def idle(self) -> timedelta | None:
+        last = self._fired.get(LAST_ACTIVITY)
+        return datetime.now() - datetime.fromisoformat(last) if last else None
+
+    def touch(self) -> None:
+        self._remember(LAST_ACTIVITY)
 
     async def check_due(self) -> None:
         if not self.settings.get("proactive.enabled", True):
@@ -121,7 +128,6 @@ class ProactiveEngine:
         self.brain.bus.emit("heartbeat", "proactive", open_tasks=len(self.brain.store.list_tasks("open")),
                             overdue=len(overdue))
 
-    # -------------------------------------------------------------------- fire
     async def fire(self, task_id: str, trigger: str, key: str | None = None) -> None:
         task = self.brain.store.get_task(task_id)
         if task is None or not task.is_open:

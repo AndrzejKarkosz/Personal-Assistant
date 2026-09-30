@@ -1,6 +1,6 @@
 ---
 {type: Index, title: Alfred's brain map, okf_version: '0.2', description: 'Modules,
-    capabilities, skills, tools, servers and topics of the brain.', timestamp: '2026-09-28T18:45:56+02:00'}
+    capabilities, skills, tools, servers and topics of the brain.', timestamp: '2026-09-29T10:16:23+02:00'}
 ---
 
 # Alfred's brain map
@@ -12,7 +12,7 @@ Module --has--> Capability --includes--> Tool --served by--> Server;  Skill --us
 * [modules](modules/index.md) - 7 modules
 * [capabilities](capabilities/index.md) - 11 capabilities (routing categories)
 * [skills](skills/index.md) - 3 skills
-* [tools](tools/index.md) - 18 tools, 18 online
-* [servers](servers/index.md) - alfred (ready), anthropic (ready), knowledge-base (ready), google-calendar (disabled), browser (disabled)
+* [tools](tools/index.md) - 31 tools, 31 online
+* [servers](servers/index.md) - alfred (ready), anthropic (ready), knowledge-base (ready), google-calendar (ready), browser (disabled)
 * [topics](topics/index.md) - 9 knowledge topics
 * [log](log.md) - changes between builds

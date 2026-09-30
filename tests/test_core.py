@@ -1,4 +1,3 @@
-"""Settings, the event bus / activity log and the LLM backend switch."""
 import json
 import os
 import shutil
@@ -20,9 +19,9 @@ def test_settings_dotted_access_paths_and_persisted_overrides(tmp_path, monkeypa
     assert s.path("rel") == config.ROOT / "data" / "x" and s.path("abs") == tmp_path
 
     s.update({"a": {"c": {"e": 3}}})
-    assert s.get("a.c.d") == 2 and s.get("a.c.e") == 3                  # deep merge keeps siblings
+    assert s.get("a.c.d") == 2 and s.get("a.c.e") == 3
     assert json.loads((tmp_path / "settings.json").read_text()) == {"a": {"c": {"e": 3}}}
-    loaded = Settings.load()                                              # overrides layer on brain.yaml
+    loaded = Settings.load()
     assert loaded.get("a.c.e") == 3 and loaded.get("assistant.name") == "Alfred"
 
 
@@ -34,7 +33,7 @@ def test_secrets_come_from_the_environment(monkeypatch):
     s = Settings({})
     assert s.status() == {"anthropic": False, "jev": True, "elevenlabs": False}
     assert s.voice_id == "env-voice"
-    s.data["voice"] = {"voice_id": "ui-voice"}                             # a voice picked in the UI wins
+    s.data["voice"] = {"voice_id": "ui-voice"}
     assert s.voice_id == "ui-voice"
 
 
@@ -44,7 +43,7 @@ def test_activity_log_keeps_everything_but_audio(tmp_path):
     bus.emit("answer", "voice", "r-1", "s-1", text="hej", audio_b64="AAAA")
     bus.emit("ack", "voice", text="ok")
 
-    assert queue.get_nowait().data["audio_b64"] == "AAAA"                 # live subscribers get the audio
+    assert queue.get_nowait().data["audio_b64"] == "AAAA"
     rows = bus.log.read()
     assert [r["kind"] for r in rows] == ["answer", "ack"] and "audio_b64" not in rows[0]["data"]
     assert rows[0]["request_id"] == "r-1" and rows[0]["session_id"] == "s-1"
@@ -59,7 +58,7 @@ def test_a_slow_subscriber_never_blocks_the_bus():
     queue = bus.subscribe()
     for i in range(600):
         bus.emit("tick", "brain", n=i)
-    assert queue.qsize() == 500                                            # overflow is dropped, not awaited
+    assert queue.qsize() == 500
     bus.unsubscribe(queue)
     bus.emit("tick", "brain")
     assert queue.qsize() == 500
@@ -69,7 +68,7 @@ def test_subscription_mode_hides_the_api_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     llm.prepare_environment(Settings({"llm": {"backend": "api"}}))
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-test"
-    llm.prepare_environment(Settings({}))                                  # subscription is the default
+    llm.prepare_environment(Settings({}))
     assert "ANTHROPIC_API_KEY" not in os.environ
 
 
@@ -122,11 +121,11 @@ def test_subscription_status_reads_claude_auth(monkeypatch):
 
 def test_what_alfred_says_to_an_empty_room_waits_for_the_ui():
     bus = EventBus()
-    bus.emit("answer", "voice", text="Brief gotowy.", source="routine")      # the UI is closed
+    bus.emit("answer", "voice", text="Brief gotowy.", source="routine")
     bus.emit("answer", "voice", text="Odpowiedź", source="user")
     bus.emit("ack", "voice", text="Już")
     ui = bus.subscribe()
     assert [ui.get_nowait().data["text"] for _ in range(ui.qsize())] == ["Brief gotowy."]
-    assert bus.subscribe().empty()                                          # handed over once
-    bus.emit("answer", "voice", text="Przypomnienie", source="proactive")   # someone is listening now
+    assert bus.subscribe().empty()
+    bus.emit("answer", "voice", text="Przypomnienie", source="proactive")
     assert not bus.unheard

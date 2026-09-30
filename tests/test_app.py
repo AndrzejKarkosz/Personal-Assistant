@@ -1,7 +1,3 @@
-"""The FastAPI server (REST, WebSocket, UI files) and the `alfred` CLI, on a test brain.
-
-TestClient is used without `with`, so the lifespan (real MCP servers, `claude auth status`) never runs.
-"""
 import functools
 import json
 import re
@@ -49,7 +45,7 @@ def test_status_graph_modules_and_map(api):
 
 def test_disabling_a_module_is_saved_in_its_manifest(api, tmp_path):
     client, brain, _ = api
-    shutil.copytree(ROOT / "modules", tmp_path / "modules")                 # never touch the real manifests
+    shutil.copytree(ROOT / "modules", tmp_path / "modules")
     brain.registry = ModuleRegistry(tmp_path / "modules")
     assert client.post("/api/modules/research/enabled", json={"enabled": False}).json() == \
         {"id": "research", "enabled": False}
@@ -123,7 +119,7 @@ def test_routines_show_what_ran_today(api, tmp_path):
     client, brain, _ = api
     (tmp_path / "routines.yaml").write_text(
         "routines:\n"
-        "  - {id: brief, schedule: '0 0 * * *', prompt: Daj brief}\n"      # due every midnight -> due today
+        "  - {id: brief, schedule: '0 0 * * *', prompt: Daj brief}\n"
         "  - {id: broken, schedule: '0 0 * * *', prompt: Zepsuj}\n"
         "  - {id: hello, schedule: '@start', prompt: Przywitaj}\n", encoding="utf-8")
     brain.bus.emit("transcript", "ears", "r-1", text="Daj brief", source="routine")
@@ -175,9 +171,9 @@ def test_websocket_streams_events_and_takes_answers(api):
             pass
         return event
 
-    brain.bus.emit("answer", "voice", text="Brief gotowy.", source="routine")    # said while the UI was closed
+    brain.bus.emit("answer", "voice", text="Brief gotowy.", source="routine")
     with client.websocket_connect("/ws") as ws:
-        assert ws.receive_json()["data"]["text"] == "Brief gotowy."              # first thing on opening
+        assert ws.receive_json()["data"]["text"] == "Brief gotowy."
 
         ws.send_json({"type": "audio", "b64": "AAAA", "mime": "audio/ogg"})
         assert until(ws, "error")["data"]["message"] == "Nothing was transcribed."

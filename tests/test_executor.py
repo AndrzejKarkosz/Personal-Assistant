@@ -1,4 +1,3 @@
-"""Executor internals: the guard, built-in tools, the API tool loop and the MCP hub against a real server."""
 import json
 import sys
 import textwrap
@@ -10,7 +9,7 @@ from conftest import FakeBlock, text_response, tool_response
 from brain.atlas import BrainMap, MapBuilder
 from brain.config import ROOT
 from brain.events import EventBus
-from brain.executor import ApiExecutor, Guard, MCPHub, builtin
+from brain.executor import ApiExecutor, Guard, MCPHub, builtin, mcp_hub
 from brain.memory import MemoryStore, Session
 from brain.modules import ModuleRegistry
 from brain.router import Route
@@ -18,7 +17,7 @@ from brain.router import Route
 
 async def test_guard_treats_silence_as_no():
     guard = Guard(EventBus(), timeout_s=0.05)
-    assert guard.resolve(True) is False                                   # nothing pending
+    assert guard.resolve(True) is False
     assert await guard.confirm("r-1", None, "confirm_action", "Potwierdzasz?") is False
     assert guard.pending is None
 
@@ -38,6 +37,55 @@ async def test_builtin_memory_and_task_tools(tmp_path):
     assert await h["task_update"]({"task_id": task_id, "status": "done"}, None) == f"Task {task_id} is now done"
     assert [t["name"] for t in builtin.select(["task_*"])] == ["task_list", "task_create", "task_update"]
 
+    many = await h["task_create"]({"tasks": [{"title": "Fryzjer"}, {"title": "Trening", "category": "Reszta"}]}, "s-1")
+    assert many.startswith("Created tasks ") and len(json.loads(await h["task_list"]({}, None))) == 2
+
+
+async def test_task_and_routine_tools_refuse_what_went_wrong_on_2026_09_29(tmp_path):
+    import pytest
+    h = builtin.make_handlers(MemoryStore(tmp_path / "mem"), tmp_path / "routines.yaml")
+    with pytest.raises(ValueError, match="in the past"):  # "reminder today 17:00" said at 21:09
+        await h["task_create"]({"tasks": [{"title": "Merge request", "due": "2020-09-29T17:00:00+02:00"}]}, "s")
+    with pytest.raises(ValueError, match="timezone"):
+        await h["task_create"]({"tasks": [{"title": "Merge request", "due": "2030-09-30T10:00:00"}]}, "s")
+    assert h["task_list"] and json.loads(await h["task_list"]({}, None)) == []  # the bad batch created nothing
+
+    two = [{"title": "Przejrzeć merge requesta od Macieja", "due": "2030-09-30T10:00:00+02:00"},
+           {"title": "Przejrzeć merge requesta od Macieja", "due": "2030-09-30T17:00:00+02:00"}]
+    await h["task_create"]({"tasks": two}, "s")
+    again = await h["task_create"]({"tasks": two[:1]}, "s")
+    assert again.startswith("Nothing created") and "not duplicated" in again
+
+    # the model guessed a shortened id: ambiguous -> error listing the real ids; unique title -> resolved
+    from datetime import datetime
+    with pytest.raises(KeyError, match="Several task.*Open tasks: .*maci-2"):
+        await h["task_update"]({"task_id": f"{datetime.now():%Y%m%d}-przejrzec-merge-requesta-od",
+                                "due": "2030-10-01T10:00:00+02:00"}, "s")
+    await h["task_create"]({"tasks": [{"title": "Fryzjer"}]}, "s")
+    assert (await h["task_update"]({"task_id": "fryzjer", "status": "done"}, "s")).endswith("is now done")
+
+    with pytest.raises(ValueError, match="cron"):
+        await h["routine_save"]({"id": "brief", "schedule": "codziennie o 8", "prompt": "brief"}, "s")
+    assert (await h["routine_save"]({"id": "Poranny brief", "schedule": "30 7 * * 1-5", "prompt": "Daj brief",
+                                     "module": "calendar"}, "s")) == "Created routine poranny-brief (30 7 * * 1-5)"
+    assert (await h["routine_save"]({"id": "poranny-brief", "schedule": "0 8 * * 1-5", "prompt": "Daj brief"},
+                                    "s")).startswith("Updated")
+    import yaml
+    saved = yaml.safe_load((tmp_path / "routines.yaml").read_text(encoding="utf-8"))["routines"]
+    assert saved == [{"id": "poranny-brief", "schedule": "0 8 * * 1-5", "prompt": "Daj brief", "module": "calendar"}]
+    assert await h["routine_delete"]({"id": "poranny-brief"}, "s") == "Deleted routine poranny-brief"
+    with pytest.raises(KeyError, match="No routine"):
+        await h["routine_delete"]({"id": "poranny-brief"}, "s")
+
+
+def test_mcp_results_are_compacted():
+    raw = json.dumps({"event": {"id": "e1", "summary": "Rekrutacja", "etag": "x", "attendees": [],
+                                "start": {"dateTime": "2026-09-29T15:30:00+02:00"}, "reminders": {"useDefault": True},
+                                "allDay": False}}, indent=2)
+    assert mcp_hub.compact(raw, {"etag", "reminders"}) == \
+        '{"event":{"id":"e1","summary":"Rekrutacja","start":{"dateTime":"2026-09-29T15:30:00+02:00"},"allDay":false}}'
+    assert mcp_hub.compact("plain text", {"etag"}) == "plain text"
+
 
 async def test_without_an_api_key_alfred_says_so(make_brain):
     brain, _ = make_brain()
@@ -56,7 +104,7 @@ async def test_api_errors_become_a_spoken_apology(make_brain):
 
     async def clean(*_):
         return {"breach": False, "probability": None, "source": "llm", "ms": 0}
-    brain.router.is_injection = clean              # the shield would fail closed with Claude down
+    brain.router.is_injection = clean
     queue = brain.bus.subscribe()
     answer = await brain.handle_text("co słychać", module_hint="smalltalk")
     assert answer == "Coś poszło nie tak po mojej stronie, szefie. Spróbuj proszę za chwilę."
@@ -90,7 +138,7 @@ async def test_tool_loop_stops_after_max_rounds(make_brain):
     brain, fake = make_brain([tool_response("task_list", {})] * 5)
     brain.settings.data["models"]["max_tool_rounds"] = 1
     assert await brain.handle_text("pokaż zadania", module_hint="tasks") == "Gotowe."
-    assert sum(1 for c in fake.messages.calls if "tools" in c) == 2          # first call + one tool round
+    assert sum(1 for c in fake.messages.calls if "tools" in c) == 2
 
 
 async def test_request_options_follow_the_model(make_brain):
@@ -103,7 +151,7 @@ async def test_request_options_follow_the_model(make_brain):
     brain.settings.data["models"]["executor"] = "claude-sonnet-5"
     await brain.handle_text("hej", module_hint="smalltalk")
     call = fake.messages.calls[-1]
-    assert call["output_config"] == {"effort": "low"} and "fallbacks" not in call     # smalltalk: effort low
+    assert call["output_config"] == {"effort": "low"} and "fallbacks" not in call
 
     defs = brain.executor.tool_definitions(Route(module="research", capabilities=["research.web"]))
     assert {d["name"]: d["type"] for d in defs} == {"web_fetch": "web_fetch_20260209",
@@ -153,7 +201,6 @@ async def test_mcp_hub_against_a_real_stdio_server(tmp_path):
         text, is_error = await hub.call("notes__delete_note", {"note_id": "1"})
         assert is_error and "note is locked" in text
 
-        # the brain map picks the live tools up; a destructive tool needs a spoken "yes"
         MapBuilder(tmp_path / "map", ModuleRegistry(ROOT / "modules"), hub).build()
         m = BrainMap(tmp_path / "map")
         assert m.tools["notes__delete_note"]["side_effect"] == "destructive"

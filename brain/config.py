@@ -1,7 +1,3 @@
-"""Configuration: secrets from .env, everything else from config/brain.yaml.
-
-Runtime overrides made from the UI are stored in data/settings.json and layered on top.
-"""
 from __future__ import annotations
 
 import copy
@@ -31,8 +27,6 @@ def _deep_merge(base: dict, extra: dict) -> dict:
 
 
 class Settings:
-    """Dict-backed settings with dotted access: settings.get("models.executor")."""
-
     def __init__(self, data: dict[str, Any]):
         self.data = data
 
@@ -56,14 +50,12 @@ class Settings:
         return p if p.is_absolute() else ROOT / p
 
     def update(self, patch: dict[str, Any]) -> None:
-        """Apply a UI change and persist it as an override (brain.yaml stays untouched)."""
         current = json.loads(OVERRIDES_FILE.read_text(encoding="utf-8")) if OVERRIDES_FILE.exists() else {}
         current = _deep_merge(current, patch)
         OVERRIDES_FILE.parent.mkdir(parents=True, exist_ok=True)
         OVERRIDES_FILE.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
         self.data = _deep_merge(self.data, patch)
 
-    # Secrets -----------------------------------------------------------------
     @property
     def anthropic_key(self) -> str | None:
         return os.getenv("ANTHROPIC_API_KEY") or None

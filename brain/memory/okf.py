@@ -1,7 +1,3 @@
-"""Tiny OKF (Open Knowledge Format) helpers: markdown files with YAML frontmatter.
-
-Only `type` is required by OKF; we also use title, description, tags, timestamp.
-"""
 from __future__ import annotations
 
 import re

@@ -1,4 +1,3 @@
-"""ElevenLabs speech in and out (HTTP mocked), language detection and persona defaults."""
 import base64
 import functools
 
@@ -29,12 +28,17 @@ async def test_speech_is_cached_and_transcripts_parsed(settings, tmp_path, monke
     voice = ElevenLabs(settings, tmp_path)
     mp3 = base64.b64encode(b"mp3").decode()
     assert await voice.synthesize("Jasne, szefie.") == mp3
-    assert await voice.synthesize("Jasne, szefie.") == mp3 and len(calls) == 1      # short phrases come from disk
+    assert await voice.synthesize("Jasne, szefie.") == mp3 and len(calls) == 1
     assert calls[0].headers["xi-api-key"] == "xi" and calls[0].url.params["output_format"] == "mp3_44100_128"
-    assert await voice.synthesize("zepsute") is None                                  # TTS down -> browser voice
+    assert await voice.synthesize("zepsute") is None
 
     transcript = await voice.transcribe(b"audio", language="pl")
     assert (transcript.text, transcript.language) == ("co słychać", "pl")
+
+    settings.data["voice"]["tts_enabled"] = False            # answers off, listening still on
+    before = len(calls)
+    assert await voice.synthesize("Nowe zdanie.") is None and len(calls) == before
+    assert (await voice.transcribe(b"audio")).text == "co słychać"
 
 
 def test_language_detection_and_persona_defaults(settings, tmp_path, monkeypatch):
@@ -43,8 +47,7 @@ def test_language_detection_and_persona_defaults(settings, tmp_path, monkeypatch
     assert persona.detect_language("42", default="en") == "en"
 
     path = tmp_path / "persona.md"
-    persona.save({}, "", path)                                         # a persona file with nothing in it
+    persona.save({}, "", path)
     monkeypatch.setattr(persona, "load", functools.partial(persona.load, path))
     assert persona.system_prompt(settings) == "You are Alfred, the personal assistant of Andrzej."
-    assert persona.ack_phrase(settings, "en") == "Of course, boss. I'm on it."
     assert persona.confirm_prompt(settings, "pl", "wyślę maila") == "Zanim to zrobię: wyślę maila. Potwierdzasz?"

@@ -9,12 +9,16 @@
       "description": "Andrzej's personal library (OKF wiki). Read-only from the brain."
     },
     "google-calendar": {
-      "enabled": false,
+      "enabled": true,
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@cocal/google-calendar-mcp"],
-      "env": { "GOOGLE_OAUTH_CREDENTIALS": "C:/Users/andrz/.config/google-calendar-mcp/gcp-oauth.keys.json" },
-      "description": "Google Calendar. Needs an OAuth client JSON - see README."
+      "env": { "GOOGLE_OAUTH_CREDENTIALS": "C:/Users/andrz/.config/google-calendar-mcp/gcp-oauth.keys.json", "NODE_OPTIONS": "--use-system-ca" },
+      "description": "Google Calendar. Needs an OAuth client JSON - see README.",
+      "drop_fields": ["etag", "kind", "htmlLink", "iCalUID", "sequence", "creator", "created", "updated",
+                      "eventType", "reminders", "conferenceData", "guestsCanInviteOthers",
+                      "guestsCanSeeOtherGuests", "guestsCanModify", "privateCopy", "locked", "backgroundColor",
+                      "foregroundColor", "defaultReminders", "notificationSettings", "conferenceProperties"]
     },
     "browser": {
       "enabled": false,

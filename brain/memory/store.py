@@ -1,18 +1,3 @@
-"""Brain session memory - an OKF bundle separate from the Knowledge-Base library.
-
-The Knowledge-Base is *what Alfred knows*. This bundle is *what Alfred has been doing*:
-
-  index.md                     entry point, regenerated: open tasks, recent sessions, latest changes
-  log.md                       append-only change log - every task/fact/session change, newest last
-  profile.md                   who the user is, preferences (type: Profile)
-  tasks/<id>.md                type: Task   status todo|in_progress|waiting|done|cancelled, due, schedule
-  sessions/YYYY/MM/<id>.md     type: Session  summary, done, changed, open threads, token usage
-  facts/<category>/<slug>.md   type: Fact   people | places | preferences | projects | other
-
-The briefing() at the start of every session is built from these files, so the executor
-knows what is done, what changed last time and what to pick up - in a few hundred tokens
-instead of replaying old transcripts.
-"""
 from __future__ import annotations
 
 import re
@@ -56,9 +41,10 @@ class Task:
     status: str = "todo"
     description: str = ""
     due: str | None = None
-    schedule: str | None = None       # cron expression for recurring tasks ("0 8 * * 1-5")
+    schedule: str | None = None
     module: str | None = None
-    priority: str = "normal"          # low | normal | high
+    priority: str = "normal"
+    category: str | None = None
     created: str = field(default_factory=_iso)
     updated: str = field(default_factory=_iso)
     history: list[str] = field(default_factory=list)
@@ -80,7 +66,6 @@ class MemoryStore:
         self._lock = threading.RLock()
         self.ensure()
 
-    # ------------------------------------------------------------------ setup
     def ensure(self) -> None:
         for sub in ("tasks", "sessions", *(f"facts/{c}" for c in FACT_CATEGORIES)):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
@@ -97,7 +82,6 @@ class MemoryStore:
         if not (self.root / "index.md").exists():
             self.rebuild_index()
 
-    # -------------------------------------------------------------------- log
     def log(self, action: str, detail: str, session_id: str | None = None) -> None:
         line = f"- {_iso()} **{action}** {detail}" + (f" _(session {session_id})_" if session_id else "")
         with self._lock, (self.root / "log.md").open("a", encoding="utf-8") as fh:
@@ -115,7 +99,6 @@ class MemoryStore:
             lines = kept
         return lines[-limit:]
 
-    # ------------------------------------------------------------------ tasks
     def _task_path(self, task_id: str) -> Path:
         return self.root / "tasks" / f"{task_id}.md"
 
@@ -123,8 +106,8 @@ class MemoryStore:
         meta = {
             "type": "Task", "title": task.title, "description": task.description[:200],
             "status": task.status, "priority": task.priority, "due": task.due, "schedule": task.schedule,
-            "module": task.module, "created": task.created, "timestamp": task.updated,
-            "tags": ["task", task.status] + ([task.module] if task.module else []),
+            "module": task.module, "category": task.category, "created": task.created, "timestamp": task.updated,
+            "tags": ["task", task.status] + [x for x in (task.module, task.category) if x],
         }
         body = f"# {task.title}\n\n{task.description}\n\n## History\n" + "\n".join(f"- {h}" for h in task.history)
         okf.write(self._task_path(task.id), meta, body)
@@ -137,20 +120,20 @@ class MemoryStore:
         return Task(
             id=path.stem, title=meta.get("title", path.stem), status=meta.get("status", "todo"),
             description=description, due=meta.get("due"), schedule=meta.get("schedule"),
-            module=meta.get("module"), priority=meta.get("priority", "normal"),
+            module=meta.get("module"), priority=meta.get("priority", "normal"), category=meta.get("category"),
             created=str(meta.get("created", "")), updated=str(meta.get("timestamp", "")), history=history,
         )
 
     def create_task(self, title: str, description: str = "", due: str | None = None,
                     schedule: str | None = None, module: str | None = None, priority: str = "normal",
-                    session_id: str | None = None) -> Task:
+                    session_id: str | None = None, category: str | None = None) -> Task:
         with self._lock:
             base = f"{_now():%Y%m%d}-{okf.slugify(title, 32)}"
             task_id, n = base, 2
             while self._task_path(task_id).exists():
                 task_id, n = f"{base}-{n}", n + 1
             task = Task(id=task_id, title=title, description=description, due=due, schedule=schedule,
-                        module=module, priority=priority)
+                        module=module, priority=priority, category=category or None)
             task.history.append(f"{task.created} created")
             self._save_task(task)
             self.log("task.created", f"[{title}](tasks/{task_id}.md)" + (f" due {due}" if due else ""), session_id)
@@ -159,7 +142,7 @@ class MemoryStore:
 
     def update_task(self, task_id: str, status: str | None = None, note: str | None = None,
                     due: str | None = None, title: str | None = None, schedule: str | None = None,
-                    session_id: str | None = None) -> Task:
+                    session_id: str | None = None, category: str | None = None) -> Task:
         with self._lock:
             path = self._task_path(task_id)
             if not path.exists():
@@ -177,6 +160,9 @@ class MemoryStore:
             if schedule is not None and schedule != task.schedule:
                 changes.append(f"schedule -> {schedule}")
                 task.schedule = schedule or None
+            if category is not None and (category or None) != task.category:
+                changes.append(f"category -> {category or 'none'}")
+                task.category = category or None
             if title and title != task.title:
                 changes.append(f"renamed to {title}")
                 task.title = title
@@ -209,7 +195,6 @@ class MemoryStore:
         limit = _now() + horizon
         return [t for t in self.list_tasks("open") if t.due_dt() and t.due_dt() <= limit]
 
-    # ------------------------------------------------------------------ facts
     def remember(self, category: str, title: str, content: str, session_id: str | None = None) -> Path:
         category = category if category in FACT_CATEGORIES else "other"
         path = self.root / "facts" / category / f"{okf.slugify(title)}.md"
@@ -229,7 +214,6 @@ class MemoryStore:
             self.log(action, f"[{title}]({path.relative_to(self.root).as_posix()})", session_id)
         return path
 
-    # --------------------------------------------------------------- sessions
     def write_session(self, session_id: str, started: str, ended: str, summary: dict[str, Any],
                       usage: dict[str, int], turns: int) -> Path:
         start_dt = _parse_dt(started) or _now()
@@ -256,7 +240,6 @@ class MemoryStore:
                        key=lambda p: str(okf.read(p)[0].get("ended", "")), reverse=True)
         return [okf.read(p) for p in files[:n]]
 
-    # ------------------------------------------------------------ retrieval
     def search(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
         terms = [t for t in re.findall(r"\w+", query.lower()) if len(t) > 2]
         hits = []
@@ -283,9 +266,7 @@ class MemoryStore:
     def profile(self) -> str:
         return okf.read(self.root / "profile.md")[1]
 
-    # -------------------------------------------------------------- briefing
     def briefing(self, recall_sessions: int = 3) -> str:
-        """Compact state for the start of a session: what is open, what happened, what changed."""
         now = _now()
         out = [f"Now: {now:%A %Y-%m-%d %H:%M %Z}"]
         profile = self.profile().strip()
@@ -316,7 +297,6 @@ class MemoryStore:
                 out.append("Changed since the last session:\n" + "\n".join(changes))
         return "\n\n".join(out)
 
-    # ----------------------------------------------------------------- index
     def rebuild_index(self) -> None:
         with self._lock:
             tasks = self.list_tasks("open") if (self.root / "tasks").exists() else []

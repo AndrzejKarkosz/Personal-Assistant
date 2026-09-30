@@ -1,29 +1,26 @@
-# Alfred brain configuration. Secrets live in .env, not here.
-
 assistant:
   name: Alfred
   user_name: Andrzej
-  # How Alfred addresses you in each language.
   address: { pl: "szefie", en: "boss" }
-  default_language: pl        # used when the language of a request can't be detected
+  default_language: pl
+  reply_language: pl          # Alfred always answers in this language; empty = the language you spoke
+  # Searched as context on every request, whatever module the router picks (plus routines in the prompt).
+  context_capabilities: [knowledge.search, memory.recall, tasks.manage]
   timezone: Europe/Warsaw
+  # brak zapytań przez after_minutes -> Alfred wita się przed odpowiedzią (TTS, bez LLM)
+  welcome_back: { after_minutes: 120, pl: "Witaj z powrotem, szefie.", en: "Welcome back, boss." }
 
 llm:
-  # subscription: Claude Agent SDK through your logged-in Claude Code (Pro/Max plan, no per-token billing)
-  # api:          Anthropic Messages API with ANTHROPIC_API_KEY (billed per token)
   backend: subscription
 
 map:
-  dir: brain_map               # OKF map of modules, capabilities, skills, tools, servers and topics
-  # Knowledge-library topics the router can pick directly (Jev "topic" question).
+  dir: brain_map
   topic_sources:
     - { server: knowledge-base, capability: knowledge.search, path: "E:/Knowledge-Base/wiki/topics" }
 
 models:
-  # The executor that actually does the work. Per-module overrides live in modules/*/module.yaml.
-  executor: claude-haiku-4-5   # answers by default; searching modules (knowledge, research, memory) override to Sonnet
-  executor_effort: medium     # low | medium | high  - lower is faster, better for voice
-  # Cheap model for the fallback classifier and for writing session summaries.
+  executor: claude-haiku-4-5
+  executor_effort: medium
   light: claude-haiku-4-5
   max_tool_rounds: 8
 
@@ -31,36 +28,39 @@ router:
   jev_model: jev-latest
   jev_url: https://api.typesafe.ai/v1/systemone
   timeout_s: 4.0
-  # Top module probability needed to route with confidence. Below `ask_below` Alfred asks a clarifying question.
   confident_at: 0.6
   ask_below: 0.3
-  # Load the most likely capabilities until their probabilities cover this share (max 3).
   capability_coverage: 0.8
-  # Shield: Jev probability of prompt injection at which a request is refused before Claude sees it.
   injection_at: 0.5
+  # Deterministic flows: a capability whose pattern appears in the request is ALWAYS given (with its module's
+  # instructions), whatever Jev guessed. Regex, case-insensitive; \b = start of a word.
+  triggers:
+    tasks.manage: '\b(zadani|task|przypom|remind|to-?do)'
+    tasks.routines: '\b(rutyn|routine)'
+    calendar.read: '\b(kalendarz|calendar|spotkani|wydarzeni)'
+    calendar.write: '\b(kalendarz|calendar|spotkani|wydarzeni)'
+    knowledge.search: '\b(wiedz[aąeęy]\b|baz[aąeęy] wiedzy|notat|knowledge)'
 
 voice:
+  tts_enabled: true        # false -> Alfred answers without ElevenLabs (browser voice); listening (STT) unaffected
   stt_model: scribe_v2
   tts_model: eleven_multilingual_v2
   output_format: mp3_44100_128
-  # Say "checking, boss" only if the answer isn't ready after this many seconds (0 = always, before every answer).
-  ack_after_s: 1.5
-  # ElevenLabs voice_settings. speed: 0.7-1.2 (1.0 = voice default); stability/similarity_boost/style: 0-1.
   settings:
     speed: 1.1
 
 memory:
-  dir: data/memory             # OKF bundle with sessions, tasks, facts
-  session_idle_minutes: 15     # a pause longer than this closes the session and writes its summary
-  recall_sessions: 3           # how many recent session summaries go into the briefing
+  dir: data/memory
+  session_idle_minutes: 15
+  recall_sessions: 3
 
 proactive:
   enabled: true
-  heartbeat_minutes: 30        # periodic check of due tasks
+  heartbeat_minutes: 30
   quiet_hours: ["23:00", "07:00"]
-  routines: config/routines.yaml   # what Alfred does on his own: at set times or when the app starts
+  routines: config/routines.yaml
 
 logging:
-  dir: data/logs               # activity log, one JSONL file per day
+  dir: data/logs
 
 mcp_config: config/mcp.json

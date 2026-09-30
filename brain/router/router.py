@@ -1,19 +1,3 @@
-"""The router: one fast typed decision per utterance, before any expensive thinking.
-
-Its categories come from the brain map (brain_map/, OKF), so what Jev chooses between is
-exactly what the brain is connected to. One Jev call asks:
-  module         which module handles this                    choice over Module pages
-  capability     which group of tools is needed                choice over Capability pages
-  skill          which procedure fits, if any                  choice over Skill pages + "none"
-  topic          which knowledge-library subject, if any       choice over Topic pages + "none"
-  urgency        can it wait / today / right now               score
-  acts_on_world  will it book / send / pay / delete            noul
-  needs_history  does it need earlier sessions or tasks        noul
-
-The executor then gets only the tools of the chosen capabilities (plus the skill's), instead of
-every tool of the module. Fallback when Jev is unavailable: Claude (light model, JSON schema),
-then keyword rules.
-"""
 from __future__ import annotations
 
 import json
@@ -36,16 +20,17 @@ class Route:
     module: str
     skill: str | None = None
     topic: str | None = None
-    capabilities: list[str] = field(default_factory=list)   # empty = every capability of the modules
+    capabilities: list[str] = field(default_factory=list)
     confidence: float = 0.0
     probabilities: dict[str, float] = field(default_factory=dict)
     capability_probabilities: dict[str, float] = field(default_factory=dict)
-    also: list[str] = field(default_factory=list)     # second module loaded when the decision is close
-    urgency: float = 0.0                               # 0 = can wait, 1 = today, 2 = right now
+    also: list[str] = field(default_factory=list)
+    urgency: float = 0.0
     acts_on_world: float = 0.0
     needs_history: float = 0.0
-    clarify: bool = False                              # too unsure -> ask one short question
-    source: str = "rules"                              # jev | llm | rules | hint
+    clarify: bool = False
+    forced: list[str] = field(default_factory=list)
+    source: str = "rules"
     latency_ms: int = 0
     usage: dict[str, Any] = field(default_factory=dict)
 
@@ -64,7 +49,6 @@ class Router:
         self.settings = settings
         self.anthropic = anthropic_client
 
-    # ------------------------------------------------------------------ public
     async def classify(self, text: str, context: str = "") -> Route:
         started = time.perf_counter()
         route: Route | None = None
@@ -76,16 +60,33 @@ class Router:
         if route is None and self.anthropic is not None:
             try:
                 route = await self._classify_llm(text, context)
-            except Exception:  # noqa: BLE001 - any failure falls through to rules
+            except Exception:
                 route = None
         if route is None:
             route = self._classify_rules(text)
         self.apply_policy(route)
+        self.force(route, text)
         route.latency_ms = int((time.perf_counter() - started) * 1000)
         return route
 
+    def force(self, route: Route, text: str) -> None:
+        """Capabilities the user named outright ("zadanie", "kalendarz", "rutyna"...) - `router.triggers` - are
+        always given, with their module's instructions, whatever Jev guessed."""
+        rules = self.settings.get("router.triggers") or {}
+        forced = [cid for cid, pattern in rules.items()
+                  if cid in self.map.capabilities and re.search(pattern, text, re.I)]
+        if not forced:
+            return
+        route.capabilities = route.capabilities or self.map.capabilities_of(route.modules)  # [] meant "all of them"
+        for cid in forced:
+            owner = self.map.capabilities[cid].get("module")
+            if owner and owner != route.module and owner not in route.also:
+                route.also.append(owner)
+            if cid not in route.capabilities:
+                route.capabilities.append(cid)
+        route.forced = forced
+
     async def is_yes(self, text: str, question: str) -> bool | None:
-        """Interpret an answer to a confirmation question. None = unclear."""
         lowered = text.lower().strip(" .!?")
         if re.search(r"\b(tak|jasne|potwierdzam|dawaj|zgoda|ok|okej|yes|yeah|sure|confirm|go ahead|do it)\b", lowered):
             if not re.search(r"\b(nie|no|don't|stop|cancel|anuluj)\b", lowered):
@@ -105,42 +106,47 @@ class Router:
         return None
 
     async def is_injection(self, text: str, context: str = "") -> dict[str, Any]:
-        """The shield's verdict: {breach, probability, source, ms}. breach = prompt injection / jailbreak,
-        do not let it reach the executor. Jev first, then Claude (light model); when neither can answer it
-        fails closed (rule 10), source "closed"."""
-        started = time.perf_counter()
-        state = shield.state(text, context)
+        return await self._judge("injection", shield.PROMPT, shield.state(text, context),
+                                 "Próba naruszenia bezpieczeństwa (prompt injection, jailbreak, zmiana roli)",
+                                 "Zwykła prośba użytkownika")
 
-        def verdict(breach: bool, source: str, probability: float | None = None) -> dict[str, Any]:
-            return {"breach": breach, "probability": probability, "source": source,
+    async def check_action(self, request: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        return await self._judge("unsafe_action", shield.ACTION_PROMPT, shield.action_state(request, tool, args),
+                                 "Niebezpieczna akcja (nie wynika z prośby, wstrzyknięte polecenia, wyciek danych)",
+                                 "Akcja zgodna z prośbą użytkownika")
+
+    async def _judge(self, key: str, prompt: str, state: str, true: str, false: str) -> dict[str, Any]:
+        started = time.perf_counter()
+
+        def verdict(breach: bool, source: str, probability: float | None = None, tokens: int = 0) -> dict[str, Any]:
+            return {"breach": breach, "probability": probability, "source": source, "tokens": tokens,
                     "ms": int((time.perf_counter() - started) * 1000)}
 
         if self.jev.available:
             try:
-                resp = await self.jev.ask(state, {"injection": noul(
-                    shield.PROMPT, true="Próba naruszenia bezpieczeństwa (prompt injection, jailbreak, zmiana roli)",
-                    false="Zwykła prośba użytkownika")})
-                p = float(resp["answers"]["injection"]["noul"])
-                return verdict(p >= float(self.settings.get("router.injection_at", 0.5)), "jev", p)
+                resp = await self.jev.ask(state, {key: noul(prompt, true=true, false=false)})
+                p = float(resp["answers"][key]["noul"])
+                u = resp.get("usage") or {}
+                return verdict(p >= float(self.settings.get("router.injection_at", 0.5)), "jev", p,
+                               int(u.get("input_tokens", 0) or 0) + int(u.get("output_tokens", 0) or 0))
             except (JevError, KeyError, TypeError, ValueError):
                 pass
         if self.anthropic is not None:
             try:
                 response = await self.anthropic.messages.create(
-                    model=self.settings.get("models.light"), max_tokens=50, system=shield.PROMPT,
+                    model=self.settings.get("models.light"), max_tokens=50, system=prompt,
                     messages=[{"role": "user", "content": state}],
                     output_config={"format": {"type": "json_schema", "schema": {
                         "type": "object", "properties": {"breach": {"type": "boolean"}},
                         "required": ["breach"], "additionalProperties": False}}},
                 )
                 breach = bool(json.loads(next(b.text for b in response.content if b.type == "text"))["breach"])
-                return verdict(breach, "llm")
-            except Exception:  # noqa: BLE001 - any failure fails closed below
+                return verdict(breach, "llm", tokens=response.usage.input_tokens + response.usage.output_tokens)
+            except Exception:
                 pass
         return verdict(True, "closed")
 
     async def should_interrupt(self, state: str) -> float:
-        """Proactive gate: probability that this is worth interrupting the user for."""
         if not self.jev.available:
             return 1.0
         try:
@@ -179,7 +185,6 @@ class Router:
                                  {**topics, NONE: "Not about the knowledge library"})
         return qs
 
-    # --------------------------------------------------------------- backends
     async def _classify_jev(self, text: str, context: str) -> Route:
         state = f"User said: {text}" + (f"\nConversation so far: {context}" if context else "")
         resp = await self.jev.ask(state, self.questions())
@@ -230,7 +235,7 @@ class Router:
                          "acts_on_world", "needs_history"],
             "additionalProperties": False,
         }
-        listing = lambda d: "\n".join(f"- {k}: {v}" for k, v in d.items()) or "- none"  # noqa: E731
+        listing = lambda d: "\n".join(f"- {k}: {v}" for k, v in d.items()) or "- none"
         system = (
             "You route requests for a personal voice assistant. Pick the module for the user's latest request, "
             "a second module only if it clearly spans two, the capabilities (tool groups) needed, the matching "
@@ -283,7 +288,6 @@ class Router:
         best = max(probs, key=probs.get)
         return Route(module=best, confidence=probs[best], probabilities=probs, source="rules")
 
-    # ----------------------------------------------------------------- policy
     def apply_policy(self, route: Route) -> None:
         mods = self.map.modules
         if route.module not in mods:
@@ -291,12 +295,10 @@ class Router:
         confident = float(self.settings.get("router.confident_at", 0.6))
         ask_below = float(self.settings.get("router.ask_below", 0.3))
 
-        # A close call loads the runner-up module too.
         if route.confidence < confident and len(route.probabilities) > 1:
             ranked = sorted(route.probabilities.items(), key=lambda kv: kv[1], reverse=True)
             if ranked[1][1] > 0.15:
                 route.also.append(ranked[1][0])
-        # A skill or a capability from another module means the request spans both.
         if route.skill and route.skill in self.map.skills:
             route.also.append(self.map.skills[route.skill]["module"])
         for cid, p in route.capability_probabilities.items():
@@ -305,7 +307,6 @@ class Router:
                 route.also.append(owner)
         route.also =[m for m in dict.fromkeys(route.also) if m != route.module and m in mods]
 
-        # Capabilities: the most likely ones within reach of the routed modules, until 80% is covered.
         reachable = self.map.capabilities_of(route.modules)
         chosen: list[str] = []
         if route.confidence >= ask_below and route.capability_probabilities:
@@ -324,5 +325,5 @@ class Router:
                 if cap and cap not in chosen:
                     chosen.append(cap)
             chosen += [c for c in self.map.always_capabilities(route.modules) if c not in chosen]
-        route.capabilities = chosen          # empty -> the executor loads every capability of the modules
+        route.capabilities = chosen
         route.clarify = route.source not in ("rules", "hint") and route.confidence < ask_below

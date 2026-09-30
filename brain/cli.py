@@ -1,9 +1,3 @@
-"""Command line entry points.
-
-  alfred serve            start the brain + UI on http://127.0.0.1:8765
-  alfred chat             talk to the brain in the terminal (text only)
-  alfred classify "..."   show how the router classifies a sentence
-"""
 from __future__ import annotations
 
 import argparse
@@ -30,8 +24,8 @@ async def _chat() -> None:
             if e.kind == "classified":
                 print(f"  [router/{d['source']}] {d['module']}{'+' + ','.join(d['also']) if d['also'] else ''}"
                       f" skill={d['skill']} conf={d['confidence']:.2f} {d['latency_ms']}ms")
-            elif e.kind == "ack":
-                print(f"Alfred: {d['text']}")
+            elif e.kind == "action_check" and d["breach"]:
+                print(f"  [shield] blocked {d['tool']}")
             elif e.kind == "tool_call":
                 print(f"  [tool] {d['tool']} {json.dumps(d['input'], ensure_ascii=False)[:120]}")
             elif e.kind == "confirm_request":

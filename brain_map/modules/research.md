@@ -11,10 +11,10 @@ servers: [alfred, anthropic]
 examples: [sprawdź jaka jutro pogoda w Krakowie, znajdź dobrą włoską restaurację na
     Kazimierzu, what's the latest on the Claude API pricing]
 enabled: true
-model: null
+model: claude-sonnet-5
 effort: medium
 tags: [module]
-timestamp: '2026-09-28T18:43:45+02:00'
+timestamp: '2026-09-29T09:45:34+02:00'
 ---
 
 # Web research and current information

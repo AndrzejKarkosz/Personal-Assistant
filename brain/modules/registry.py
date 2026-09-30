@@ -1,15 +1,3 @@
-"""Module registry: every folder in modules/ with a module.yaml is one brain "lobe".
-
-A module declares (authoring source for the brain map):
-  - how the router recognises it       label, description, examples
-  - its capabilities                    named groups of tools, e.g. calendar.read / calendar.write,
-                                        each with tool name patterns, examples and a confirm flag
-  - capabilities it borrows             uses: [tasks.manage, memory.recall]
-  - its skills                          skills/*.md - procedures, with `uses:` capabilities
-  - model / effort
-
-The brain map compiler (brain/atlas) joins this with the live tool catalogue into an OKF bundle.
-"""
 from __future__ import annotations
 
 import fnmatch
@@ -28,14 +16,14 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
 
 @dataclass
 class Capability:
-    id: str                    # "<module>.<name>"
+    id: str
     module: str
     label: str
     description: str = ""
-    tools: list[str] = field(default_factory=list)      # glob patterns over tool names
+    tools: list[str] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
-    confirm: bool = False      # every tool in it needs a spoken "yes"
-    always: bool = False       # loaded whenever its module is routed (e.g. confirm_action)
+    confirm: bool = False
+    always: bool = False
 
     def matches(self, tool_name: str) -> bool:
         return any(fnmatch.fnmatch(tool_name, p) for p in self.tools)
@@ -43,7 +31,7 @@ class Capability:
 
 @dataclass
 class Skill:
-    id: str                   # "<module>.<skill>"
+    id: str
     name: str
     description: str
     body: str
@@ -126,7 +114,6 @@ class ModuleRegistry:
         return [c for m in self.enabled() for c in m.capabilities.values()]
 
     def module_capabilities(self, module_id: str) -> list[Capability]:
-        """Own capabilities plus the ones the module borrows (`uses`)."""
         module = self.get(module_id)
         if not module:
             return []

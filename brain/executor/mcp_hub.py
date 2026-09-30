@@ -1,12 +1,3 @@
-"""MCP hub: one long-lived client connection per configured MCP server.
-
-All connections are opened and closed inside one background task (the MCP SDK's stdio
-transport must be exited in the task that entered it). Other tasks call tools through
-the ClientSession objects, which is safe.
-
-Claude sees each MCP tool as "<server>__<tool>" and only the tools of the modules the
-router selected - that is where most of the token savings come from.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -27,11 +18,26 @@ log = logging.getLogger("alfred.mcp")
 class ServerState:
     name: str
     config: dict[str, Any]
-    status: str = "disabled"       # disabled | connecting | ready | error
+    status: str = "disabled"
     error: str | None = None
-    tools: list[dict[str, Any]] = field(default_factory=list)   # Claude tool definitions
-    hints: dict[str, dict[str, Any]] = field(default_factory=dict)  # per tool: title, read_only, destructive
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    hints: dict[str, dict[str, Any]] = field(default_factory=dict)
     session: Any = None
+
+
+def compact(text: str, drop: set[str]) -> str:
+    """Minify a JSON tool result and strip `drop` keys and empty values - it stays in the context for every
+    later agent round. Non-JSON text passes through untouched."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text
+
+    def clean(x: Any) -> Any:
+        if isinstance(x, dict):
+            return {k: clean(v) for k, v in x.items() if k not in drop and v not in (None, "", [], {})}
+        return [clean(v) for v in x] if isinstance(x, list) else x
+    return json.dumps(clean(data), ensure_ascii=False, separators=(",", ":"))
 
 
 def claude_tool_name(server: str, tool: str) -> str:
@@ -42,7 +48,7 @@ class MCPHub:
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self.servers: dict[str, ServerState] = {}
-        self._name_map: dict[str, tuple[str, str]] = {}    # claude name -> (server, mcp tool)
+        self._name_map: dict[str, tuple[str, str]] = {}
         self._stop = asyncio.Event()
         self._ready = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -66,7 +72,7 @@ class MCPHub:
         if self._task:
             try:
                 await asyncio.wait_for(self._task, 10)
-            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            except (asyncio.TimeoutError, Exception):
                 self._task.cancel()
 
     async def _run(self) -> None:
@@ -77,7 +83,7 @@ class MCPHub:
                 try:
                     await asyncio.wait_for(self._connect(stack, state), 25)
                     state.status = "ready"
-                except Exception as exc:  # noqa: BLE001 - one broken server must not stop the brain
+                except Exception as exc:
                     state.status, state.error = "error", f"{type(exc).__name__}: {exc}"
                     log.warning("MCP server %s failed: %s", state.name, state.error)
             self._ready.set()
@@ -123,9 +129,7 @@ class MCPHub:
                 "destructive": getattr(ann, "destructive_hint", None) if ann else None,
             }
 
-    # ------------------------------------------------------------------ usage
     def all_tools(self) -> dict[str, dict[str, Any]]:
-        """Every tool of every ready server, by Claude name."""
         return {t["name"]: t for s in self.servers.values() if s.status == "ready" for t in s.tools}
 
     def tools_for(self, server_names: list[str]) -> list[dict[str, Any]]:
@@ -140,14 +144,14 @@ class MCPHub:
         return claude_name in self._name_map
 
     async def call(self, claude_name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-        """Returns (text result, is_error)."""
         server, tool = self._name_map[claude_name]
         session = self.servers[server].session
         result = await session.call_tool(tool, arguments)
+        drop = set(self.servers[server].config.get("drop_fields", []))
         parts = []
         for block in getattr(result, "content", None) or []:
             text = getattr(block, "text", None)
-            parts.append(text if text is not None else f"[{getattr(block, 'type', 'content')}]")
+            parts.append(compact(text, drop) if text is not None else f"[{getattr(block, 'type', 'content')}]")
         is_error = getattr(result, "is_error", None) or getattr(result, "isError", False)
         return "\n".join(parts)[:20000], bool(is_error)
 

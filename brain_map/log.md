@@ -138,3 +138,35 @@
 - changed tools/knowledge-base/kb-pending.md
 - changed tools/knowledge-base/kb-source.md
 - changed servers/knowledge-base.md
+
+## 2026-09-29T09:45:34+02:00
+- changed modules/knowledge.md
+- changed modules/memory.md
+- changed modules/research.md
+
+## 2026-09-29T10:16:23+02:00
+- changed modules/bookings.md
+- changed modules/calendar.md
+- changed capabilities/calendar.read.md
+- changed capabilities/calendar.write.md
+- added tools/google-calendar/list-calendars.md
+- added tools/google-calendar/list-events.md
+- added tools/google-calendar/search-events.md
+- added tools/google-calendar/get-event.md
+- added tools/google-calendar/list-colors.md
+- added tools/google-calendar/create-event.md
+- added tools/google-calendar/create-events.md
+- added tools/google-calendar/update-event.md
+- added tools/google-calendar/delete-event.md
+- added tools/google-calendar/get-freebusy.md
+- added tools/google-calendar/get-current-time.md
+- added tools/google-calendar/respond-to-event.md
+- added tools/google-calendar/manage-accounts.md
+- changed servers/google-calendar.md
+
+## 2026-09-29T11:12:36+02:00
+- changed tools/alfred/task-create.md
+- changed tools/alfred/task-update.md
+
+## 2026-09-29T19:36:03+02:00
+- changed tools/alfred/task-create.md

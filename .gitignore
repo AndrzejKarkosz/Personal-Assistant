@@ -3,5 +3,4 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-# Runtime state: session memory, activity logs, TTS cache - private, never committed.
 data/

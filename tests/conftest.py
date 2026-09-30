@@ -1,4 +1,3 @@
-"""Shared fixtures: a Brain wired to temp dirs, a fake Claude client and no MCP servers."""
 from __future__ import annotations
 
 import json
@@ -23,7 +22,7 @@ class FakeBlock:
     name: str = ""
     input: dict = field(default_factory=dict)
 
-    def model_dump(self, **_: Any) -> dict:          # lets the SDK-style append work in tests
+    def model_dump(self, **_: Any) -> dict:
         return {k: v for k, v in self.__dict__.items() if v not in ("", {}, None)}
 
 
@@ -45,12 +44,11 @@ class FakeMessages:
     def __init__(self, script: list):
         self.script = script
         self.calls: list[dict] = []
-        self.breach = False                         # what the shield fallback says about every input
+        self.breach = False
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
         if "output_config" in kwargs and "format" in kwargs["output_config"]:
-            # structured output request (session summary / fallback router)
             return text_response(json.dumps(self._structured(kwargs)))
         return self.script.pop(0) if self.script else text_response("Gotowe.")
 
@@ -76,11 +74,11 @@ class FakeAnthropic:
 def settings(tmp_path: Path, monkeypatch) -> Settings:
     for key in ("ANTHROPIC_API_KEY", "JEV_API_KEY", "ELEVENLABS_API_KEY"):
         monkeypatch.delenv(key, raising=False)
-    # UI overrides (data/settings.json) would leak the developer's local settings into tests - and back.
     monkeypatch.setattr(config, "OVERRIDES_FILE", tmp_path / "settings.json")
     s = Settings.load()
     s.data["llm"] = {"backend": "api"}
-    s.data["models"]["executor"] = "claude-opus-5"      # tests pin the model, config/brain.yaml is yours to change
+    s.data["models"]["executor"] = "claude-opus-5"
+    s.data["assistant"].update(reply_language="", context_capabilities=[])   # tests opt in to these
     s.data["map"] = {"dir": str(tmp_path / "brain_map"), "topic_sources": []}
     s.data["memory"]["dir"] = str(tmp_path / "memory")
     s.data["proactive"]["routines"] = str(tmp_path / "routines.yaml")
@@ -93,7 +91,6 @@ def settings(tmp_path: Path, monkeypatch) -> Settings:
 
 @pytest.fixture
 def http(monkeypatch):
-    """Answer every httpx.AsyncClient request with a handler: http(lambda request: httpx.Response(200))."""
     real = httpx.AsyncClient
 
     def install(handler):

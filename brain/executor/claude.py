@@ -1,20 +1,10 @@
-"""Executors: Claude with only the tools the route needs, and the guard in front of side effects.
-
-Two backends share everything except the loop:
-  ApiExecutor           Anthropic Messages API, billed per token (ANTHROPIC_API_KEY)
-  SubscriptionExecutor  Claude Agent SDK -> your logged-in Claude Code (Pro/Max subscription)
-                        (brain/executor/agent.py)
-
-Which tools a request gets comes from the brain map: the route's capabilities (or every capability of
-the routed modules), plus "always" capabilities and the chosen skill's. Confirmation rules come from
-the map too (capability `confirm`, destructive tools, or `confirm_override` on a tool page).
-"""
 from __future__ import annotations
 
 import asyncio
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import anthropic
@@ -32,7 +22,6 @@ if TYPE_CHECKING:
     from ..atlas import BrainMap
 
 SERVER_TOOLS = builtin.SERVER_TOOLS
-# Models that get the server-side refusal fallback (re-run on a fallback model instead of stopping).
 FALLBACK_MODELS = ("claude-opus-5", "claude-fable-5")
 NO_EFFORT_MODELS = ("claude-haiku-4-5",)
 
@@ -40,6 +29,7 @@ REFUSAL = {"pl": "Niestety, z tym nie mogę pomóc.", "en": "I'm afraid I can't 
 FAILED = {"pl": "Coś poszło nie tak po mojej stronie, {addr}. Spróbuj proszę za chwilę.",
           "en": "Something went wrong on my side, {addr}. Please try again in a moment."}
 DECLINED = "The user declined this action. Do not retry; acknowledge briefly."
+BLOCKED = "The security layer blocked this action as unsafe. Do not retry it; tell the user briefly why."
 
 
 @dataclass
@@ -51,13 +41,15 @@ class ExecResult:
     tools_used: list[str] = field(default_factory=list)
     declined: bool = False
     cost_usd: float | None = None
+    request: str = ""
+    untrusted: bool = False  # outside content (MCP / web results) entered this request
 
 
 class BaseExecutor:
     backend = "base"
 
     def __init__(self, settings, registry: ModuleRegistry, brain_map: "BrainMap", hub: MCPHub,
-                 store: MemoryStore, guard: Guard, bus, tts=None):
+                 store: MemoryStore, guard: Guard, bus, tts=None, shield=None):
         self.settings = settings
         self.registry = registry
         self.map = brain_map
@@ -65,9 +57,11 @@ class BaseExecutor:
         self.guard = guard
         self.bus = bus
         self.tts = tts
-        self.handlers = builtin.make_handlers(store)
+        self.shield = shield
+        self.routines = lambda: []  # the brain wires in the proactive engine's routines
+        self.handlers = builtin.make_handlers(
+            store, settings.path("proactive.routines") if settings.get("proactive.routines") else None)
 
-    # ---------------------------------------------------------------- selection
     def modules(self, route: Route) -> list[Module]:
         return [m for m in (self.registry.get(mid) for mid in route.modules) if m]
 
@@ -75,7 +69,9 @@ class BaseExecutor:
         caps = list(route.capabilities) or self.map.capabilities_of(route.modules)
         skill = self.map.skills.get(route.skill or "")
         extra = (skill or {}).get("uses", []) + self.map.always_capabilities(route.modules)
-        return caps + [c for c in extra if c not in caps]
+        # context sources every request can search (knowledge base, memory, tasks), whatever the route
+        extra += [c for c in self.settings.get("assistant.context_capabilities") or [] if c in self.map.capabilities]
+        return caps + [c for c in dict.fromkeys(extra) if c not in caps]
 
     def tool_names(self, route: Route) -> list[str]:
         return self.map.tools_of(self.capabilities(route))
@@ -89,20 +85,23 @@ class BaseExecutor:
     def needs_confirmation(self, name: str) -> bool:
         return name == builtin.CONFIRM_TOOL or self.map.needs_confirmation(name)
 
-    # ----------------------------------------------------------------- prompts
     def system_text(self, route: Route) -> tuple[str, str]:
-        """(persona, module + skill instructions) - kept stable per module so they cache well."""
         parts = [f"## Module: {m.label}\n{m.prompt}".strip() for m in self.modules(route)]
         skill = self.registry.skill(route.skill)
         if skill:
             parts.append(f"## Procedure to follow: {skill.name}\n{skill.body}")
+        routines = [f"- {r['id']} ({r['schedule']}): {r['prompt']}" for r in self.routines()]
+        if routines:
+            parts.append("## Your routines (config/routines.yaml)\n" + "\n".join(routines))
         return persona.system_prompt(self.settings), "\n\n".join(parts) or "No module instructions."
 
     def user_message(self, text: str, route: Route, session: Session) -> str:
         blocks = []
         if not session.turns or route.needs_history >= 0.5:
             blocks.append(f"<memory_briefing>\n{session.briefing}\n</memory_briefing>")
-        hints = [f"module={','.join(route.modules)}", f"urgency={route.urgency:.1f}"]
+        # the current time on EVERY request - the briefing (which also has it) is not always attached
+        hints = [f"now={datetime.now().astimezone():%A %Y-%m-%d %H:%M%z}", f"module={','.join(route.modules)}",
+                 f"urgency={route.urgency:.1f}"]
         if route.topic:
             topic = self.map.topics.get(route.topic, {})
             hints.append(f"knowledge topic={topic.get('title', route.topic)}")
@@ -112,10 +111,16 @@ class BaseExecutor:
         blocks.append(text)
         return "\n\n".join(blocks)
 
-    # ------------------------------------------------------------------- tools
     async def run_tool(self, name: str, args: dict[str, Any], session: Session, request_id: str,
                        result: ExecResult, spoken: str = "") -> tuple[str, bool]:
-        """Runs one tool behind the guard. Returns (output text, is_error)."""
+        # Alfred's own tools act on the user's own (already shield-checked) words - they are only checked once
+        # outside content (MCP result, web page) has entered this request and could have planted instructions.
+        if self.shield and (result.untrusted or not builtin.is_builtin(name)):
+            verdict = await self.shield(result.request, name, args)
+            self.bus.emit("action_check", "shield", request_id, session.id, tool=name, **verdict)
+            if verdict["breach"]:
+                result.actions.append(f"blocked: {_describe(name, args)}")
+                return BLOCKED, True
         if self.needs_confirmation(name):
             summary = str(args.get("summary", "")) if name == builtin.CONFIRM_TOOL else ""
             summary = summary or spoken or _describe(name, args)
@@ -140,10 +145,11 @@ class BaseExecutor:
                 if name in builtin.MUTATING:
                     result.actions.append(f"{name}: {_describe(name, args)}")
             elif self.hub.owns(name):
+                result.untrusted = True
                 output, is_error = await self.hub.call(name, args)
             else:
                 output, is_error = f"Unknown tool {name}", True
-        except Exception as exc:  # noqa: BLE001 - errors go back to Claude, not up the stack
+        except Exception as exc:
             output, is_error = f"{type(exc).__name__}: {exc}", True
         self.bus.emit("tool_result", node, request_id, session.id, tool=name, is_error=is_error,
                       ms=int((time.perf_counter() - started) * 1000), preview=str(output)[:300])
@@ -161,7 +167,6 @@ class BaseExecutor:
 
 
 class ApiExecutor(BaseExecutor):
-    """Anthropic Messages API with a manual tool loop (billed per token)."""
     backend = "api"
 
     def __init__(self, client: anthropic.AsyncAnthropic | None, *args, **kwargs):
@@ -184,7 +189,7 @@ class ApiExecutor(BaseExecutor):
         model, effort = self.model_and_effort(route)
         lang = session.language
         addr = (self.settings.get("assistant.address", {}) or {}).get(lang, "")
-        result = ExecResult(text="", model=model)
+        result = ExecResult(text="", model=model, request=text)
         if self.client is None:
             result.text = ("Brakuje klucza ANTHROPIC_API_KEY w pliku .env (tryb api)." if lang == "pl"
                            else "ANTHROPIC_API_KEY is missing from .env (api mode).")
@@ -213,12 +218,13 @@ class ApiExecutor(BaseExecutor):
             usage = _usage_dict(response.usage)
             for k, v in usage.items():
                 result.usage[k] = result.usage.get(k, 0) + v
-            # ponytail: priced as `model`; a refusal fallback served by another model is priced at this rate too
             result.cost_usd = llm.cost_usd(model, result.usage)
             self.bus.emit("llm_call", "executor", request_id, session.id, round=round_no,
                           stop_reason=response.stop_reason, ms=int((time.perf_counter() - started) * 1000),
                           usage=usage)
             messages.append({"role": "assistant", "content": response.content})
+            if any(b.type == "server_tool_use" for b in response.content):  # web search / fetch ran
+                result.untrusted = True
 
             if response.stop_reason == "tool_use" and round_no < max_rounds:
                 messages.append({"role": "user", "content": await self._tool_results(
@@ -251,14 +257,14 @@ class ApiExecutor(BaseExecutor):
         spoken = " ".join(b.text for b in content if b.type == "text").strip()
         guarded = [c for c in calls if self.needs_confirmation(c.name)]
         outputs: dict[str, tuple[str, bool]] = {}
-        for c in guarded:                          # one question at a time
+        for c in guarded:
             outputs[c.id] = await self.run_tool(c.name, dict(c.input or {}), session, request_id, result, spoken)
         free = [c for c in calls if c not in guarded]
         for c, out in zip(free, await asyncio.gather(
                 *(self.run_tool(c.name, dict(c.input or {}), session, request_id, result) for c in free))):
             outputs[c.id] = out
         blocks = []
-        for c in calls:                            # same order, all in one user message
+        for c in calls:
             text, is_error = outputs[c.id]
             block: dict[str, Any] = {"type": "tool_result", "tool_use_id": c.id, "content": text}
             if is_error:
@@ -267,7 +273,6 @@ class ApiExecutor(BaseExecutor):
         return blocks
 
 
-# Backwards-compatible name.
 Executor = ApiExecutor
 
 

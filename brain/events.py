@@ -1,9 +1,3 @@
-"""Event bus + activity log.
-
-Every step of the brain publishes an Event. Subscribers (the UI WebSocket, tests) get them
-live, and every event is also appended to the activity log: one JSONL file per day, so
-everything Alfred ever did can be replayed and audited.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -22,8 +16,8 @@ def now_iso() -> str:
 
 @dataclass
 class Event:
-    kind: str                     # e.g. "transcript", "classified", "ack", "tool_call", "answer"
-    node: str                     # brain-graph node the event belongs to: "ears", "router", "module:calendar", ...
+    kind: str
+    node: str
     data: dict[str, Any] = field(default_factory=dict)
     request_id: str | None = None
     session_id: str | None = None
@@ -33,7 +27,6 @@ class Event:
         return asdict(self)
 
 
-# Payload keys never written to disk (large binary blobs).
 _UNLOGGED_KEYS = {"audio_b64"}
 
 
@@ -68,8 +61,6 @@ class EventBus:
     def __init__(self, log: ActivityLog | None = None):
         self.log = log
         self._subscribers: set[asyncio.Queue[Event]] = set()
-        # What Alfred said on his own (routines, reminders) while nobody was listening: the next
-        # subscriber - the UI being opened - gets it first.
         self.unheard: deque[Event] = deque(maxlen=20)
 
     def subscribe(self) -> asyncio.Queue[Event]:
@@ -93,7 +84,7 @@ class EventBus:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                pass  # a slow UI never blocks the brain
+                pass
         return event
 
 

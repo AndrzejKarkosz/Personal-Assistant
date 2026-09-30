@@ -13,10 +13,10 @@ examples: ['co wiem o architekturze event-driven?', znajdź w mojej bazie notatk
     Databricks, what did I write about Power BI, 'jak idzie mi nauka hiszpańskiego?',
   wytłumacz mi jak w hiszpańskim działa subjuntivo]
 enabled: true
-model: null
+model: claude-sonnet-5
 effort: medium
 tags: [module]
-timestamp: '2026-09-28T18:43:45+02:00'
+timestamp: '2026-09-29T09:45:34+02:00'
 ---
 
 # Personal knowledge library

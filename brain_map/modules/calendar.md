@@ -7,14 +7,14 @@ id: calendar
 capabilities: [calendar.read, calendar.write]
 uses: [tasks.manage, memory.recall, bookings.confirm]
 skills: [calendar.daily-brief]
-servers: [alfred]
+servers: [alfred, google-calendar]
 examples: ['co mam jutro w kalendarzu?', przesuń spotkanie z Tomkiem na piątek, what's
     on my schedule this week, add a dentist appointment on Monday at 10]
 enabled: true
 model: null
 effort: low
 tags: [module]
-timestamp: '2026-09-28T18:43:45+02:00'
+timestamp: '2026-09-29T10:16:23+02:00'
 ---
 
 # Calendar and schedule
@@ -35,6 +35,7 @@ Meetings, events, appointments, free time, what is planned for a day or week; cr
 
 ## Connected servers
 - [alfred](../servers/alfred.md)
+- [google-calendar](../servers/google-calendar.md)
 
 ## Example requests
 - co mam jutro w kalendarzu?

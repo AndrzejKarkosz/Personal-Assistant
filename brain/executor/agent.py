@@ -1,12 +1,3 @@
-"""SubscriptionExecutor: runs Claude through the Claude Agent SDK, i.e. through your logged-in
-Claude Code (`claude auth status` -> claude.ai), so requests use your Pro/Max subscription limits
-instead of per-token API billing.
-
-The brain stays in charge of the tools: every tool the route allows (built-ins and the MCP tools the
-hub is already connected to) is exposed through one in-process SDK MCP server called "alfred", with
-the guard inside the handler. Claude Code's own tools are switched off except WebSearch / WebFetch
-when the route needs them, and no user/project settings, hooks or CLAUDE.md files are loaded.
-"""
 from __future__ import annotations
 
 import time
@@ -39,7 +30,7 @@ class SubscriptionExecutor(BaseExecutor):
             elif name in live:
                 spec = live[name]
             else:
-                continue          # web tools are Claude Code built-ins, offline tools are skipped
+                continue
 
             async def handler(args: dict[str, Any], _name: str = name) -> dict[str, Any]:
                 text, is_error = await self.run_tool(_name, dict(args or {}), session, request_id, result)
@@ -55,7 +46,7 @@ class SubscriptionExecutor(BaseExecutor):
         model, effort = self.model_and_effort(route)
         lang = session.language
         addr = (self.settings.get("assistant.address", {}) or {}).get(lang, "")
-        result = ExecResult(text="", model=model)
+        result = ExecResult(text="", model=model, request=text)
 
         names = self.tool_names(route)
         sdk_tools = self._sdk_tools(names, session, request_id, result)
@@ -68,11 +59,11 @@ class SubscriptionExecutor(BaseExecutor):
         options = ClaudeAgentOptions(
             system_prompt=f"{persona_text}\n\n{module_text}",
             mcp_servers={SDK_SERVER: create_sdk_mcp_server(SDK_SERVER, tools=sdk_tools)} if sdk_tools else {},
-            tools=web,                                     # Claude Code built-ins: only web, if routed
+            tools=web,
             allowed_tools=[sdk_name(t.name) for t in sdk_tools] + web,
-            permission_mode="dontAsk",                     # anything not listed above is denied
-            setting_sources=[],                            # no user settings, hooks or CLAUDE.md
-            strict_mcp_config=True,                        # nor the account's claude.ai connectors (~270k tokens)
+            permission_mode="dontAsk",
+            setting_sources=[],
+            strict_mcp_config=True,
             model=model,
             effort=effort,
             max_turns=int(self.settings.get("models.max_tool_rounds", 8)) + 1,
@@ -89,6 +80,8 @@ class SubscriptionExecutor(BaseExecutor):
             async for message in query(prompt=prompt, options=options):
                 if isinstance(message, AssistantMessage):
                     texts = [b.text for b in message.content if isinstance(b, TextBlock)]
+                    if any(getattr(b, "name", None) in WEB_TOOLS.values() for b in message.content):
+                        result.untrusted = True  # a web page is now in the context
                     if texts:
                         last_text = " ".join(texts).strip()
                     usage = message.usage or {}
@@ -108,7 +101,7 @@ class SubscriptionExecutor(BaseExecutor):
                         self.bus.emit("error", "executor", request_id, session.id,
                                       message=f"Claude Code: {message.subtype} {message.errors or ''}"[:500])
                     result.text = (message.result or last_text or "").strip()
-        except Exception as exc:  # noqa: BLE001 - CLI missing, not logged in, rate limit ...
+        except Exception as exc:
             self.bus.emit("error", "executor", request_id, session.id, message=f"{type(exc).__name__}: {exc}"[:500])
             result.text = FAILED[lang].format(addr=addr)
             return result

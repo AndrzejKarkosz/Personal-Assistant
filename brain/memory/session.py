@@ -1,10 +1,3 @@
-"""Live session: the working memory of one conversation.
-
-A session starts on the first utterance, keeps the last turns as plain text (not the
-tool-call transcripts - those stay inside a single request) and closes after an idle
-pause. On close, the light model writes the OKF session page: summary, what was done,
-what changed, open threads and facts - and facts are filed into facts/<category>/.
-"""
 from __future__ import annotations
 
 import json
@@ -45,7 +38,7 @@ SUMMARY_SCHEMA = {
 
 @dataclass
 class Turn:
-    role: str            # user | assistant
+    role: str
     text: str
     module: str | None = None
     ts: str = field(default_factory=now_iso)
@@ -57,7 +50,7 @@ class Session:
     started: str = field(default_factory=now_iso)
     last_activity: datetime = field(default_factory=datetime.now)
     turns: list[Turn] = field(default_factory=list)
-    actions: list[str] = field(default_factory=list)      # tool calls that changed something
+    actions: list[str] = field(default_factory=list)
     usage: dict[str, float] = field(default_factory=lambda: {"input": 0, "output": 0, "cache_read": 0, "jev": 0})
     briefing: str = ""
     language: str = "pl"
@@ -69,13 +62,12 @@ class Session:
     def add_usage(self, usage: dict[str, Any]) -> None:
         for key, value in usage.items():
             if isinstance(value, (int, float)):
-                self.usage[key] = self.usage.get(key, 0) + value      # tokens are ints, cost_usd a float
+                self.usage[key] = self.usage.get(key, 0) + value
 
     def recent_text(self, n: int = 6) -> str:
         return "\n".join(f"{t.role}: {t.text}" for t in self.turns[-n:])
 
     def history_messages(self, n: int = 8) -> list[dict[str, str]]:
-        """Last turns as alternating user/assistant messages (plain text only)."""
         msgs: list[dict[str, str]] = []
         for turn in self.turns[-n:]:
             if msgs and msgs[-1]["role"] == turn.role:
@@ -100,7 +92,6 @@ class SessionManager:
         return timedelta(minutes=float(self.settings.get("memory.session_idle_minutes", 15)))
 
     async def get(self) -> Session:
-        """Current session, or a fresh one (closing a stale one first)."""
         if self.current and datetime.now() - self.current.last_activity > self.idle_limit:
             await self.close()
         if self.current is None:
@@ -155,5 +146,5 @@ class SessionManager:
             )
             text = next(b.text for b in response.content if b.type == "text")
             return json.loads(text)
-        except Exception:  # noqa: BLE001 - never lose a session because the summary failed
+        except Exception:
             return fallback

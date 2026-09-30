@@ -1,14 +1,3 @@
-"""Minimal async client for Jev (TypeSafe AI "System One" typed decisions).
-
-POST {url}  Authorization: Bearer <key>
-{ "model": ..., "state": "<text>", "questions": { "<id>": {type, instructions, criteria} } }
--> { "answers": { "<id>": {...} }, "usage": {...} }
-
-Question types:
-  choice  criteria = {option_id: description}     -> {choice, probabilities, confidence}
-  score   criteria = [level_low, ..., level_high]  -> {score, legend, probabilities, confidence}
-  noul    criteria = {"true": ..., "false": ...}   -> {noul: P(yes)}
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -47,7 +36,6 @@ class JevClient:
         return bool(self.api_key)
 
     async def ask(self, state: str, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
-        """Returns the full response: {"answers": {...}, "usage": {...}, "model": ...}."""
         if not self.api_key:
             raise JevError("JEV_API_KEY is not set")
         payload = {"model": self.model, "state": state, "questions": questions}

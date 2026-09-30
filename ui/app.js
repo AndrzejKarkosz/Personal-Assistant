@@ -1,5 +1,6 @@
-// Alfred UI: conversation + voice (both views); the day view - summary, Google calendar, to-do, sessions;
-// the brain view - 3D brain map, memory / map / persona / modules / log / settings.
+// Alfred UI. Brain view: the 3D brain, Alfred's universe (bottom left), the path to the answer (right).
+// Tasks view: to-do by category, routines, Google calendar and tabs for summary / conversation / memory / map /
+// persona / modules / log / settings. Both: subtitles with what Alfred says and a low bar (composer, Jev, session cost).
 const $ = (s) => document.querySelector(s);
 const api = async (path, opts = {}) => {
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
@@ -18,23 +19,92 @@ function addMsg(kind, text, meta = "") {
   el.className = `msg ${kind}`;
   el.innerHTML = esc(text) + (meta ? `<span class="meta">${esc(meta)}</span>` : "");
   $("#messages").appendChild(el);
-  $("#messages").scrollTop = 1e9;
+  $("#tab-chat").scrollTop = 1e9;
 }
+
+// ---------------------------------------------------------------- subtitles
+let subTimer, lastSaid = "";
+function hideSubtitle(ms) {               // never while Alfred is still talking or waiting for a yes/no
+  clearTimeout(subTimer);
+  subTimer = setTimeout(() => talking || !$("#confirm").classList.contains("hidden") || $("#subtitle").classList.add("hidden"), ms);
+}
+function subtitle(text, kind = "say", you = "") {
+  $("#subtitle").className = `subtitle ${kind}`;
+  $("#sub-text").textContent = text;
+  $("#sub-you").textContent = you ? `„${you}”` : "";
+  hideSubtitle(Math.max(6000, text.length * 70));
+}
+$("#subtitle-x").onclick = () => $("#subtitle").classList.add("hidden");
 
 // ------------------------------------------------------------------- audio
 const audioQueue = [];
 let playing = null;
 let thinking = false, talking = false;
-function mood() {                         // the avatar above the conversation: listening / thinking / speaking
-  const s = talking ? "speaking" : thinking ? "thinking" : "idle";
+function mood() {                         // Alfred's universe: idle / listening / thinking / speaking
+  const s = isRecording() ? "listening" : talking ? "speaking" : thinking ? "thinking" : "idle";
   $("#alfred").dataset.state = s;
-  $("#alfred-state").textContent = { idle: "słucham", thinking: "myśli…", speaking: "mówi" }[s];
+  $("#alfred-state").textContent = { idle: "czeka", listening: "słucha", thinking: "myśli…", speaking: "mówi" }[s];
 }
 function setSpeaking(on) {                // the speaker icon (and the brain's voice) light up while Alfred talks
   $("#speaking").classList.toggle("on", on);
   Brain3D?.speaking(on);
   talking = on; mood();
+  if (!on) hideSubtitle(4000);
 }
+
+// Alfred's universe: a tilted spiral galaxy with three worlds on orbits. It turns slowly while he waits, whirls
+// while he thinks and breathes light while he speaks.
+(() => {
+  const cv = $("#universe"), g = cv.getContext("2d"), S = cv.width, R = S / 2, TAU = Math.PI * 2;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const stars = Array.from({ length: 320 }, (_, i) => {
+    const r = Math.pow(Math.random(), 0.75) * R * 0.8;
+    return { r, a: (i % 3) * TAU / 3 + r / 24 + rnd(-0.4, 0.4), size: rnd(1.4, 3.6), hue: rnd(185, 290), tw: rnd(0, TAU) };
+  });
+  const worlds = [{ r: 0.5, size: 4, v: 1, c: "#22d3ee", a: 0 }, { r: 0.7, size: 3, v: -0.6, c: "#a78bfa", a: 2 }, { r: 0.9, size: 5, v: 0.4, c: "#4ade80", a: 4 }];
+  const SPIN = { idle: 0.1, listening: 0.3, thinking: 1.2, speaking: 0.45 };
+  const GLOW = { idle: 0.3, listening: 0.75, thinking: 0.65, speaking: 0.7 };
+  const calm = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0.2 : 1;
+  let rot = 0, spin = 0.1, glow = 0.3, last = performance.now();
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(0.1, (now - last) / 1000), t = now / 1000;
+    last = now;
+    if (!cv.offsetParent) return;                        // brain view not shown
+    const state = $("#alfred").dataset.state;
+    // ponytail: the voice level is made up from sines; hook an AnalyserNode to the audio if it should follow real speech
+    const voice = state === "speaking" ? 0.5 + 0.5 * Math.abs(Math.sin(t * 9) * Math.sin(t * 3.7 + 1)) : 0;
+    spin += ((SPIN[state] ?? 0.1) - spin) * Math.min(1, dt * 3);
+    glow += ((GLOW[state] ?? 0.3) + voice * 0.3 - glow) * Math.min(1, dt * 8);
+    rot += spin * dt * calm;
+    g.globalCompositeOperation = "source-over";
+    g.clearRect(0, 0, S, S);
+    const halo = g.createRadialGradient(R, R, 0, R, R, R);
+    halo.addColorStop(0, `rgba(167,139,250,${0.4 * glow})`);
+    halo.addColorStop(0.45, `rgba(34,211,238,${0.14 * glow})`);
+    halo.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = halo;
+    g.fillRect(0, 0, S, S);
+    g.globalCompositeOperation = "lighter";
+    for (const st of stars) {                            // inner stars turn faster, like a real galaxy
+      const a = st.a + rot * (1.8 - st.r / R), r = st.r * (1 + voice * 0.14 * Math.sin(t * 7 + st.tw));
+      g.fillStyle = `hsla(${state === "listening" ? st.hue - 50 : st.hue},90%,72%,${(0.3 + 0.7 * glow) * (0.55 + 0.45 * Math.sin(t * 2 + st.tw))})`;
+      g.fillRect(R + Math.cos(a) * r, R + Math.sin(a) * r * 0.6, st.size, st.size);
+    }
+    for (const w of worlds) {
+      g.strokeStyle = `rgba(148,163,255,${0.06 + 0.16 * glow})`;
+      g.beginPath(); g.ellipse(R, R, w.r * R * 0.95, w.r * R * 0.57, 0, 0, TAU); g.stroke();
+      w.a += w.v * (0.3 + spin) * dt * calm;
+      g.shadowColor = w.c; g.shadowBlur = 6 + 14 * glow; g.fillStyle = w.c;
+      g.beginPath(); g.arc(R + Math.cos(w.a) * w.r * R * 0.95, R + Math.sin(w.a) * w.r * R * 0.57, w.size * (1 + voice * 0.4), 0, TAU); g.fill();
+    }
+    const cr = R * (0.13 + 0.09 * voice + 0.04 * glow), core = g.createRadialGradient(R, R, 0, R, R, cr);
+    core.addColorStop(0, "#fff"); core.addColorStop(0.35, "rgba(34,211,238,.9)"); core.addColorStop(1, "rgba(167,139,250,0)");
+    g.shadowBlur = 0; g.fillStyle = core;
+    g.beginPath(); g.arc(R, R, cr, 0, TAU); g.fill();
+  }
+  requestAnimationFrame(frame);
+})();
 function speak(text, b64, lang) {
   audioQueue.push({ text, b64, lang });
   if (!playing) playNext();
@@ -69,13 +139,13 @@ $("#speaking").onclick = stopSpeaking;
 let recorder = null, chunks = [], recognition = null;
 async function startRec() {
   stopSpeaking();
-  $("#mic").classList.add("rec");
+  $("#mic").classList.add("rec"); mood();
   if (!status.keys.elevenlabs && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SR();
     recognition.lang = status.language === "en" ? "en-GB" : "pl-PL";
     recognition.onresult = (e) => sendText(e.results[0][0].transcript);
-    recognition.onend = () => $("#mic").classList.remove("rec");
+    recognition.onend = () => { $("#mic").classList.remove("rec"); mood(); };
     recognition.start();
     return;
   }
@@ -94,30 +164,90 @@ async function startRec() {
   recorder.start();
 }
 function stopRec() {
-  $("#mic").classList.remove("rec");
+  $("#mic").classList.remove("rec"); mood();
   if (recognition) { recognition.stop(); recognition = null; }
   if (recorder && recorder.state === "recording") recorder.stop();
 }
-const isRecording = () => $("#mic").classList.contains("rec");
-const typing = (e) => e.target.closest?.("input, textarea, select");
+function isRecording() { return $("#mic").classList.contains("rec"); }
+// A letter or the space bar would type into a text field, so there it stays a letter; F-keys, Ctrl, Alt... work everywhere.
+const typing = (e) => e.target.closest?.("input, textarea, select") && e.key.length === 1;
 $("#mic").onclick = () => (isRecording() ? stopRec() : startRec());
+
+// Push-to-talk key: remembered in this browser, changed in Ustawienia.
+let ptt = "Space", capturing = false;
+try { ptt = localStorage.getItem("ptt") || ptt; } catch { /* private mode */ }
+const keyName = (code) => code === "Space" ? "Spację" : code.replace(/^(Key|Digit)/, "");
+function showPtt() {
+  $("#text").placeholder = `Napisz do Alfreda albo przytrzymaj ${keyName(ptt)} i mów…`;
+  $("#ptt-btn").textContent = capturing ? "naciśnij klawisz… (Esc anuluje)" : keyName(ptt);
+}
+$("#ptt-btn").onclick = () => { capturing = true; showPtt(); };
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && !e.repeat && !typing(e)) { e.preventDefault(); startRec(); }
+  if (capturing) {
+    e.preventDefault();
+    capturing = false;
+    if (e.code !== "Escape") { ptt = e.code; try { localStorage.setItem("ptt", ptt); } catch { /* private mode */ } }
+    return showPtt();
+  }
+  if (e.code === ptt && !e.repeat && !typing(e)) { e.preventDefault(); startRec(); }
+  if (e.key === "Escape") { $("#jev-dock").classList.add("hidden"); $("#jev-sum").setAttribute("aria-expanded", false); }
 });
 document.addEventListener("keyup", (e) => {
-  if (e.code === "Space" && !typing(e) && isRecording()) { e.preventDefault(); stopRec(); }
+  if (e.code === ptt && !typing(e) && isRecording()) { e.preventDefault(); stopRec(); }
 });
+showPtt();
 
 function sendText(text) {
   if (!text.trim()) return;
   ws.send(JSON.stringify({ type: "text", text }));
 }
 $("#text-form").onsubmit = (e) => { e.preventDefault(); sendText($("#text").value); $("#text").value = ""; };
+
+// ------------------------------------------------------------------- chat
+// Written conversation: the server answers in full Markdown and skips the voice for these requests.
+const chatReq = new Set();                        // request_ids that came from the chat
+function chatMsg(kind, html, meta = "") {
+  $(".chat-empty")?.remove();
+  const el = document.createElement("div");
+  el.className = `bubble ${kind}`;
+  el.innerHTML = html + (meta ? `<span class="meta">${esc(meta)}</span>` : "");
+  $("#chat-log").appendChild(el);
+  $("#chat-log").scrollTop = 1e9;
+  return el;
+}
+function chatTyping(on) {
+  $("#chat-typing")?.remove();
+  if (on) chatMsg("alfred typing", "<span class=\"dots\"><i></i><i></i><i></i></span>").id = "chat-typing";
+}
+const chatAnswer = (text, meta) => chatMsg("alfred", `<div class="md">${renderMd(text, "")}</div>`, meta);
+$("#chat-form").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("#chat-text").value.trim();
+  if (!text) return;
+  ws.send(JSON.stringify({ type: "text", text, mode: "chat" }));
+  $("#chat-text").value = "";
+};
+$("#chat-text").onkeydown = (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#chat-form").requestSubmit(); }
+};
+$("#chat-new").onclick = async () => {
+  await api("/api/session/close", { method: "POST" });
+  $("#chat-log").innerHTML = '<div class="chat-empty">Nowa rozmowa. Poprzednia jest zapisana w pamięci Alfreda.</div>';
+};
+async function loadChat() {                        // after a reload: this session's chat
+  const sid = status.session?.id;
+  if (!sid) return;
+  const [heard, answers] = await Promise.all([api("/api/logs?kind=transcript&limit=300"), api("/api/logs?kind=answer&limit=300")]);
+  [...heard, ...answers].filter((e) => e.data.mode === "chat" && e.session_id === sid).sort((a, b) => a.ts.localeCompare(b.ts))
+    .forEach((e) => (e.kind === "transcript" ? chatMsg("user", esc(e.data.text)) : chatAnswer(e.data.text)));
+}
 $("#yes").onclick = () => ws.send(JSON.stringify({ type: "confirm", approved: true }));
 $("#no").onclick = () => ws.send(JSON.stringify({ type: "confirm", approved: false }));
 
 // ------------------------------------------------------------------ graph
-async function loadGraph() { Brain3D?.init(await api("/api/graph"), { openPage: openMapPage, openMemory: openMemoryPage }); }
+async function loadGraph() {
+  Brain3D?.init(await api("/api/graph"), { openPage: (p) => { setView("tasks"); openMapPage(p); }, openMemory: openMemoryPage });
+}
 $("#demo").onclick = () => Brain3D?.demo();
 
 // ---------------------------------------------------------------- events
@@ -130,12 +260,14 @@ function onEvent(ev) {
       if (!d.confirmation) { thinking = true; mood(); }
       if (d.source === "proactive") addMsg("system", "⏰ Alfred zaczyna sam (zadanie zaplanowane)");
       else if (d.source === "routine") { addMsg("system", `🔁 Rutyna: ${d.text}`); loadRoutines(); }
-      else addMsg("user", d.text);
+      else if (d.mode === "chat") { addMsg("user", d.text); chatReq.add(ev.request_id); chatMsg("user", esc(d.text)); chatTyping(true); }
+      else { addMsg("user", d.text); lastSaid = d.text; if (!d.confirmation) subtitle("…", "ack", d.text); }
       break;
     case "shield":
       shields[ev.request_id] = d;
       $("#jev-dock").innerHTML = `<div class="jev-head"><b>Jev → osłona</b><span class="said">${said[ev.request_id] ? `„${esc(said[ev.request_id])}”` : ""}</span>${shieldPill(d)}</div>
         <p class="sub">${d.breach ? "Zapytanie zatrzymane — Claude go nie zobaczy." : "Czyste. Alfred potwierdza, a Jev w tym czasie kieruje zapytanie do właściwej części mózgu…"}</p>`;
+      $("#jev-sum").innerHTML = `Jev → osłona: <b>${d.breach ? "zablokowano" : "bezpieczne"}</b> · ${d.ms} ms`;
       if (d.breach) addMsg("system", `🛡 Osłona zablokowała zapytanie (${SHIELD_SRC[d.source] || d.source})`);
       break;
     case "classified": {
@@ -144,29 +276,34 @@ function onEvent(ev) {
       showRoute(d, said[ev.request_id], shields[ev.request_id]);
       break;
     }
-    case "ack": addMsg("ack", d.text); speak(d.text, d.audio_b64, d.language); break;
+    case "ack": addMsg("ack", d.text); subtitle(d.text, "ack", lastSaid); speak(d.text, d.audio_b64, d.language); break;
     case "confirm_request":
-      $("#confirm-text").textContent = d.text;
+      addMsg("alfred", d.text);
+      subtitle(d.text);
       $("#confirm").classList.remove("hidden");
-      speak(d.text, d.audio_b64, status.language);
+      if (chatReq.has(ev.request_id)) chatMsg("alfred", esc(d.text));
+      else speak(d.text, d.audio_b64, status.language);
       break;
-    case "confirm_result": $("#confirm").classList.add("hidden"); break;
+    case "confirm_result": $("#confirm").classList.add("hidden"); hideSubtitle(1500); break;
     case "answer": {
-      thinking = false; mood();
+      if (!d.interim) { thinking = false; mood(); }  // interim = welcome-back line, the real answer is coming
       const u = d.usage || {};
       // Alfred speaking first (maybe while the UI was closed): show when it happened.
       const at = d.source && d.source !== "user" ? `${ev.ts.slice(11, 16)} · ` : "";
-      addMsg("alfred", d.text, `${at}${d.model || ""} · ${tokens(u)} tok. (in ${u.input || 0} · cache ${u.cache_read || 0}` +
+      const meta = `${at}${d.model || ""} · ${tokens(u)} tok. (in ${u.input || 0} · cache ${u.cache_read || 0}` +
         ` odczyt / ${u.cache_write || 0} zapis · out ${u.output || 0}${u.router ? ` · router ${u.router}` : ""})` +
-        (d.cost_usd != null ? ` · ${usd(d.cost_usd)}` : "") + (d.tools?.length ? ` · ${d.tools.join(", ")}` : ""));
-      loadStatus();                         // session total in the header
-      speak(d.text, d.audio_b64, d.language);
+        (d.cost_usd != null ? ` · ${usd(d.cost_usd)}` : "") + (d.tools?.length ? ` · ${d.tools.join(", ")}` : "");
+      addMsg("alfred", d.text, meta);
+      loadStatus();                         // session total in the low bar
+      if (d.mode === "chat" || chatReq.has(ev.request_id)) { chatTyping(false); chatAnswer(d.text, meta); }
+      else { subtitle(d.text, "say", d.source === "user" ? lastSaid : ""); speak(d.text, d.audio_b64, d.language); }
       if (d.source === "routine") showBrief(d.text, ev.ts.slice(11, 16), "rutyna");
       refreshLeft();                        // Alfred may have changed the tasks or the calendar
-      if (view === "day") refreshDay();
+      if (view === "tasks") refreshDay();
       break;
     }
-    case "error": thinking = false; mood(); addMsg("system", `⚠ ${d.message}`); loadRoutines(); break;
+    case "error": thinking = false; mood(); addMsg("system", `⚠ ${d.message}`);
+      if (chatReq.has(ev.request_id)) { chatTyping(false); chatMsg("system", `⚠ ${esc(d.message)}`); } subtitle(`⚠ ${d.message}`, "system"); loadRoutines(); break;
     case "session_closed": addMsg("system", `Sesja zapisana: ${d.title || ""}`); loadBriefing(); break;
     case "proactive_gate": if (!d.fired) addMsg("system", `Pominięto przypomnienie „${d.task}” (bramka ${Math.round(d.probability * 100)}%)`); break;
   }
@@ -189,22 +326,25 @@ async function loadStatus() {
     pill(status.backend === "subscription" ? "Claude · subskrypcja" : "Claude · API", status.keys.anthropic,
       status.claude?.detail || "") + pill("Jev", status.keys.jev, "bez klucza: fallback na Claude Haiku") +
     pill("ElevenLabs", status.keys.elevenlabs, "bez klucza: głos przeglądarki") +
-    status.mcp.map((s) => s.status === "disabled" ? "" : pill(s.name, s.status === "ready", s.error || "")).join("") +
-    (status.session ? `<span class="pill">sesja · ${status.session.turns} tur · ${tokens(status.session.usage)} tok. · ` +
-      `${usd(status.session.usage.cost_usd || 0)}</span>` : "");
+    status.mcp.map((s) => s.status === "disabled" ? "" : pill(s.name, s.status === "ready", s.error || "")).join("");
+  const u = status.session?.usage || {};
+  $("#session-cost").innerHTML = `Sesja · ${status.session?.turns || 0} tur · <b>${num(tokens(u))} tok.</b> · ${usd(u.cost_usd || 0)}`;
 }
 const tokens = (u) => ["input", "output", "cache_read", "cache_write", "router", "jev"].reduce((s, k) => s + (u[k] || 0), 0);
+const num = (n) => n.toLocaleString("pl-PL");
 // Subscription: no per-token bill, the figure is what the same call would cost on the API.
 const usd = (v) => `${status.backend === "subscription" ? "≈" : ""}$${v.toFixed(4)}`;
 
 // --------------------------------------------------------------------- views
-let view = "day";
+let view = "brain";
 function setView(v) {
   view = v;
   $("main").dataset.view = v;
+  document.body.dataset.view = v;
+  if (v === "chat") $("#chat-text").focus();
   document.querySelectorAll(".views button").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   try { localStorage.setItem("view", v); } catch { /* private mode */ }
-  if (v === "day") refreshDay(); else loadBriefing();
+  if (v === "tasks") refreshDay();
 }
 document.querySelectorAll(".views button").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
 const warn = (e) => addMsg("system", `⚠ ${e.message}`);
@@ -227,6 +367,8 @@ function showRoute(d, text, shield) {
   const bars = (rows, chosen = []) => rows.map(([k, v]) => `<div class="meter-row${chosen.includes(k) ? " on" : ""}">
     <span title="${esc(k)}">${esc(k)}</span><b>${pct(v)}</b><div class="meter"><i style="width:${Math.max(1, (v || 0) * 100)}%"></i></div></div>`).join("");
   const urgency = ["niska", "dziś", "teraz"][Math.max(0, Math.min(2, Math.round(d.urgency || 0)))];
+  $("#jev-sum").innerHTML = `Jev → <b>${esc(d.module)}</b> ${pct(d.confidence)}` + (d.capabilities?.length ? ` · ${esc(d.capabilities.slice(0, 3).join(", "))}` : "") +
+    (shield ? ` · 🛡 ${shield.breach ? "zablokowano" : "ok"}` : "") + ` · pilność ${urgency} · ${d.latency_ms} ms`;
   $("#jev-dock").innerHTML = `<div class="jev-head"><b>Jev → ${esc(d.module)}</b><span class="said">${text ? `„${esc(text)}”` : ""}</span>
       ${shieldPill(shield)}<span class="pill ${d.source === "jev" ? "ok" : "bad"}">${esc(SOURCE[d.source] || d.source)} · ${d.latency_ms} ms</span></div>
     <div class="jev-cols">
@@ -236,6 +378,10 @@ function showRoute(d, text, shield) {
         <p class="sub">umiejętność: <b>${esc(d.skill || "—")}</b> · temat: <b>${esc(d.topic ? d.topic.replace("topic:", "") : "—")}</b>${d.clarify ? " · <b>za mało pewne — Alfred dopyta</b>" : ""}</p></div>
     </div>`;
 }
+$("#jev-sum").onclick = () => {
+  const open = $("#jev-dock").classList.toggle("hidden") === false;
+  $("#jev-sum").setAttribute("aria-expanded", open);
+};
 async function loadLastRoute() {                  // after a reload: the last classification of today
   const [last] = await api("/api/logs?kind=classified&limit=1");
   if (!last) return;
@@ -272,6 +418,7 @@ const localIso = (d) => new Date(d - d.getTimezoneOffset() * 6e4).toISOString().
 const hhmm = (d) => d.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
 const when = (x) => (x?.dateTime ? new Date(x.dateTime) : x?.date ? new Date(`${x.date}T00:00:00`) : null);
 const day = { tasks: [], cal: null, today: null, items: [] };
+const closedCats = new Set();                     // categories you folded stay folded across refreshes
 
 // Summary
 function renderStats() {
@@ -325,17 +472,33 @@ async function refreshTasks() {
     if (due < now && isOpen(t)) return "Po terminie";
     return due < today ? "Wcześniej" : due < addDays(today, 1) ? "Dziś" : due < addDays(today, 2) ? "Jutro" : "Później";
   };
+  const cats = [...new Set(day.tasks.map((t) => t.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pl"));
+  $("#task-cats").innerHTML = cats.map((c) => `<option value="${esc(c)}">`).join("");
   const row = (t) => `<div class="todo-row ${t.status}${bucket(t) === "Po terminie" ? " overdue" : ""}">
     <input type="checkbox" data-id="${esc(t.id)}" ${t.status === "done" ? "checked" : ""} aria-label="Zrobione">
     <div><div class="title">${esc(t.title)}</div><div class="sub">${[t.due && new Date(t.due).toLocaleString("pl-PL",
       { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }), t.schedule && `co ${t.schedule}`, t.module]
-      .filter(Boolean).map(esc).join(" · ")}</div></div>
+      .filter(Boolean).map(esc).join(" · ")} <button class="tag" data-cat="${esc(t.id)}" title="Zmień kategorię">🏷 ${esc(t.category || "kategoria")}</button></div></div>
     <select data-id="${esc(t.id)}" aria-label="Status">${Object.entries(STATUS_PL).map(([k, v]) =>
       `<option value="${k}" ${k === t.status ? "selected" : ""}>${v}</option>`).join("")}</select></div>`;
-  $("#tasks").innerHTML = ["Po terminie", "Dziś", "Jutro", "Później", "Bez terminu", "Wcześniej"].map((g) => {
-    const ts = shown.filter((t) => bucket(t) === g);
-    return ts.length ? `<div class="todo-group">${g}</div>${ts.map(row).join("")}` : "";
-  }).join("") || '<div class="sub">Brak zadań.</div>';
+  $("#tasks").innerHTML = ($("#task-group").value === "category"
+    ? [...cats, ""].map((c) => {
+      const ts = shown.filter((t) => (t.category || "") === c);
+      return ts.length ? `<details class="todo-cat" data-cat="${esc(c)}" ${closedCats.has(c) ? "" : "open"}>
+        <summary>${esc(c || "Bez kategorii")} <span class="muted">${ts.length}</span></summary>${ts.map(row).join("")}</details>` : "";
+    })
+    : ["Po terminie", "Dziś", "Jutro", "Później", "Bez terminu", "Wcześniej"].map((g) => {
+      const ts = shown.filter((t) => bucket(t) === g);
+      return ts.length ? `<div class="todo-group">${g}</div>${ts.map(row).join("")}` : "";
+    })).join("") || '<div class="sub">Brak zadań.</div>';
+  $("#tasks").querySelectorAll("details").forEach((d) => (d.ontoggle = () => d.open ? closedCats.delete(d.dataset.cat) : closedCats.add(d.dataset.cat)));
+  $("#tasks").querySelectorAll("[data-cat]:not(details)").forEach((b) => (b.onclick = async () => {
+    const t = day.tasks.find((x) => x.id === b.dataset.cat);
+    const c = prompt("Kategoria zadania (puste = bez kategorii):", t.category || "");
+    if (c === null) return;
+    await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ category: c.trim() }) });
+    refreshTasks();
+  }));
   $("#tasks").querySelectorAll("input").forEach((c) => (c.onchange = () => setTaskStatus(c.dataset.id, c.checked ? "done" : "todo")));
   $("#tasks").querySelectorAll("select").forEach((s) => (s.onchange = () => setTaskStatus(s.dataset.id, s.value)));
   renderStats();
@@ -346,11 +509,13 @@ async function setTaskStatus(id, value) {
   refreshTasks();
 }
 $("#task-filter").onchange = refreshTasks;
+$("#task-group").onchange = refreshTasks;
 $("#task-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
   const due = f.get("due") ? new Date(f.get("due")).toISOString() : null;
-  await api("/api/tasks", { method: "POST", body: JSON.stringify({ title: f.get("title"), due, schedule: f.get("schedule") || null }) });
+  await api("/api/tasks", { method: "POST", body: JSON.stringify({ title: f.get("title"), due, schedule: f.get("schedule") || null,
+    category: f.get("category").trim() || null }) });
   e.target.reset();
   refreshTasks();
 };
@@ -462,11 +627,11 @@ async function loadSessions() {
     || '<div class="sub">Jeszcze nie ma zapisanych sesji. Alfred podsumowuje sesję po 15 minutach ciszy.</div>';
 }
 
-// ============================================================== brain view
+// ============================================================== tasks view: tabs
 document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => {
   document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== `tab-${b.dataset.tab}`));
-  ({ memory: loadBriefing, map: loadMap, persona: loadPersona, modules: loadModules, log: loadLog, settings: loadSettings })[b.dataset.tab]();
+  ({ summary: loadSessions, chat: () => ($("#tab-chat").scrollTop = 1e9), memory: loadBriefing, map: loadMap, persona: loadPersona, modules: loadModules, log: loadLog, settings: loadSettings })[b.dataset.tab]();
 }));
 
 // Memory
@@ -474,7 +639,7 @@ async function loadBriefing() { $("#briefing").textContent = (await api("/api/me
 $("#close-session").onclick = async () => { await api("/api/session/close", { method: "POST" }); loadBriefing(); };
 async function openMemoryPage(path) {
   const page = await api(`/api/memory/page?path=${encodeURIComponent(path)}`);
-  if (view !== "brain") setView("brain");
+  if (view !== "tasks") setView("tasks");
   document.querySelector('.tabs button[data-tab="memory"]').click();
   $("#mem-page").textContent = page.content;
   $("#mem-page").classList.remove("hidden");
@@ -533,24 +698,31 @@ function renderMd(text, base) {
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, t, h) => /^https?:/.test(h) ? `<a href="${h}" target="_blank" rel="noopener">${t}</a>` : `<a data-page="${esc(resolve(h))}">${t}</a>`);
   const lines = text.split("\n"), html = [];
-  let list = false, table = false;
-  const close = () => { if (list) html.push("</ul>"); if (table) html.push("</table>"); list = table = false; };
+  let list = "", table = false, code = false;
+  const close = () => { if (list) html.push(`</${list}>`); if (table) html.push("</table>"); list = ""; table = false; };
   for (const l of lines) {
-    if (/^\|/.test(l)) {
+    if (/^```/.test(l)) {
+      if (code) html.push("</code></pre>"); else { close(); html.push("<pre><code>"); }
+      code = !code;
+    } else if (code) html.push(esc(l) + "\n");
+    else if (/^\|/.test(l)) {
       if (/^\|[-| ]+\|$/.test(l)) continue;
       if (!table) { close(); html.push("<table>"); table = true; }
       html.push("<tr>" + l.split("|").slice(1, -1).map((c) => `<td>${inline(c.trim())}</td>`).join("") + "</tr>");
-    } else if (/^[-*] /.test(l)) {
-      if (!list) { close(); html.push("<ul>"); list = true; }
-      html.push(`<li>${inline(l.slice(2))}</li>`);
+    } else if (/^\s*([-*]|\d+\.) /.test(l)) {
+      const tag = /^\s*\d/.test(l) ? "ol" : "ul";
+      if (list !== tag) { close(); html.push(`<${tag}>`); list = tag; }
+      html.push(`<li>${inline(l.replace(/^\s*([-*]|\d+\.) /, ""))}</li>`);
     } else {
       close();
-      if (/^## /.test(l)) html.push(`<h2>${inline(l.slice(3))}</h2>`);
+      if (/^### /.test(l)) html.push(`<h3>${inline(l.slice(4))}</h3>`);
+      else if (/^## /.test(l)) html.push(`<h2>${inline(l.slice(3))}</h2>`);
       else if (/^# /.test(l)) html.push(`<h1>${inline(l.slice(2))}</h1>`);
       else if (l.trim()) html.push(`<p>${inline(l)}</p>`);
     }
   }
   close();
+  if (code) html.push("</code></pre>");
   return (fm ? `<div class="fm">${esc(fm)}</div>` : "") + html.join("");
 }
 async function openMapPage(path) {
@@ -637,6 +809,7 @@ async function loadSettings() {
   const get = (path) => path === "voice.voice_id" ? s.voice_id : path.split(".").reduce((o, k) => o?.[k], s);
   $("#settings-form").innerHTML = FIELDS.map(([p, l]) => `<label class="field">${l}<input name="${p}" value="${esc(get(p) ?? "")}"></label>`).join("") +
     `<label class="switch"><input type="checkbox" name="proactive.enabled" ${s.proactive?.enabled ? "checked" : ""}> Tryb proaktywny</label>
+     <label class="switch"><input type="checkbox" name="voice.tts_enabled" ${s.voice?.tts_enabled !== false ? "checked" : ""}> Odpowiedzi głosem ElevenLabs (wyłączone = głos przeglądarki, bez kosztów)</label>
      <button class="primary">Zapisz</button>`;
 }
 $("#settings-form").onsubmit = async (e) => {
@@ -658,12 +831,13 @@ $("#settings-form").onsubmit = async (e) => {
   connect();
   let saved = null;
   try { saved = localStorage.getItem("view"); } catch { /* private mode */ }
-  setView(saved === "brain" ? "brain" : "day");
+  setView(["tasks", "chat"].includes(saved) ? saved : "brain");
+  loadChat().catch(() => {});
   refreshLeft();
   loadBrief().catch(() => {});
   loadLastRoute().catch(() => {});
   loadGraph().catch((e) => addMsg("system", `⚠ Mózg 3D: ${e.message}`));
   setInterval(loadStatus, 15000);
   setInterval(loadRoutines, 60e3);                   // "due" changes with the clock
-  setInterval(() => view === "day" && loadCalendar(), 5 * 60e3);
+  setInterval(() => view === "tasks" && loadCalendar(), 5 * 60e3);
 })();

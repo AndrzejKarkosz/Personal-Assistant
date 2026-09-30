@@ -1,8 +1,3 @@
-"""ElevenLabs speech-to-text (Scribe) and text-to-speech.
-
-Without ELEVENLABS_API_KEY both return None and the UI falls back to the browser's own
-speech recognition / synthesis, so the brain still works end to end.
-"""
 from __future__ import annotations
 
 import base64
@@ -50,13 +45,12 @@ class ElevenLabs:
         return Transcript(text=(body.get("text") or "").strip(), language=code)
 
     async def synthesize(self, text: str) -> str | None:
-        """Returns base64 MP3, cached on disk (acknowledgement phrases repeat a lot)."""
-        if not self.available or not text.strip():
-            return None
+        if not self.available or not text.strip() or not self.settings.get("voice.tts_enabled", True):
+            return None  # the UI falls back to the browser's own (free) voice
         voice = self.settings.voice_id
         model = self.settings.get("voice.tts_model", "eleven_multilingual_v2")
         fmt = self.settings.get("voice.output_format", "mp3_44100_128")
-        tuning = self.settings.get("voice.settings") or {}   # speed, stability, similarity_boost, style
+        tuning = self.settings.get("voice.settings") or {}
         key = hashlib.sha1(f"{voice}|{model}|{fmt}|{sorted(tuning.items())}|{text}".encode()).hexdigest()
         cached = self.cache_dir / f"{key}.mp3"
         if cached.exists():
@@ -70,6 +64,6 @@ class ElevenLabs:
             resp.raise_for_status()
         except httpx.HTTPError:
             return None
-        if len(text) < 120:          # cache short, repeatable phrases only
+        if len(text) < 120:
             cached.write_bytes(resp.content)
         return base64.b64encode(resp.content).decode()

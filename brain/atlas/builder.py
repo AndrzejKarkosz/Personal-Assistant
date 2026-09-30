@@ -1,19 +1,3 @@
-"""Brain map compiler: modules + skills + live tool catalogue + knowledge topics -> OKF bundle.
-
-  brain_map/
-    index.md                          what the brain is connected to, with counts
-    log.md                            what appeared, disappeared or changed between builds
-    modules/<id>.md                   type: Module      -> capabilities, borrowed capabilities, skills, servers
-    capabilities/<module>.<name>.md   type: Capability  -> tools; these are Jev's routing categories
-    skills/<module>.<skill>.md        type: Skill       -> capabilities it uses
-    tools/<server>/<tool>.md          type: Tool        -> server, capabilities, side effect, parameters
-    servers/<name>.md                 type: MCP Server | Built-in tools | Claude server tools
-    topics/<server>/<slug>.md         type: Topic       -> what the knowledge library covers
-
-Relations are markdown links in the body and ids in the frontmatter, so both people (Obsidian,
-GitHub) and the router can follow them. Rebuilding never loses curation: frontmatter keys in
-CURATED and a "## Notes" section survive, and tools of an offline server are kept as offline.
-"""
 from __future__ import annotations
 
 import re
@@ -52,7 +36,6 @@ class MapBuilder:
         self.topic_sources = topic_sources or []
         self.pages: dict[str, tuple[dict, str]] = {}
 
-    # ----------------------------------------------------------------- build
     def build(self) -> dict[str, Any]:
         self.root.mkdir(parents=True, exist_ok=True)
         before = self._existing()
@@ -92,9 +75,7 @@ class MapBuilder:
             len(m.skills) for m in self.registry.modules.values()), "tools": len(tools),
             "servers": len(servers), "topics": len(topics), "changes": changes}
 
-    # ----------------------------------------------------------------- pages
     def _put(self, path: str, meta: dict, body: str) -> None:
-        # sections are joined with blank lines; keep list items of one section together
         body = re.sub(r"\n\n(?=[-*|] )", "\n", body)
         self.pages[path] = (meta, body)
 
@@ -242,7 +223,6 @@ class MapBuilder:
                                "description": "Modules, capabilities, skills, tools, servers and topics of the brain.",
                                "timestamp": _now()}, "\n".join(body))
 
-    # ------------------------------------------------------------ persistence
     def _existing(self) -> dict[str, tuple[dict, str]]:
         out = {}
         for f in self.root.rglob("*.md"):
@@ -252,13 +232,12 @@ class MapBuilder:
         return out
 
     def _keep_offline(self, tools, servers, before) -> dict[str, ToolInfo]:
-        """Tools seen in an earlier build whose server is not connected now stay on the map, offline."""
         for rel, (meta, _) in before.items():
             if meta.get("type") != "Tool" or meta.get("id") in tools:
                 continue
             server = meta.get("server")
             if servers.get(server, {}).get("status") == "ready" or server not in servers:
-                continue       # server is up and the tool is gone, or the server was removed: drop it
+                continue
             tools[meta["id"]] = ToolInfo(meta["id"], server, meta.get("kind", "mcp"), meta.get("short", meta["id"]),
                                          meta.get("description", ""), [{"name": p, "type": "", "required": False,
                                                                         "description": ""} for p in meta.get("params", [])],
@@ -274,13 +253,13 @@ class MapBuilder:
         for rel, (meta, body) in self.pages.items():
             old = before.get(rel)
             if old:
-                for key in CURATED:                     # curation survives the rebuild
+                for key in CURATED:
                     if key in old[0]:
                         meta[key] = old[0][key]
                 if "## Notes" in old[1]:
                     body = body.rstrip() + "\n\n## Notes" + old[1].split("## Notes", 1)[1]
                 if self._signature(old[0]) == self._signature(meta) and old[1].strip() == body.strip():
-                    continue                            # unchanged: keep the file and its timestamp
+                    continue
                 changes.append(f"changed {rel}")
             elif meta.get("type") != "Index":
                 changes.append(f"added {rel}")

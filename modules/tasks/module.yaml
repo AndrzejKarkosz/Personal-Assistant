@@ -13,6 +13,13 @@ capabilities:
     description: Create a task or reminder (one-off due time or recurring cron), list open tasks, change status, add notes.
     tools: [task_create, task_update, task_list]
     examples: ["przypomnij mi za godzinę", "co mam otwarte?", "oznacz jako zrobione"]
+  routines:
+    label: Manage routines
+    description: Create, change or remove Alfred's routines - prompts he runs by himself on a schedule (cron) or
+      when the app starts (@start).
+    tools: [routine_save, routine_delete]
+    examples: ["dodaj rutynę: w dni robocze o 7:30 poranny brief", "przesuń rutynę na 8:00", "usuń rutynę powitanie"]
+    confirm: true
 uses: [memory.recall]
 effort: low
 enabled: true

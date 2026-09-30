@@ -16,8 +16,9 @@
 <header>
   <div class="brand"><span class="dot" id="live-dot"></span> Alfred <small>asystent</small></div>
   <nav class="views" aria-label="Widok">
-    <button data-view="day" class="active">Dzień</button>
-    <button data-view="brain">Mózg 3D</button>
+    <button data-view="brain" class="active">Mózg 3D</button>
+    <button data-view="tasks">Zadania</button>
+    <button data-view="chat">Chat</button>
   </nav>
   <div class="row">
     <div class="pills" id="pills"></div>
@@ -28,14 +29,41 @@
   </div>
 </header>
 
-<main data-view="day">
-  <!-- Day: to-do + routines -->
-  <div class="col day-only">
+<main data-view="brain">
+  <!-- Brain: 3D map, Alfred's universe (bottom left), the path to the answer (right) -->
+  <section class="panel graph-panel brain-only">
+    <div class="panel-title row between">
+      <span>Mapa mózgu <span class="muted" id="route-info"></span></span>
+      <button id="demo" title="Pokaż przepływ informacji na przykładowej rezerwacji">▶ Pokaż przepływ</button>
+    </div>
+    <div class="stage">
+      <div id="graph"></div>
+      <ol id="levels" class="levels" aria-label="Poziomy mózgu"></ol>
+      <div id="tip" class="tip hidden"></div>
+      <div id="node-info" class="node-info hidden"></div>
+      <div class="flow">
+        <div class="flow-title row between"><span>Droga do odpowiedzi</span><span id="flow-total"></span></div>
+        <ol id="flow-steps"><li class="hint"><span>Powiedz coś albo kliknij „Pokaż przepływ”. Każdy poziom mózgu to część Alfreda — świeci, gdy pracuje. Kliknij kulę albo poziom, żeby zobaczyć, co robi. Przeciągnij, żeby obrócić.</span></li></ol>
+      </div>
+      <div class="alfred" id="alfred" data-state="idle" aria-live="polite">
+        <canvas id="universe" width="340" height="340" aria-hidden="true"></canvas>
+        <div class="who"><b>Alfred</b><small id="alfred-state">czeka</small></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tasks: to-do grouped by category + routines -->
+  <div class="col tasks-only">
     <section class="panel grow">
       <div class="panel-title row between"><span>Do zrobienia</span>
-        <select id="task-filter" aria-label="Filtr zadań"><option value="open">otwarte</option><option value="done">zrobione</option><option value="all">wszystkie</option></select></div>
+        <span class="row"><select id="task-group" aria-label="Grupuj"><option value="category">wg kategorii</option><option value="due">wg terminu</option></select>
+        <select id="task-filter" aria-label="Filtr zadań"><option value="open">otwarte</option><option value="done">zrobione</option><option value="all">wszystkie</option></select></span></div>
       <form id="task-form" class="stack pad">
-        <input name="title" placeholder="Nowe zadanie" required>
+        <div class="row">
+          <input name="title" placeholder="Nowe zadanie" required>
+          <input name="category" list="task-cats" placeholder="Kategoria" title="Kategoria — wpisz nową albo wybierz istniejącą" class="cat-in">
+        </div>
+        <datalist id="task-cats"></datalist>
         <div class="row">
           <input name="due" type="datetime-local" title="Termin">
           <input name="schedule" placeholder="cron, np. 0 8 * * 1-5" title="Powtarzanie">
@@ -50,8 +78,8 @@
     </section>
   </div>
 
-  <!-- Day: Google calendar -->
-  <section class="panel day-only">
+  <!-- Tasks: Google calendar -->
+  <section class="panel tasks-only">
     <div class="panel-title row between">
       <span>Kalendarz <span class="muted" id="cal-range"></span></span>
       <span class="row"><span id="cal-status" class="pill"></span>
@@ -61,49 +89,30 @@
     <div class="cal-wrap"><div id="calendar" class="calendar"></div><div id="event-card" class="node-info hidden"></div></div>
   </section>
 
-  <!-- Day: summary + session summaries -->
-  <div class="col day-only">
-    <section class="panel">
-      <div class="panel-title" id="greeting">Podsumowanie</div>
-      <div id="stats" class="stats"></div>
-      <div class="row brief-actions"><button data-brief="day">Brief dnia</button><button data-brief="week">Podsumuj tydzień</button></div>
-      <div id="brief" class="brief"></div>
-    </section>
-    <section class="panel grow">
-      <div class="panel-title">Ostatnie sesje</div>
-      <div id="sessions" class="scroll"></div>
-    </section>
-  </div>
-
-  <!-- Brain: 3D map -->
-  <section class="panel graph-panel brain-only">
-    <div class="panel-title row between">
-      <span>Mapa mózgu <span class="muted" id="route-info"></span></span>
-      <button id="demo" title="Pokaż przepływ informacji na przykładowej rezerwacji">▶ Pokaż przepływ</button>
-    </div>
-    <div class="stage">
-      <div id="graph"></div>
-      <ol id="levels" class="levels" aria-label="Poziomy mózgu"></ol>
-      <div id="tip" class="tip hidden"></div>
-      <div id="node-info" class="node-info hidden"></div>
-      <div class="flow">
-        <div class="flow-title">Przepływ informacji</div>
-        <ol id="flow-steps"><li class="hint"><span>Powiedz coś albo kliknij „Pokaż przepływ”. Każdy poziom mózgu to część Alfreda — świeci, gdy pracuje. Kliknij kulę albo poziom, żeby zobaczyć, co robi. Przeciągnij, żeby obrócić.</span></li></ol>
-      </div>
-    </div>
-  </section>
-
-  <!-- Brain: side tabs -->
-  <section class="panel side brain-only">
+  <!-- Tasks: everything else - summary, conversation, memory, map, persona, modules, log, settings -->
+  <section class="panel side tasks-only">
     <nav class="tabs">
-      <button data-tab="memory" class="active">Pamięć</button>
+      <button data-tab="summary" class="active">Podsumowanie</button>
+      <button data-tab="chat">Rozmowa</button>
+      <button data-tab="memory">Pamięć</button>
       <button data-tab="map">Mapa</button>
       <button data-tab="persona">Osobowość</button>
       <button data-tab="modules">Moduły</button>
       <button data-tab="log">Log</button>
       <button data-tab="settings">Ustawienia</button>
     </nav>
-    <div class="tab" id="tab-memory">
+    <div class="tab" id="tab-summary">
+      <div class="greeting" id="greeting">Podsumowanie</div>
+      <div id="stats" class="stats"></div>
+      <div class="row brief-actions"><button data-brief="day">Brief dnia</button><button data-brief="week">Podsumuj tydzień</button></div>
+      <div id="brief" class="brief"></div>
+      <h4>Ostatnie sesje</h4>
+      <div id="sessions" class="stack"></div>
+    </div>
+    <div class="tab hidden" id="tab-chat">
+      <div id="messages" class="messages"></div>
+    </div>
+    <div class="tab hidden" id="tab-memory">
       <div class="row"><button id="close-session">Zamknij sesję i zapisz</button></div>
       <h4>Briefing na start sesji</h4>
       <pre id="briefing" class="mono"></pre>
@@ -152,34 +161,45 @@
       <div id="log" class="log mono"></div>
     </div>
     <div class="tab hidden" id="tab-settings">
+      <div class="card"><div class="row between"><span class="title">Push-to-talk</span><button id="ptt-btn" type="button"></button></div>
+        <div class="sub">Przytrzymaj ten klawisz i mów, puść — Alfred słucha. Zapamiętane w tej przeglądarce. Litera albo spacja nie działa w polu tekstowym (tam pisze).</div></div>
       <form id="settings-form" class="stack"></form>
     </div>
   </section>
+  <!-- Chat: a written conversation - full answers in Markdown, nothing spoken -->
+  <section class="chat chat-only">
+    <div class="chat-head row between"><span><b>Chat z Alfredem</b> <span class="muted">pełne odpowiedzi na piśmie, bez głosu</span></span>
+      <button id="chat-new" title="Zamyka sesję (Alfred zapisuje ją w pamięci) i zaczyna od nowa">Nowa rozmowa</button></div>
+    <div id="chat-log" class="chat-log">
+      <div class="chat-empty">Zapytaj o dowolny temat — Alfred odpowie wyczerpująco, z nagłówkami, listami i tabelami, jeśli pomogą.
+        Ma dostęp do tych samych narzędzi co w trybie głosowym: pamięci, zadań, kalendarza i wyszukiwania w sieci.</div>
+    </div>
+    <form id="chat-form" class="chat-form">
+      <textarea id="chat-text" rows="2" placeholder="Napisz do Alfreda… (Enter — wyślij, Shift+Enter — nowa linia)"></textarea>
+      <button class="primary">Wyślij</button>
+    </form>
+  </section>
 </main>
 
-<!-- Bottom, both views: conversation + how Jev classified the latest request -->
-<footer class="dock">
-  <section class="panel convo">
-    <div class="alfred-head" id="alfred" data-state="idle" aria-live="polite">
-      <svg class="orb" viewBox="0 0 48 48" aria-hidden="true">
-        <circle class="ring r1" cx="24" cy="24" r="21"/><circle class="ring r2" cx="24" cy="24" r="15"/>
-        <circle class="core" cx="24" cy="24" r="8"/>
-      </svg>
-      <div class="who"><b>Alfred</b><small id="alfred-state">słucham</small></div>
-    </div>
-    <div id="messages" class="messages"></div>
-    <div id="confirm" class="confirm hidden">
-      <div id="confirm-text"></div>
-      <div class="row"><button id="yes" class="primary">Tak</button><button id="no">Nie</button></div>
-    </div>
-    <div class="composer">
-      <button id="mic" class="mic" title="Kliknij lub przytrzymaj spację">
-        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
-      </button>
-      <form id="text-form"><input id="text" autocomplete="off" placeholder="Napisz do Alfreda albo przytrzymaj spację i mów…"></form>
-    </div>
-  </section>
-  <section id="jev-dock" class="panel jev-dock" aria-live="polite">
+<!-- What Alfred says: subtitles in the middle of the screen -->
+<div id="subtitle" class="subtitle hidden" role="status" aria-live="polite">
+  <button class="x" id="subtitle-x" aria-label="Zamknij">×</button>
+  <div id="sub-you" class="sub-you"></div>
+  <div id="sub-text" class="sub-text"></div>
+  <div id="confirm" class="row confirm hidden"><button id="yes" class="primary">Tak</button><button id="no">Nie</button></div>
+</div>
+
+<!-- Low bar: talk to Alfred + what Jev made of it + what the session cost -->
+<footer class="lowbar">
+  <div class="composer">
+    <button id="mic" class="mic" title="Kliknij albo przytrzymaj klawisz push-to-talk">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+    </button>
+    <form id="text-form"><input id="text" autocomplete="off" placeholder="Napisz do Alfreda albo przytrzymaj Spację i mów…"></form>
+  </div>
+  <button id="jev-sum" class="jev-sum" aria-expanded="false" aria-controls="jev-dock" title="Szczegóły klasyfikacji Jev">Jev: czekam na pierwsze zapytanie</button>
+  <span id="session-cost" class="session-cost" title="Łączny koszt sesji"></span>
+  <section id="jev-dock" class="panel jev-dock hidden" aria-live="polite">
     <p class="sub">Tu zobaczysz, jak Jev zaklasyfikował Twoje zapytanie: moduł, możliwości i sygnały — z prawdopodobieństwami.</p>
   </section>
 </footer>

@@ -46,11 +46,10 @@ def test_registry_loads_capabilities_and_skills():
 
 
 def test_map_relations(brain_map):
-    # module -> own + borrowed capabilities, capability -> tools, tool -> server
-    assert brain_map.capabilities_of(["tasks"]) == ["tasks.manage", "memory.recall"]
+    assert brain_map.capabilities_of(["tasks"]) == ["tasks.manage", "tasks.routines", "memory.recall"]
     assert brain_map.tools_of(["tasks.manage"]) == ["task_create", "task_list", "task_update"]
     assert brain_map.tools["task_create"]["server"] == "alfred"
-    assert brain_map.needs_confirmation("confirm_action") is False     # guarded by the executor itself
+    assert brain_map.needs_confirmation("confirm_action") is False
     assert "topic:spanish" in brain_map.topics
     g = brain_map.graph()
     rels = {(e["source"], e["rel"], e["target"]) for e in g["edges"]}
@@ -87,7 +86,6 @@ async def test_jev_categories_come_from_the_map(settings, brain_map):
     assert "calendar.write" in jev.sent["capability"]["criteria"]
     assert "topic:spanish" in jev.sent["topic"]["criteria"]
     assert route.module == "bookings" and route.skill == "bookings.restaurant-table" and route.topic is None
-    # top capabilities until 80% coverage + the skill's capabilities + "always" ones
     assert route.capabilities[:2] == ["bookings.browse", "research.web"]
     assert "calendar.write" in route.capabilities and "bookings.confirm" in route.capabilities
     assert "calendar.read" not in route.capabilities
@@ -102,7 +100,23 @@ async def test_close_call_loads_second_module(settings, brain_map):
 
 async def test_rules_fallback_without_keys(settings, brain_map):
     route = await Router(brain_map, JevClient(None, "", ""), settings).classify("przypomnij mi jutro żeby zadzwonić")
-    assert route.source == "rules" and route.module == "tasks" and route.capabilities == []
+    assert route.source == "rules" and route.module == "tasks" and route.forced == ["tasks.manage"]
+
+
+async def test_named_capabilities_are_always_given(settings, brain_map):
+    # 2026-09-29 21:11: Jev put this on tasks only (calendar.write 0.19), so Alfred had no calendar tools
+    jev = FakeJev({"module": {"choice": "tasks", "confidence": 0.84, "probabilities": {"tasks": 0.87, "calendar": 0.13}},
+                   "capability": {"choice": "tasks.manage", "probabilities": {"tasks.manage": 0.81, "calendar.write": 0.19}}})
+    router = Router(brain_map, jev, settings)
+    route = await router.classify("Wrzuć mi to spotkanie na dziesiątą do kalendarza google'owego")
+    assert "calendar" in route.modules and {"calendar.write", "tasks.manage"} <= set(route.capabilities)
+
+    route = await router.classify("dodaj rutynę: w dni robocze o 7:30 poranny brief")
+    assert "tasks.routines" in route.forced and "tasks.routines" in route.capabilities
+    route = await router.classify("co mówi moja baza wiedzy o DAX?")
+    assert route.forced == ["knowledge.search"] and "knowledge" in route.modules
+    route = await router.classify("powiedz mi coś miłego")  # "powiedz" is not "wiedza"
+    assert route.forced == []
 
 
 async def test_yes_no_keywords(settings, brain_map):
@@ -148,7 +162,7 @@ async def test_unclear_yes_no_goes_to_jev(settings, brain_map):
     assert await Router(brain_map, FakeJev({"yes": {"noul": 0.5}}), settings).is_yes("hmm", "?") is None
     offline = Router(brain_map, JevClient(None, "", ""), settings)
     assert await offline.is_yes("w porządku", "?") is None
-    assert await offline.should_interrupt("state") == 1.0                  # no gate -> never swallow a reminder
+    assert await offline.should_interrupt("state") == 1.0
 
 
 async def test_unknown_module_goes_to_smalltalk_and_asks(settings, brain_map):
@@ -195,7 +209,7 @@ def test_tools_of_an_offline_server_stay_on_the_map(tmp_path):
     assert (tool["status"], tool["side_effect"], tool["params"]) == ("online", "write", ["id"])
 
     offline = build("error", [])
-    assert offline.tools["notes__delete_note"]["status"] == "offline"   # remembered, but not offered to Claude
+    assert offline.tools["notes__delete_note"]["status"] == "offline"
     assert offline.servers["notes"]["status"] == "error"
 
 
@@ -206,6 +220,6 @@ async def test_shield_asks_jev_and_fails_closed(brain_map, settings):
     assert "klasyfikatora bezpieczeństwa" in jev.sent["injection"]["instructions"]
     jev.answers = {"injection": {"noul": 0.1}}
     assert (await Router(brain_map, jev, settings).is_injection("kup mleko"))["breach"] is False
-    jev.answers = {}                                                       # malformed + no Claude -> refuse
+    jev.answers = {}
     assert await Router(brain_map, jev, settings).is_injection("kup mleko") == {
-        "breach": True, "probability": None, "source": "closed", "ms": pytest.approx(0, abs=50)}
+        "breach": True, "probability": None, "source": "closed", "tokens": 0, "ms": pytest.approx(0, abs=50)}

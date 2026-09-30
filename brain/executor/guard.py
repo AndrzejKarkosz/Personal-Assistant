@@ -1,8 +1,3 @@
-"""Guard: actions with side effects in the world wait for a spoken (or clicked) "yes".
-
-The executor calls `await guard.confirm(...)`. The guard emits a `confirm_request` event (the
-UI speaks it and shows Yes/No), and the next user utterance - or a button - resolves it.
-"""
 from __future__ import annotations
 
 import asyncio

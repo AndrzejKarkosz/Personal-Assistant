@@ -1,4 +1,3 @@
-"""Tool catalogue: every tool the brain can reach right now, with where it lives and what it does."""
 from __future__ import annotations
 
 import re
@@ -8,23 +7,23 @@ from typing import Any
 from ..executor import builtin
 from ..executor.builtin import SERVER_TOOLS
 
-BUILTIN_SERVER = "alfred"          # the brain's own tools (memory, tasks, confirmation)
-ANTHROPIC_SERVER = "anthropic"     # Claude server tools (web search / fetch)
+BUILTIN_SERVER = "alfred"
+ANTHROPIC_SERVER = "anthropic"
 
 _WRITE = re.compile(r"(create|update|delete|remove|send|submit|click|type|fill|select|respond|book|upload|"
-                    r"drag|press|write|add|move|cancel|remember|file_upload|handle_dialog)", re.I)
+                    r"drag|press|write|add|move|cancel|remember|save|file_upload|handle_dialog)", re.I)
 
 
 @dataclass
 class ToolInfo:
-    name: str                      # the name Claude sees: "<server>__<tool>" for MCP, plain for the rest
+    name: str
     server: str
-    kind: str                      # mcp | builtin | server
-    short: str                     # tool name inside its server
+    kind: str
+    short: str
     description: str = ""
     params: list[dict[str, Any]] = field(default_factory=list)
-    side_effect: str = "read"      # read | write | destructive | guard
-    status: str = "online"         # online | offline
+    side_effect: str = "read"
+    status: str = "online"
 
 
 def _params(schema: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -48,7 +47,6 @@ def side_effect(name: str, hints: dict[str, Any] | None = None) -> str:
 
 
 def collect(hub) -> tuple[dict[str, ToolInfo], dict[str, dict[str, Any]]]:
-    """Returns (tools by Claude name, server info by server name)."""
     tools: dict[str, ToolInfo] = {}
     servers: dict[str, dict[str, Any]] = {
         BUILTIN_SERVER: {"kind": "builtin", "status": "ready",

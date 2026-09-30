@@ -1,4 +1,3 @@
-"""FastAPI server: WebSocket for voice/text + events, REST for the UI panels, static UI."""
 from __future__ import annotations
 
 import asyncio
@@ -45,7 +44,6 @@ def _spawn(coro) -> None:
     task.add_done_callback(_background.discard)
 
 
-# ------------------------------------------------------------------ websocket
 @app.websocket("/ws")
 async def ws(socket: WebSocket) -> None:
     await socket.accept()
@@ -62,7 +60,8 @@ async def ws(socket: WebSocket) -> None:
             msg = await socket.receive_json()
             kind = msg.get("type")
             if kind == "text" and msg.get("text", "").strip():
-                _spawn(brain.handle_text(msg["text"], language=msg.get("language")))
+                _spawn(brain.handle_text(msg["text"], language=msg.get("language"),
+                                         mode="chat" if msg.get("mode") == "chat" else "voice"))
             elif kind == "audio" and msg.get("b64"):
                 ext = "webm" if "webm" in msg.get("mime", "webm") else "ogg" if "ogg" in msg.get("mime", "") else "wav"
                 _spawn(brain.handle_audio(base64.b64decode(msg["b64"]), f"speech.{ext}"))
@@ -75,7 +74,6 @@ async def ws(socket: WebSocket) -> None:
         brain.bus.unsubscribe(queue)
 
 
-# ----------------------------------------------------------------------- REST
 class TextIn(BaseModel):
     text: str
 
@@ -87,6 +85,7 @@ class TaskIn(BaseModel):
     schedule: str | None = None
     priority: str = "normal"
     module: str | None = None
+    category: str | None = None
 
 
 class TaskPatch(BaseModel):
@@ -94,6 +93,7 @@ class TaskPatch(BaseModel):
     note: str | None = None
     due: str | None = None
     schedule: str | None = None
+    category: str | None = None
 
 
 class EnabledIn(BaseModel):
@@ -155,7 +155,6 @@ async def reload_modules() -> dict[str, Any]:
     return brain.rebuild_map()
 
 
-# ------------------------------------------------------------------- brain map
 @app.get("/api/map")
 async def brain_map() -> dict[str, Any]:
     m = brain.map
@@ -182,7 +181,6 @@ async def brain_map_rebuild() -> dict[str, Any]:
     return brain.rebuild_map()
 
 
-# --------------------------------------------------------------------- persona
 class PersonaIn(BaseModel):
     meta: dict[str, Any]
     body: str
@@ -220,7 +218,7 @@ async def tasks(status: str = "open") -> list[dict[str, Any]]:
 @app.post("/api/tasks")
 async def create_task(body: TaskIn) -> dict[str, Any]:
     task = brain.store.create_task(body.title, body.description, body.due, body.schedule, body.module,
-                                   body.priority)
+                                   body.priority, category=body.category)
     brain.proactive.sync_recurring() if brain.proactive.scheduler.running else None
     return task.to_dict()
 
@@ -228,7 +226,8 @@ async def create_task(body: TaskIn) -> dict[str, Any]:
 @app.patch("/api/tasks/{task_id}")
 async def patch_task(task_id: str, body: TaskPatch) -> dict[str, Any]:
     try:
-        task = brain.store.update_task(task_id, body.status, body.note, body.due, None, body.schedule)
+        task = brain.store.update_task(task_id, body.status, body.note, body.due, None, body.schedule,
+                                       category=body.category)
     except KeyError:
         raise HTTPException(404, "No such task") from None
     return task.to_dict()
@@ -236,8 +235,6 @@ async def patch_task(task_id: str, body: TaskPatch) -> dict[str, Any]:
 
 @app.get("/api/calendar")
 async def calendar(start: str, end: str) -> dict[str, Any]:
-    """Google Calendar events between two local times ("2026-09-28T00:00:00"), read through the
-    google-calendar MCP server - the same connection Claude uses, so there is one sign-in."""
     server = brain.hub.servers.get("google-calendar")
     if not server or server.status != "ready":
         return {"status": server.status if server else "missing", "error": server.error if server else None,
@@ -247,7 +244,7 @@ async def calendar(start: str, end: str) -> dict[str, Any]:
             "calendarId": "primary", "timeMin": start, "timeMax": end,
             "timeZone": brain.settings.get("assistant.timezone", "Europe/Warsaw")})
         events = None if is_error else json.loads(text)["events"]
-    except Exception as exc:  # noqa: BLE001 - an outside server; the UI shows why
+    except Exception as exc:
         text, events = f"{type(exc).__name__}: {exc}", None
     if events is None:
         return {"status": "error", "error": text[:300], "events": []}
@@ -257,7 +254,6 @@ async def calendar(start: str, end: str) -> dict[str, Any]:
 
 @app.get("/api/routines")
 async def routines() -> list[dict[str, Any]]:
-    """Routines with today's state, read from the activity log: ran (answer / error), due, next run."""
     events = brain.bus.log.read(limit=100_000)
     tz = brain.proactive.scheduler.timezone
     now = datetime.now(tz)
@@ -276,7 +272,6 @@ async def routines() -> list[dict[str, Any]]:
                 first, next_run = trigger.get_next_fire_time(None, midnight), trigger.get_next_fire_time(None, now)
             except ValueError:
                 pass
-        # a failed run still ends with an (apologising) answer, so any error decides the result
         out.append({**r, "ran_at": runs[-1]["ts"] if runs else None,
                     "result": "error" if errors else "answer" if answer else None,
                     "answer": errors[-1]["data"].get("message") if errors else answer["data"].get("text") if answer else None,
@@ -339,14 +334,12 @@ async def put_settings(patch: dict[str, Any]) -> dict[str, Any]:
     return await get_settings()
 
 
-# ------------------------------------------------------------------------- UI
 UI_DIR = ROOT / "ui"
 app.mount("/static", StaticFiles(directory=UI_DIR), name="static")
 
 
 @app.middleware("http")
 async def fresh_ui(request, call_next):
-    """Revalidate UI files on every load, so an updated UI never mixes with cached old files."""
     response = await call_next(request)
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"

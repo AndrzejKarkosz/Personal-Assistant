@@ -1,11 +1,3 @@
-"""Which Claude account the brain uses.
-
-  subscription (default)  Claude Agent SDK -> your logged-in Claude Code (Pro/Max plan limits)
-  api                     Anthropic Messages API with ANTHROPIC_API_KEY (billed per token)
-
-The light calls (fallback router, session summaries) go through `light_client()`, which exposes the
-same `messages.create(...)` shape in both modes.
-"""
 from __future__ import annotations
 
 import json
@@ -17,8 +9,6 @@ from typing import Any
 log = logging.getLogger("alfred.llm")
 
 
-# $ per 1M tokens: input, output, cache read, cache write (5-min TTL). Anthropic list prices, 2026-06.
-# First matching prefix wins, so longer ids come first.
 PRICES = {
     "claude-fable-5-1": (10, 50, 0.25, 12.5),
     "claude-fable-5": (10, 50, 1, 12.5),
@@ -34,7 +24,6 @@ PRICES = {
 
 
 def cost_usd(model: str, usage: dict[str, int]) -> float | None:
-    """What a call costs at API list prices; None for a model missing from PRICES."""
     price = next((p for prefix, p in PRICES.items() if (model or "").startswith(prefix)), None)
     if price is None:
         return None
@@ -47,8 +36,6 @@ def backend(settings) -> str:
 
 
 def prepare_environment(settings) -> None:
-    """In subscription mode an ANTHROPIC_API_KEY in the environment would make Claude Code bill the
-    API account instead of the plan, so it is removed from this process (and its children)."""
     if backend(settings) == "subscription" and os.environ.pop("ANTHROPIC_API_KEY", None):
         log.info("Subscription mode: ignoring ANTHROPIC_API_KEY so Claude Code uses your plan.")
 
@@ -85,13 +72,11 @@ class _SubscriptionMessages:
             content=[SimpleNamespace(type="text", text=text)],
             usage=SimpleNamespace(input_tokens=int(usage.get("input_tokens", 0) or 0),
                                   output_tokens=int(usage.get("output_tokens", 0) or 0),
-                                  cost_usd=cost),        # Claude Code's own figure, cache included
+                                  cost_usd=cost),
         )
 
 
 class SubscriptionClient:
-    """Mimics `anthropic.AsyncAnthropic().messages.create` on top of the Agent SDK."""
-
     def __init__(self, settings):
         self.messages = _SubscriptionMessages(settings)
 
@@ -106,7 +91,6 @@ def light_client(settings):
 
 
 def subscription_status() -> dict[str, Any]:
-    """`claude auth status` - is Claude Code logged in, and with what."""
     import shutil
     import subprocess
 

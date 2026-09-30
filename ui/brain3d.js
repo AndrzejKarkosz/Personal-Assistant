@@ -1,8 +1,3 @@
-// Alfred's brain in 3D. The whole map has the shape of a brain and every vertical level is one part of
-// the app: the brainstem carries the pipeline, then memory, knowledge, MCP servers, the technical brain,
-// modules and, at the crown, Alfred's personality. Each level keeps its contents in folders.
-// White threads flicker like firing neurons; the parts working right now light up. Events travel as
-// labelled packets and the flow panel narrates each step. "Demo" plays a request without API keys.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
@@ -14,7 +9,6 @@ import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const short = (s, n = 42) => { s = String(s ?? "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
 
-// Levels from the bottom up. `nerve`: the brainstem node wired to the level; `folders` always exist.
 const REGIONS = [
   { id: "core", label: "Rdzeń", color: "#22d3ee",
     info: "Pień mózgu. Każdy sygnał przechodzi tędy: uszy (mowa → tekst), router Jev, wykonawca Claude, strażnik zgód, głos i tryb proaktywny." },
@@ -40,7 +34,6 @@ const folderOf = (n) => n.kind === "tool" ? `mcp:${n.server}` : n.kind === "capa
   : n.kind === "topic" ? n.path?.split("/")[1] : FOLDER_OF[n.kind] || n.group || "Inne";
 const LABELLED = ["hub", "folder", "core", "user", "module", "mcp"];
 
-// What each part of the pipeline does - shown when a node is clicked.
 const INFO = {
   user: ["Ty", "Mówisz lub piszesz. Alfred odpowiada głosem.", "wejście: głos / tekst"],
   ears: ["Uszy — mowa na tekst", "ElevenLabs Scribe zamienia nagranie na tekst i rozpoznaje język (PL/EN).", "audio → tekst + język"],
@@ -66,15 +59,12 @@ const KIND_INFO = {
   folder: "Folder w tej części mózgu.",
 };
 
-// Brain geometry in world units: half length (front-back), half height, hemisphere half width, hemisphere offset.
 const RX = 250, RY = 185, RZ = 105, HZ = 95, BAND = (2 * RY) / (REGIONS.length - 1);
-const bandY = (i) => -RY + (i - 0.5) * BAND;                  // level i = 1..6; level 0 (core) is the brainstem
+const bandY = (i) => -RY + (i - 0.5) * BAND;
 const levelAt = (y) => Math.max(1, Math.min(REGIONS.length - 1, 1 + Math.floor((y + RY) / BAND)));
-// Width of the brain at height y: a flat-ish base, a domed top.
 const widthAt = (y) => { const t = Math.min(1, Math.abs(y) / RY); return y < 0 ? Math.cbrt(1 - t ** 3) : Math.sqrt(1 - t * t); };
 const STEM_TOP = new THREE.Vector3(-45, -RY * 0.55, 0), STEM_BOTTOM = new THREE.Vector3(-85, -RY * 1.95, 0);
 
-// The surface: two folded hemispheres, a cerebellum with fine folia and the brainstem, as points.
 function shell() {
   const pos = [], lvl = [];
   const fold = (x, y, z) => Math.sin(0.055 * x + 2.1 * Math.sin(0.042 * y)) + Math.sin(0.06 * y + 1.9 * Math.sin(0.037 * z))
@@ -82,7 +72,7 @@ function shell() {
   for (let k = 0; lvl.length < 9000 && k < 4e5; k++) {
     const h = k % 2 ? 1 : -1, y = RY * (2 * Math.random() - 1), a = 2 * Math.PI * Math.random(), w = widthAt(y);
     const x = RX * w * Math.cos(a), z = h * HZ + RZ * w * Math.sin(a);
-    if (h * z < 6 || Math.abs(fold(x, y, z)) > 0.55) continue;      // open fissure; points gather along the folds
+    if (h * z < 6 || Math.abs(fold(x, y, z)) > 0.55) continue;
     pos.push(x, y, z); lvl.push(levelAt(y));
   }
   for (let k = 0, n = 0; n < 1600 && k < 1e5; k++) {
@@ -130,7 +120,7 @@ function setup() {
   shellGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   shellGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(pos.length), 3));
   scene.add(new THREE.Points(shellGeo, new THREE.PointsMaterial({ size: 3.2, ...additive })));
-  rings = REGIONS.slice(1).map((r, i) => {        // one glowing outline per level
+  rings = REGIONS.slice(1).map((r, i) => {
     const y = bandY(i + 1), w = widthAt(y) * 0.97, pts = [];
     for (let k = 0; k < 128; k++) { const a = (k / 128) * 2 * Math.PI; pts.push(new THREE.Vector3(RX * w * Math.cos(a), y, (HZ + RZ * w) * Math.sin(a))); }
     const ring = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts),
@@ -172,7 +162,6 @@ function setup() {
   requestAnimationFrame(loop);
 }
 
-// Nearest node on screen - small spheres are hard to hit with a ray.
 function pick(ev) {
   const r = renderer.domElement.getBoundingClientRect(), v = new THREE.Vector3();
   let best = null, bestD = 14;
@@ -203,9 +192,8 @@ function label(n, cls, text = n.label) {
   return o;
 }
 
-// ------------------------------------------------------------------ build
 function build(g) {
-  if (root) { [...root.children].forEach((o) => root.remove(o)); scene.remove(root); }   // removing drops CSS2D labels too
+  if (root) { [...root.children].forEach((o) => root.remove(o)); scene.remove(root); }
   root = new THREE.Group();
   scene.add(root);
   nodes = [{ id: "user", label: "Ty", kind: "user" }, ...g.nodes.map((n) => ({ ...n }))];
@@ -273,7 +261,6 @@ function build(g) {
 function layout() {
   const fib = (j, m) => { const y = 1 - (2 * (j + 0.5)) / m, r = Math.sqrt(1 - y * y), a = j * 2.39996; return [Math.cos(a) * r, y, Math.sin(a) * r]; };
   const set = (n, x, y, z) => (n.p = new THREE.Vector3(x, y, z));
-  // the pipeline climbs the brainstem in a helix
   const order = ["ears", "shield", "router", "proactive", "guard", "executor", "voice", "memory"];
   const rank = (n) => (order.indexOf(n.id) + 1) || 99;
   const core = nodes.filter((n) => n.kind === "core").sort((a, b) => rank(a) - rank(b));
@@ -288,7 +275,7 @@ function layout() {
     set(nodesById[`hub:${r.id}`], 0, y, 0);
     const folders = nodes.filter((n) => n.region === r.id && ["folder", "module", "mcp"].includes(n.kind));
     folders.forEach((f, k) => {
-      const a = i * 2.39996 + (2 * Math.PI * k) / folders.length;          // golden-angle turn per level
+      const a = i * 2.39996 + (2 * Math.PI * k) / folders.length;
       set(f, RX * w * 0.58 * Math.cos(a), y + (k % 2 ? 6 : -6), (HZ + RZ) * w * 0.58 * Math.sin(a));
       const kids = nodes.filter((n) => n.folder === f.id), rr = 10 + 5 * Math.sqrt(kids.length);
       kids.forEach((n, j) => { const [dx, dy, dz] = fib(j, kids.length); set(n, f.p.x + dx * rr, f.p.y + dy * rr * 0.4, f.p.z + dz * rr); });
@@ -297,8 +284,7 @@ function layout() {
   nodes.forEach((n) => (n.p ||= new THREE.Vector3()));
 }
 
-// ---------------------------------------------------------------- animation
-const SPARK = new THREE.Color(0.45, 0.47, 0.55);   // idle firing: faint, so the threads never hide the brain
+const SPARK = new THREE.Color(0.45, 0.47, 0.55);
 function spark(l, color, reverse = Math.random() < 0.5) {
   if (sparks.length < 500) sparks.push({ l, t: 0, v: 1.3 + Math.random() * 1.5, reverse, c: color });
 }
@@ -306,28 +292,26 @@ function spark(l, color, reverse = Math.random() < 0.5) {
 let last = performance.now();
 function loop(now) {
   requestAnimationFrame(loop);
-  const dt = Math.min(0.25, (now - last) / 1000), t = now / 1000, visible = el.clientWidth > 0;   // real time even at low FPS
+  const dt = Math.min(0.25, (now - last) / 1000), t = now / 1000, visible = el.clientWidth > 0;
   last = now;
   if (!nodes.length) return;
   for (const r of REGIONS) {
     act[r.id] *= Math.exp(-dt / 1.6);
     if (busy.has(r.id)) act[r.id] = Math.max(act[r.id], 0.45 + 0.15 * Math.sin(t * 4));
   }
-  if (talking && nodesById.voice) {             // Alfred is speaking: his voice and personality pulse
+  if (talking && nodesById.voice) {
     nodesById.voice.glow = Math.max(nodesById.voice.glow, 0.55 + 0.45 * Math.sin(t * 9));
     act.persona = Math.max(act.persona, 0.5 + 0.2 * Math.sin(t * 9));
   }
   const lens = peek || focus, dimOf = (region) => (lens && lens !== region ? 0.2 : 1);
   for (const n of nodes) {
     n.glow *= Math.exp(-dt / 0.9);
-    // names show where something happens, for the level in focus, and inside the hovered folder or level
     n.lbl.visible = n.glow > 0.15 || (lens === n.region && (LABELLED.includes(n.kind) || focus === n.region)) ||
       (hover && (hover.id === n.folder || (hover.kind === "hub" && hover.region === n.region && LABELLED.includes(n.kind))));
     const k = (n.dim ? 0.25 : 0.45 + 0.4 * act[n.region]) + 1.1 * n.glow + (n === hover ? 0.6 : 0);
     n.mesh.material.color.copy(n.base).multiplyScalar(k * dimOf(n.region));
     n.mesh.scale.setScalar(n.size * (1 + 0.7 * n.glow + (n === hover ? 0.35 : 0)));
   }
-  // every thread fires now and then, far more often where the brain is working, and fades
   const lc = linkGeo.attributes.color.array;
   links.forEach((l, i) => {
     const a = Math.max(act[l.a.region], act[l.b.region]);
@@ -354,13 +338,12 @@ function loop(now) {
       flash(p.hops[p.seg + 1].id); p.seg += 1; p.t = 0;
     }
     if (p.seg >= p.hops.length - 1) { p.done = true; continue; }
-    const k = p.t < 0.5 ? 2 * p.t * p.t : 1 - (-2 * p.t + 2) ** 2 / 2;       // ease in-out per hop
+    const k = p.t < 0.5 ? 2 * p.t * p.t : 1 - (-2 * p.t + 2) ** 2 / 2;
     p.mesh.position.lerpVectors(p.hops[p.seg].p, p.hops[p.seg + 1].p, k);
   }
   packets.filter((p) => p.done).forEach((p) => { p.tag && p.mesh.remove(p.tag); root.remove(p.mesh); });
   packets = packets.filter((p) => !p.done);
   if (!visible) return;
-  // the surface: every level glows in its own colour, brighter while that part of the app works
   const col = shellGeo.attributes.color.array;
   for (let i = 0; i < shellLvl.length; i++) {
     const r = REGIONS[shellLvl[i]], k = (0.14 + 0.8 * act[r.id]) * dimOf(r.id);
@@ -377,8 +360,7 @@ function loop(now) {
   labels.render(scene, camera);
 }
 
-// ------------------------------------------------------------- packets
-function path(from, to) {                   // shortest path through the brain (BFS, undirected)
+function path(from, to) {
   if (from === to || !nodesById[from] || !nodesById[to]) return nodesById[to] ? [to] : [];
   const prev = { [from]: null }, queue = [from];
   while (queue.length) {
@@ -422,7 +404,6 @@ function flash(id) {
   if (nodesById[n.folder]) nodesById[n.folder].glow = Math.max(nodesById[n.folder].glow, 0.5);
 }
 
-// ------------------------------------------------------------- info card
 function card(html) {
   const c = document.getElementById("node-info");
   c.innerHTML = `<button class="x" aria-label="Zamknij">×</button>${html}`;
@@ -462,18 +443,22 @@ function showInfo(n) {
   flash(n.id);
 }
 
-// ---------------------------------------------------------- event mapping
 const C = { text: "#e2e8f0", route: "#60a5fa", tool: "#4ade80", voice: "#c084fc", warn: "#fb7185" };
-const routeOf = {};       // request_id -> first routed module node
-let flowFor = null;       // request the flow panel currently describes
+const routeOf = {};
+let flowFor = null;
 const flow = () => document.getElementById("flow-steps");
-const newFlow = (rid) => { if (rid !== flowFor) { flow().innerHTML = ""; flowFor = rid; } };
+let flowTokens = 0;
+const fmt = (n) => n.toLocaleString("pl-PL");
+const flowTotal = () => { document.getElementById("flow-total").textContent = flowTokens ? `Σ ${fmt(flowTokens)} tok.` : ""; };
+const newFlow = (rid) => { if (rid !== flowFor) { flow().innerHTML = ""; flowFor = rid; flowTokens = 0; flowTotal(); } };
+const sum = (u) => Object.values(u || {}).reduce((s, v) => s + (typeof v === "number" ? v : 0), 0);
 const toolNode = (tool) => (nodesById[`tool:${tool}`] ? `tool:${tool}` : "memory");
 const serverOf = (tool) => nodesById[`tool:${tool}`]?.server;
 
-function step(title, detail, node) {
+function step(title, detail, node, tokens = 0) {
   const li = document.createElement("li");
-  li.innerHTML = `<b>${esc(title)}</b>${detail ? `<span>${esc(detail)}</span>` : ""}`;
+  li.innerHTML = `${tokens ? `<em>${fmt(tokens)} tok.</em>` : ""}<b>${esc(title)}</b>${detail ? `<span>${esc(detail)}</span>` : ""}`;
+  flowTokens += tokens; flowTotal();
   li.onclick = () => node && showInfo(nodesById[node]);
   flow().appendChild(li);
   flow().querySelectorAll("li").forEach((x) => x.classList.remove("now"));
@@ -508,7 +493,7 @@ function event(ev) {
     case "shield":
       send("shield", d.breach ? "voice" : "router", d.breach ? "zablokowano" : "czyste", d.breach ? C.warn : C.text);
       step(`1b · Osłona Jev (${d.source}, ${d.ms} ms)`, d.breach ? "prompt injection — zapytanie zatrzymane"
-        : `bezpieczne${d.probability != null ? ` · ryzyko ${Math.round(d.probability * 100)}%` : ""}`, "shield");
+        : `bezpieczne${d.probability != null ? ` · ryzyko ${Math.round(d.probability * 100)}%` : ""}`, "shield", d.tokens);
       break;
     case "classified": {
       const target = `module:${d.module}`;
@@ -522,14 +507,14 @@ function event(ev) {
       const top = Object.entries(d.probabilities || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
         .map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(" · ");
       step(`2 · Router (${d.source}, ${d.latency_ms} ms) → ${d.module}`,
-        `${top}${d.capabilities?.length ? ` · możliwości: ${d.capabilities.join(", ")}` : " · wszystkie możliwości modułu"}${d.skill ? ` · umiejętność: ${d.skill}` : ""}${d.topic ? ` · temat: ${d.topic.replace("topic:", "")}` : ""} · pilność ${(+d.urgency || 0).toFixed(1)} · akcja w świecie ${Math.round((d.acts_on_world || 0) * 100)}%`, "router");
+        `${top}${d.capabilities?.length ? ` · możliwości: ${d.capabilities.join(", ")}` : " · wszystkie możliwości modułu"}${d.skill ? ` · umiejętność: ${d.skill}` : ""}${d.topic ? ` · temat: ${d.topic.replace("topic:", "")}` : ""} · pilność ${(+d.urgency || 0).toFixed(1)} · akcja w świecie ${Math.round((d.acts_on_world || 0) * 100)}%`, "router",
+        (d.usage?.input_tokens || 0) + (d.usage?.output_tokens || 0));
       break;
     }
-    case "ack":
-      send("shield", "voice", "potwierdzenie", C.voice);
-      setTimeout(() => send("voice", "user", `„${d.text}”`, C.voice), 700);
-      flash("folder:persona:Zwroty");
-      step("3 · Natychmiastowe potwierdzenie", `„${d.text}”`, "voice");
+    case "action_check":
+      send("shield", "executor", d.breach ? "zablokowano" : d.tool, d.breach ? C.warn : C.text);
+      step(`Osłona akcji (${d.source}, ${d.ms} ms) → ${d.tool}`, d.breach ? "niebezpieczna — nie wykonano"
+        : `bezpieczna${d.probability != null ? ` · ryzyko ${Math.round(d.probability * 100)}%` : ""}`, "shield", d.tokens);
       break;
     case "executor_start":
       busy.add("core"); busy.add(nodesById[mod]?.region || "modules");
@@ -541,7 +526,7 @@ function event(ev) {
       break;
     case "llm_call":
       flash("executor");
-      step(`Claude myśli (runda ${d.round + 1}, ${d.ms} ms)`, `${d.stop_reason === "tool_use" ? "chce użyć narzędzia" : d.stop_reason === "end_turn" ? "ma odpowiedź" : d.stop_reason} · tokeny in ${d.usage?.input ?? 0} / out ${d.usage?.output ?? 0}`, "executor");
+      step(`Claude myśli (runda ${d.round + 1}, ${d.ms} ms)`, `${d.stop_reason === "tool_use" ? "chce użyć narzędzia" : d.stop_reason === "end_turn" ? "ma odpowiedź" : d.stop_reason} · in ${fmt(d.usage?.input ?? 0)} / out ${fmt(d.usage?.output ?? 0)}${d.usage?.cache_read ? ` / cache ${fmt(d.usage.cache_read)}` : ""}`, "executor", sum(d.usage));
       break;
     case "tool_call":
       send("executor", toolNode(d.tool), d.tool.split("__").pop(), C.tool);
@@ -568,7 +553,7 @@ function event(ev) {
       setTimeout(() => send("voice", "user", `„${d.text}”`, C.voice), 650);
       send("executor", "memory", "zapis tury", C.text);
       flash("folder:persona:Charakter");
-      step("5 · Odpowiedź głosem", `„${short(d.text, 110)}” · in ${d.usage?.input ?? 0} / out ${d.usage?.output ?? 0} / cache ${d.usage?.cache_read ?? 0}`, "voice");
+      step("5 · Odpowiedź głosem", `„${short(d.text, 110)}” · in ${d.usage?.input ?? 0} / out ${d.usage?.output ?? 0} / cache ${d.usage?.cache_read ?? 0}${d.cost_usd != null ? ` · $${d.cost_usd.toFixed(4)}` : ""}`, "voice");
       step("6 · Pamięć sesji", (d.actions || []).length ? `zapisane akcje: ${d.actions.join("; ")}` : "tura dopisana do sesji", "memory");
       break;
     case "session_started": flash("memory"); break;
@@ -593,7 +578,6 @@ function event(ev) {
   }
 }
 
-// ---------------------------------------------------------------- demo
 function demo() {
   const rid = "demo-" + Date.now();
   const E = (kind, node, data) => ({ kind, node, request_id: rid, data });
@@ -601,7 +585,6 @@ function demo() {
     [0, E("listening", "ears", { bytes: 48000 })],
     [900, E("transcript", "ears", { text: "Zarezerwuj stolik dla dwóch w Nolicie na piątek na dziewiętnastą", language: "pl" })],
     [1900, E("classified", "router", { module: "bookings", skill: "bookings.restaurant-table", capabilities: ["bookings.browse", "memory.recall", "research.web", "bookings.confirm", "calendar.write", "memory.remember", "tasks.manage"], capability_probabilities: { "bookings.browse": 0.71, "research.web": 0.12 }, confidence: 0.86, source: "jev", latency_ms: 180, urgency: 1.1, acts_on_world: 0.94, probabilities: { bookings: 0.86, calendar: 0.09, research: 0.05 }, also: [] })],
-    [2800, E("ack", "voice", { text: "Oczywiście, szefie. Już się tym zajmuję." })],
     [3600, E("executor_start", "executor", { model: "claude-opus-5", backend: "subscription", capabilities: ["bookings.browse", "memory.recall", "research.web", "bookings.confirm"], effort: "medium", modules: ["bookings"], tools: ["browser__browser_navigate", "browser__browser_click", "memory_search", "confirm_action", "task_create"] })],
     [4400, E("llm_call", "executor", { round: 0, ms: 1400, stop_reason: "tool_use", usage: { input: 2100, output: 90 } })],
     [4700, E("tool_call", "memory", { tool: "memory_search", input: { query: "restauracja Nolita" } })],
