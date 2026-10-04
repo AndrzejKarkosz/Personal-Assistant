@@ -119,15 +119,16 @@ class MCPHub:
     def owns(self, name: str) -> bool:
         return name in self._owner
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-        """Run a tool; returns (text for Claude, is_error)."""
+    async def call(self, name: str, arguments: dict[str, Any], limit: int | None = 20000) -> tuple[str, bool]:
+        """Run a tool; returns (text, is_error). `limit` keeps Claude's context small - the UI passes None, because
+        cut JSON (a month or a year of events) cannot be parsed."""
         server, tool = self._owner[name]
         result = await self.servers[server].session.call_tool(tool, arguments)
         drop = set(self.servers[server].config.get("drop_fields", []))
         parts = [compact(b.text, drop) if getattr(b, "text", None) is not None else f"[{getattr(b, 'type', 'content')}]"
                  for b in getattr(result, "content", None) or []]
         is_error = getattr(result, "is_error", None) or getattr(result, "isError", False)
-        return "\n".join(parts)[:20000], bool(is_error)
+        return "\n".join(parts)[:limit], bool(is_error)
 
     def status(self) -> list[dict[str, Any]]:
         return [{"name": s.name, "status": s.status, "error": s.error, "description": s.config.get("description", ""),

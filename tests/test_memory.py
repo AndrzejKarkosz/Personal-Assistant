@@ -62,6 +62,17 @@ def test_okf_roundtrip_and_slugs():
     assert okf.slugify("Łódź — Kraków!") == "lodz-krakow" and okf.slugify("???") == "item"
 
 
+def test_only_four_statuses_and_old_waiting_tasks_are_in_progress(tmp_path):
+    store = MemoryStore(tmp_path)
+    task = store.create_task("Stary", status="in_progress")
+    path = tmp_path / "tasks" / f"{task.id}.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("status: in_progress", "status: waiting"), encoding="utf-8")
+    assert store.get_task(task.id).status == "in_progress" and store.list_tasks("open")[0].id == task.id
+    for bad in ("waiting", "bogus"):
+        with pytest.raises(ValueError):
+            store.create_task("X", status=bad)
+
+
 def test_task_errors_ordering_and_filters(tmp_path):
     store = MemoryStore(tmp_path)
     with pytest.raises(KeyError):
@@ -111,3 +122,40 @@ async def test_idle_session_is_saved_even_when_the_summary_fails(tmp_path, setti
     meta, _ = store.recent_sessions(1)[0]
     assert meta["title"] == "Zarezerwuj stolik" and meta["turns"] == 2
     assert await manager.get() is not first
+
+
+def test_undone_tasks_move_to_the_next_day_same_hour(tmp_path):
+    from datetime import date
+    store = MemoryStore(tmp_path)
+    late = store.create_task("Fryzjer", due="2026-09-29T10:00:00+02:00", category="Reszta")
+    done = store.create_task("Trening", due="2026-09-29T18:00:00+02:00")
+    store.update_task(done.id, status="done")
+    weekly = store.create_task("Brief", due="2026-09-29T08:00:00+02:00", schedule="0 8 * * 1")
+    later = store.create_task("Dentysta", due="2026-11-03T09:00:00+01:00")
+
+    moved = store.roll_over(date(2026, 10, 30))                 # past the clock change on 25.10
+    assert [t.id for t in moved] == [late.id]
+    assert store.get_task(late.id).due == "2026-10-30T10:00:00+01:00"     # same local hour, winter offset
+    assert "niezrobione 2026-09-29 - przeniesione na 2026-10-30" in store.get_task(late.id).history[-1]
+    assert store.get_task(done.id).due.startswith("2026-09-29")            # done, cron and future tasks stay
+    assert store.get_task(weekly.id).due.startswith("2026-09-29") and store.get_task(later.id).due.startswith("2026-11-03")
+    assert store.roll_over(date(2026, 10, 30)) == []                       # once per day
+
+
+def test_goals_and_resolutions_are_saved_and_briefed(tmp_path):
+    store = MemoryStore(tmp_path)
+    assert store.goals() == {"goals": "", "resolutions": ""} and store.goals_text() == ""
+    store.save_goals("- Wrócić do biegania\n- Skończyć SmartMeet MVP", "- Bez telefonu po 22")
+    assert store.goals() == {"goals": "- Wrócić do biegania\n- Skończyć SmartMeet MVP", "resolutions": "- Bez telefonu po 22"}
+    assert "His goals:\n- Wrócić do biegania" in store.briefing() and "His resolutions:" in store.briefing()
+    task = store.create_task("Fizjo", goal="żeby wrócić do biegania")
+    assert store.get_task(task.id).goal == "żeby wrócić do biegania"
+    assert store.update_task(task.id, goal="").goal is None
+
+
+def test_alfreds_board(tmp_path):
+    from brain.memory import MemoryStore
+    store = MemoryStore(tmp_path)
+    assert store.get_task(store.create_task("Przypomnienie o taskach na dzisiaj").id).alfred is True   # always
+    mine = store.create_task("Fizjo")
+    assert store.update_task(mine.id, alfred=True).alfred is True and "Alfred's board" in store.get_task(mine.id).history[-1]

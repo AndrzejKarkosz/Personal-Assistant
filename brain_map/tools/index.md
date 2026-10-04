@@ -1,6 +1,6 @@
 ---
 {type: Index, title: Tools, description: 'Every tool the brain can call, by server.',
-  timestamp: '2026-09-30T13:14:24+02:00'}
+  timestamp: '2026-10-01T10:39:19+02:00'}
 ---
 
 # Tools
@@ -12,9 +12,10 @@ Every tool the brain can call, by server.
 * [memory_search](alfred/memory-search.md) - Search Alfred's own memory (past sessions, tasks, facts about the user) by keywords. Returns titles, descriptions and pa
 * [routine_delete](alfred/routine-delete.md) - Remove a routine by its id.
 * [routine_save](alfred/routine-save.md) - Create a routine or change an existing one (same id): a prompt Alfred runs by himself on a schedule. Only for routines -
+* [task_category_add](alfred/task-category-add.md) - Add a NEW task category. Only when the user clearly wants a category that is not in the fixed list; the user is asked fo
 * [task_create](alfred/task-create.md) - Create tasks or reminders Alfred should do or remind about later. Always pass a `tasks` list - several tasks go in ONE c
 * [task_list](alfred/task-list.md) - List tasks Alfred tracks for the user. status: open (default), all, or one status.
-* [task_update](alfred/task-update.md) - Update a task: change status (todo, in_progress, waiting, done, cancelled), due date, schedule, category, title, or add 
+* [task_update](alfred/task-update.md) - Update a task: change status (todo, in_progress, done, cancelled), due date, schedule, category, title, or add a progres
 * [web_fetch](anthropic/web-fetch.md) - Fetch and read a web page by URL.
 * [web_search](anthropic/web-search.md) - Search the web for current information.
 * [create-event](google-calendar/create-event.md) - Create a new calendar event.

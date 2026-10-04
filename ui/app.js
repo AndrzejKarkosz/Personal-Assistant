@@ -72,8 +72,8 @@ function setSpeaking(on) {                // the speaker icon (and the brain's v
     last = now;
     if (!cv.offsetParent) return;                        // brain view not shown
     const state = $("#alfred").dataset.state;
-    // ponytail: the voice level is made up from sines; hook an AnalyserNode to the audio if it should follow real speech
-    const voice = state === "speaking" ? 0.5 + 0.5 * Math.abs(Math.sin(t * 9) * Math.sin(t * 3.7 + 1)) : 0;
+    // the real loudness of Alfred's voice; the browser's own voice cannot be measured, so there it is made up from sines
+    const voice = state === "speaking" ? voiceLevel() ?? 0.5 + 0.5 * Math.abs(Math.sin(t * 9) * Math.sin(t * 3.7 + 1)) : 0;
     spin += ((SPIN[state] ?? 0.1) - spin) * Math.min(1, dt * 3);
     glow += ((GLOW[state] ?? 0.3) + voice * 0.3 - glow) * Math.min(1, dt * 8);
     rot += spin * dt * calm;
@@ -105,6 +105,28 @@ function setSpeaking(on) {                // the speaker icon (and the brain's v
   }
   requestAnimationFrame(frame);
 })();
+// Alfred's voice goes through an analyser, so the galaxy follows how loud he really speaks. Browsers start the
+// audio context only after a click or a key; until then the voice plays directly.
+let audioCtx = null, analyser = null, levels = null;
+["pointerdown", "keydown"].forEach((e) => addEventListener(e, () => {
+  try { (audioCtx ??= new AudioContext()).resume(); } catch { /* no Web Audio */ }
+}, { once: true }));
+function analyse(el) {
+  if (audioCtx?.state !== "running") return;
+  if (!analyser) {
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.connect(audioCtx.destination);
+    levels = new Uint8Array(analyser.frequencyBinCount);
+  }
+  audioCtx.createMediaElementSource(el).connect(analyser);
+  el.analysed = true;
+}
+function voiceLevel() {                   // 0..1, or null when it cannot be measured
+  if (!playing?.analysed) return null;
+  analyser.getByteFrequencyData(levels);
+  return Math.min(1, levels.reduce((s, v) => s + v, 0) / levels.length / 80);
+}
 function speak(text, b64, lang) {
   audioQueue.push({ text, b64, lang });
   if (!playing) playNext();
@@ -115,12 +137,14 @@ function playNext() {
   if (!item) { playing = null; return; }
   if (item.b64) {
     playing = new Audio(`data:audio/mpeg;base64,${item.b64}`);
+    analyse(playing);
     playing.onended = playNext;
     playing.onerror = playNext;
     playing.play().catch(playNext);
   } else if ("speechSynthesis" in window) {
     const u = new SpeechSynthesisUtterance(item.text);
     u.lang = item.lang === "en" ? "en-GB" : "pl-PL";
+    u.rate = 1.2;                         // same pace as the ElevenLabs voice (voice.settings.speed)
     u.onend = u.onerror = playNext;
     playing = u;
     speechSynthesis.speak(u);
@@ -328,8 +352,21 @@ async function loadStatus() {
     pill("ElevenLabs", status.keys.elevenlabs, "bez klucza: głos przeglądarki") +
     status.mcp.map((s) => s.status === "disabled" ? "" : pill(s.name, s.status === "ready", s.error || "")).join("");
   const u = status.session?.usage || {};
-  $("#session-cost").innerHTML = `Sesja · ${status.session?.turns || 0} tur · <b>${num(tokens(u))} tok.</b> · ${usd(u.cost_usd || 0)}`;
+  // Split per service: Claude (subscription = API-equivalent, not a bill), Jev and ElevenLabs (real money).
+  const sub = status.backend === "subscription";
+  const claudeTok = ["input", "output", "cache_read", "cache_write"].reduce((s, k) => s + (u[k] || 0), 0);
+  const paid = (u.jev_usd || 0) + (u.elevenlabs_usd || 0) + (sub ? 0 : u.cost_usd || 0);
+  $("#session-cost").innerHTML = `<b>Płacisz ${cash(paid)}</b> · Jev ${cash(u.jev_usd)} · ` +
+    `ElevenLabs ${cash(u.elevenlabs_usd)} · Claude ${usd(u.cost_usd || 0)}`;
+  $("#session-cost").title = [
+    `Sesja: ${status.session?.turns || 0} tur`,
+    `Claude: ${num(claudeTok)} tok. · ${usd(u.cost_usd || 0)}` + (sub ? " — subskrypcja: równowartość API, nie rachunek (zużywa limit planu)" : ""),
+    `Jev: ${num(u.jev || 0)} tok. · ${cash(u.jev_usd)} (płatne tylko wejście)`,
+    `ElevenLabs: ${num(u.tts_chars || 0)} znaków głosu + ${num(Math.round(u.stt_s || 0))} s rozpoznawania mowy · ${cash(u.elevenlabs_usd)}`,
+    `Płacisz: Jev + ElevenLabs${sub ? "" : " + Claude"} = ${cash(paid)} (ceny: config/brain.yaml → prices)`,
+  ].join("\n");
 }
+const cash = (v) => `$${(v || 0).toFixed(4)}`;
 const tokens = (u) => ["input", "output", "cache_read", "cache_write", "router", "jev"].reduce((s, k) => s + (u[k] || 0), 0);
 const num = (n) => n.toLocaleString("pl-PL");
 // Subscription: no per-token bill, the figure is what the same call would cost on the API.
@@ -347,9 +384,61 @@ function setView(v) {
   if (v === "tasks") refreshDay();
 }
 document.querySelectorAll(".views button").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
+
+// Tasks tabs: Przegląd (board + small calendar + panels) or Kanban / Kalendarz over the whole page.
+function setSub(s) {
+  $("main").dataset.sub = s;
+  document.querySelectorAll(".subviews button").forEach((b) => b.classList.toggle("active", b.dataset.sub === s));
+  try { localStorage.setItem("tasksub", s); } catch { /* private mode */ }
+  delete $("#calendar").dataset.scrolled;             // taller hours on the full page: scroll to "now" again
+  renderCalendar();
+  if (s === "goals") loadGoals().catch(warn);
+}
+async function loadGoals() {
+  const [g, prod] = await Promise.all([api("/api/goals"), api("/api/productivity")]);
+  $("#goals-text").value = g.goals;
+  $("#resolutions-text").value = g.resolutions;
+  $("#goals-saved").textContent = "";
+  renderProductivity(prod);
+}
+function renderProductivity(prod) {
+  $("#prod-on").checked = prod.enabled;
+  const f = $("#prod-plan");
+  Object.entries(prod.plan).forEach(([k, v]) => f.elements[k] && (f.elements[k].value = v));
+  $("#prod-routines").innerHTML = prod.routines.map((r) => `<div class="routine ${prod.enabled ? "done" : "wait"}" title="${esc(r.prompt)}">
+    <div class="row between"><span class="title">${esc(r.id)}</span><span class="state">${esc(cronPl(r.schedule))}</span></div>
+    <div class="sub answer">${esc(r.prompt)}</div></div>`).join("") || '<div class="sub">Brak rutyn w config/brain.yaml → productivity.</div>';
+}
+const putProductivity = async (enabled) => {
+  const plan = Object.fromEntries(new FormData($("#prod-plan")));
+  plan.hours_limit = +plan.hours_limit;
+  renderProductivity(await api("/api/productivity", { method: "PUT", body: JSON.stringify({ enabled, plan }) }));
+  loadRoutines();
+};
+$("#prod-on").onchange = (e) => putProductivity(e.target.checked).catch((err) => { e.target.checked = !e.target.checked; warn(err); });
+$("#prod-plan").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await putProductivity($("#prod-on").checked);
+    $("#plan-saved").textContent = `zapisane ${hhmm(new Date())}` + ($("#prod-on").checked ? " — rutyny już mają nowe godziny" : " — włącz rutynę, żeby ruszyła");
+  } catch (err) { warn(err); }
+};
+// "30 7 * * 1-5" -> "pn–pt 07:30"; anything fancier is shown as is
+function cronPl(cron) {
+  if (cron === "@start") return "przy starcie";
+  const [m, h, dom, mon, dow] = cron.split(" ");
+  if (!/^\d+$/.test(m) || !/^\d+$/.test(h) || dom !== "*" || mon !== "*") return `cron ${cron}`;
+  const days = { "*": "codziennie", "1-5": "pn–pt", "0": "niedziela", "7": "niedziela", "6": "sobota", "0,6": "weekend", "6,0": "weekend" };
+  return `${days[dow] || `dni ${dow}`} ${h.padStart(2, "0")}:${m.padStart(2, "0")}`;
+}
+$("#goals-save").onclick = async () => {
+  await api("/api/goals", { method: "PUT", body: JSON.stringify({ goals: $("#goals-text").value, resolutions: $("#resolutions-text").value }) });
+  $("#goals-saved").textContent = `zapisane ${hhmm(new Date())} — Alfred już je zna`;
+};
+document.querySelectorAll(".subviews button").forEach((b) => (b.onclick = () => setSub(b.dataset.sub)));
 const warn = (e) => addMsg("system", `⚠ ${e.message}`);
 const refreshLeft = () => Promise.all([refreshTasks(), loadRoutines()]).catch(warn);
-const refreshDay = () => Promise.all([loadCalendar(), loadSessions()]).catch(warn);
+const refreshDay = () => Promise.all([loadCalendar(), loadSessions(), loadSummary()]).catch(warn);
 
 // ---------------------------------------------------------------- Jev panel
 const said = {};                                  // request_id -> what was said
@@ -402,15 +491,42 @@ async function loadRoutines() {
     : ["wait", `○ ${new Date(r.next_run).toLocaleString("pl-PL", { weekday: "short", hour: "2-digit", minute: "2-digit" })}`];
   $("#routines").innerHTML = routines.map((r) => {
     const [cls, label] = state(r);
-    return `<div class="routine ${cls}" title="${esc(r.prompt)}"><div class="row between"><span class="title">${esc(r.id)}</span><span class="state">${esc(label)}</span></div>
-      <div class="sub">${esc(r.schedule === "@start" ? "przy każdym starcie" : `cron ${r.schedule}`)}${r.module ? ` · ${esc(r.module)}` : ""}</div>
-      ${r.answer ? `<div class="sub answer">${esc(r.answer)}</div>` : ""}</div>`;
-  }).join("") || '<div class="sub">Brak rutyn — dodaj je w config/routines.yaml.</div>';
+    return `<div class="routine ${cls}" data-id="${esc(r.id)}" title="${esc(r.prompt)}"><div class="row between"><span class="title">${esc(r.id)}</span>
+      <span class="row"><span class="state">${esc(label)}</span><button class="del" data-del="1" title="Usuń rutynę" aria-label="Usuń rutynę ${esc(r.id)}">×</button></span></div>
+      <div class="sub">${esc(r.schedule === "@start" ? "przy każdym starcie" : cronPl(r.schedule))}${r.module ? ` · ${esc(r.module)}` : ""}</div>
+      <div class="sub answer">${esc(r.answer || r.prompt)}</div></div>`;
+  }).join("") || '<div class="sub">Brak rutyn — dodaj pierwszą powyżej albo włącz rutynę produktywności w Celach.</div>';
+  $("#routines").querySelectorAll(".routine").forEach((el) => (el.onclick = (e) => {
+    const r = routines.find((x) => x.id === el.dataset.id);
+    if (e.target.dataset.del) {
+      if (confirm(`Usunąć rutynę „${r.id}”?`)) api(`/api/routines/${encodeURIComponent(r.id)}`, { method: "DELETE" }).then(loadRoutines, warn);
+      return;
+    }
+    const f = $("#routine-form");
+    ["id", "schedule", "prompt"].forEach((k) => (f.elements[k].value = r[k]));
+    f.elements.module.value = r.module || "";
+    f.elements.prompt.focus();
+  }));
+  if (!$("#routine-form").elements.module.options.length) {
+    const mods = await api("/api/modules");
+    $("#routine-form").elements.module.innerHTML = '<option value="">moduł: wybierze Jev</option>' +
+      mods.filter((m) => m.enabled).map((m) => `<option value="${esc(m.id)}">${esc(m.label || m.id)}</option>`).join("");
+  }
 }
+$("#routine-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try {
+    await api("/api/routines", { method: "POST", body: JSON.stringify({ id: f.get("id"), schedule: f.get("schedule").trim(),
+      prompt: f.get("prompt"), module: f.get("module") || null }) });
+    e.target.reset();
+    loadRoutines();
+  } catch (err) { warn(err); }
+};
 
 // ================================================================ day view
-const DAY_MS = 864e5, OPEN = ["todo", "in_progress", "waiting"];
-const STATUS_PL = { todo: "do zrobienia", in_progress: "w toku", waiting: "czeka", done: "zrobione", cancelled: "anulowane" };
+const DAY_MS = 864e5, OPEN = ["todo", "in_progress"];
+const STATUS_PL = { todo: "do zrobienia", in_progress: "w toku", done: "zrobione", cancelled: "anulowane" };
 const isOpen = (t) => OPEN.includes(t.status);
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
@@ -418,11 +534,10 @@ const localIso = (d) => new Date(d - d.getTimezoneOffset() * 6e4).toISOString().
 const hhmm = (d) => d.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
 const when = (x) => (x?.dateTime ? new Date(x.dateTime) : x?.date ? new Date(`${x.date}T00:00:00`) : null);
 const day = { tasks: [], cal: null, today: null, items: [] };
-const closedCats = new Set();                     // categories you folded stay folded across refreshes
 
 // Summary
 function renderStats() {
-  const now = new Date(), open = day.tasks.filter(isOpen);
+  const now = new Date(), open = day.tasks.filter((t) => isOpen(t) && !t.alfred);
   const overdue = open.filter((t) => t.due && new Date(t.due) < now);
   const done = day.tasks.filter((t) => t.status === "done" && now - new Date(t.updated) < 7 * DAY_MS);
   const next = day.today?.find((e) => (when(e.end) || when(e.start)) > now);
@@ -433,6 +548,12 @@ function renderStats() {
     tile(open.length, "otwarte zadania", open.find((t) => t.status === "in_progress")?.title || "", "purple") +
     tile(overdue.length, "po terminie", overdue[0]?.title || "wszystko na czas", overdue.length ? "err" : "green") +
     tile(done.length, "zrobione · 7 dni", "", "green");
+  const byCat = {};
+  open.forEach((t) => (byCat[t.category || "bez kategorii"] = (byCat[t.category || "bez kategorii"] || 0) + 1));
+  $("#sum-open").innerHTML = `<span class="sub">Otwarte teraz:</span>` +
+    Object.entries(byCat).map(([c, n]) => `<button class="chip on" data-c="${esc(c === "bez kategorii" ? NO_CAT : c)}" title="Pokaż na Kanbanie">${esc(c)} <span class="muted">${n}</span></button>`).join("") +
+    (overdue.length ? `<span class="chip late">po terminie <span class="muted">${overdue.length}</span></span>` : "");
+  $("#sum-open").querySelectorAll("button").forEach((b) => (b.onclick = () => { setFilter(b.dataset.c); setSub("kanban"); }));
   $("#greeting").textContent = `${now.getHours() < 18 && now.getHours() >= 5 ? "Dzień dobry" : "Dobry wieczór"} · ` +
     now.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" });
 }
@@ -440,6 +561,9 @@ function renderStats() {
 const BRIEFS = {
   day: "Podsumuj mój dzień: co mam dziś w kalendarzu, które zadania są na dziś albo po terminie i jaki otwarty wątek warto domknąć.",
   week: "Podsumuj mój tydzień: najważniejsze spotkania, zadania na ten tydzień i co udało się zamknąć.",
+  prio: "Zaproponuj priorytety moich otwartych zadań według rutyny produktywności: co przybliża mnie do celów, " +
+    "co głębokie zrobić rano w szczycie energii, co płytkie zebrać na popołudnie, co odłożyć. " +
+    "Dla pierwszego podaj najszybszą drogę. Niczego nie zmieniaj bez mojej zgody.",
 };
 function showBrief(text, at, source) {
   $("#brief").innerHTML = `<p>${esc(text)}</p><span class="meta">${esc(source)} · ${esc(at)}</span>`;
@@ -461,46 +585,68 @@ async function loadBrief() {
   else $("#brief").innerHTML = '<p class="sub">Poproś Alfreda o brief dnia albo tygodnia — odpowie głosem, a podsumowanie zostanie tutaj.</p>';
 }
 
-// To-do
+// To-do: a kanban board - one column per status; drag a card to another column to change its status (SortableJS)
+const sortable = import("sortablejs").then((m) => m.default).catch(() => null);   // CDN down: the board still shows
+const NO_CAT = "__none__";                              // the "no category" chip
+let catFilter = "", who = "me";                         // "" = every category; whose board: "me" | "alfred"
+try { catFilter = localStorage.getItem("catfilter") || ""; who = localStorage.getItem("board") || "me"; } catch { /* private mode */ }
+function setFilter(c) {
+  catFilter = c;
+  try { localStorage.setItem("catfilter", c); } catch { /* private mode */ }
+  refreshTasks().catch(warn);
+}
+document.querySelectorAll("#board-who button").forEach((b) => (b.onclick = () => {
+  who = b.dataset.who;
+  try { localStorage.setItem("board", who); } catch { /* private mode */ }
+  refreshTasks().catch(warn);
+}));
 async function refreshTasks() {
   day.tasks = await api("/api/tasks?status=all");
-  const filter = $("#task-filter").value, now = new Date(), today = startOfDay(now);
-  const shown = day.tasks.filter((t) => filter === "all" || (filter === "open" ? isOpen(t) : t.status === filter));
-  const bucket = (t) => {
-    const due = t.due && new Date(t.due);
-    if (!due) return "Bez terminu";
-    if (due < now && isOpen(t)) return "Po terminie";
-    return due < today ? "Wcześniej" : due < addDays(today, 1) ? "Dziś" : due < addDays(today, 2) ? "Jutro" : "Później";
+  document.querySelectorAll("#board-who button").forEach((b) => b.classList.toggle("on", b.dataset.who === who));
+  const board = day.tasks.filter((t) => !!t.alfred === (who === "alfred"));
+  const now = new Date();
+  const fixed = status.task_categories || [];      // config/brain.yaml tasks.categories - the only ones, in that order
+  const others = board.map((t) => t.category).filter((c) => c && !fixed.includes(c)).sort((a, b) => a.localeCompare(b, "pl"));
+  const cats = [...new Set([...fixed, ...others])];   // `others` only for old tasks from before the fixed list
+  const picked = $("#task-cats").value;
+  $("#task-cats").innerHTML = `<option value="">bez kategorii</option>` +
+    fixed.map((c) => `<option${c === picked ? " selected" : ""}>${esc(c)}</option>`).join("");
+
+  const open = board.filter(isOpen);
+  const count = (c) => open.filter((t) => (c === NO_CAT ? !t.category : !c || t.category === c)).length;
+  const chips = ["", ...cats, ...(open.some((t) => !t.category) ? [NO_CAT] : [])];
+  if (!chips.includes(catFilter)) catFilter = "";      // a remembered category this board does not have
+  $("#cat-filter").innerHTML = chips.map((c) => `<button class="chip${c === catFilter ? " on" : ""}" data-c="${esc(c)}">` +
+    `${esc(c === NO_CAT ? "bez kategorii" : c || "wszystkie")} <span class="muted">${count(c)}</span></button>`).join("");
+  $("#cat-filter").querySelectorAll("button").forEach((b) => (b.onclick = () => setFilter(b.dataset.c)));
+
+  const inFilter = (t) => !catFilter || (catFilter === NO_CAT ? !t.category : t.category === catFilter);
+  const recent = (t) => isOpen(t) || now - new Date(t.updated) < 14 * DAY_MS;   // finished cards leave after 2 weeks
+  const card = (t) => {
+    const due = t.due && new Date(t.due), late = due && due < now && isOpen(t);
+    const sub = [due && due.toLocaleString("pl-PL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }),
+      t.schedule && `co ${t.schedule}`].filter(Boolean).map(esc).join(" · ");
+    return `<div class="kcard${late ? " overdue" : ""}" data-id="${esc(t.id)}"><div class="title">${esc(t.title)}</div>
+      ${sub ? `<div class="sub">${sub}</div>` : ""}${t.goal ? `<div class="sub goal" title="Jak przybliża do celu">🎯 ${esc(t.goal)}</div>` : ""}
+      <button class="tag c${fixed.indexOf(t.category)}" data-cat="${esc(t.id)}" title="Zmień kategorię">🏷 ${esc(t.category || "kategoria")}</button></div>`;
   };
-  const cats = [...new Set(day.tasks.map((t) => t.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pl"));
-  $("#task-cats").innerHTML = cats.map((c) => `<option value="${esc(c)}">`).join("");
-  const row = (t) => `<div class="todo-row ${t.status}${bucket(t) === "Po terminie" ? " overdue" : ""}">
-    <input type="checkbox" data-id="${esc(t.id)}" ${t.status === "done" ? "checked" : ""} aria-label="Zrobione">
-    <div><div class="title">${esc(t.title)}</div><div class="sub">${[t.due && new Date(t.due).toLocaleString("pl-PL",
-      { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }), t.schedule && `co ${t.schedule}`, t.module]
-      .filter(Boolean).map(esc).join(" · ")} <button class="tag" data-cat="${esc(t.id)}" title="Zmień kategorię">🏷 ${esc(t.category || "kategoria")}</button></div></div>
-    <select data-id="${esc(t.id)}" aria-label="Status">${Object.entries(STATUS_PL).map(([k, v]) =>
-      `<option value="${k}" ${k === t.status ? "selected" : ""}>${v}</option>`).join("")}</select></div>`;
-  $("#tasks").innerHTML = ($("#task-group").value === "category"
-    ? [...cats, ""].map((c) => {
-      const ts = shown.filter((t) => (t.category || "") === c);
-      return ts.length ? `<details class="todo-cat" data-cat="${esc(c)}" ${closedCats.has(c) ? "" : "open"}>
-        <summary>${esc(c || "Bez kategorii")} <span class="muted">${ts.length}</span></summary>${ts.map(row).join("")}</details>` : "";
-    })
-    : ["Po terminie", "Dziś", "Jutro", "Później", "Bez terminu", "Wcześniej"].map((g) => {
-      const ts = shown.filter((t) => bucket(t) === g);
-      return ts.length ? `<div class="todo-group">${g}</div>${ts.map(row).join("")}` : "";
-    })).join("") || '<div class="sub">Brak zadań.</div>';
-  $("#tasks").querySelectorAll("details").forEach((d) => (d.ontoggle = () => d.open ? closedCats.delete(d.dataset.cat) : closedCats.add(d.dataset.cat)));
-  $("#tasks").querySelectorAll("[data-cat]:not(details)").forEach((b) => (b.onclick = async () => {
+  $("#board").innerHTML = Object.entries(STATUS_PL).map(([s, label]) => {
+    const ts = board.filter((t) => t.status === s && inFilter(t) && recent(t));
+    return `<div class="lane ${s}"><div class="lane-title">${label} <span class="muted">${ts.length}${OPEN.includes(s) ? "" : " · 14 dni"}</span></div>
+      <div class="cards" data-status="${s}">${ts.map(card).join("")}</div></div>`;
+  }).join("");
+  $("#board").querySelectorAll("[data-cat]").forEach((b) => (b.onclick = async () => {
     const t = day.tasks.find((x) => x.id === b.dataset.cat);
-    const c = prompt("Kategoria zadania (puste = bez kategorii):", t.category || "");
+    const c = prompt(`Kategoria zadania: ${fixed.join(", ")} (puste = bez kategorii; nowe dodasz w Ustawieniach):`, t.category || "");
     if (c === null) return;
-    await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ category: c.trim() }) });
+    await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ category: c.trim() }) }).catch(warn);
     refreshTasks();
   }));
-  $("#tasks").querySelectorAll("input").forEach((c) => (c.onchange = () => setTaskStatus(c.dataset.id, c.checked ? "done" : "todo")));
-  $("#tasks").querySelectorAll("select").forEach((s) => (s.onchange = () => setTaskStatus(s.dataset.id, s.value)));
+  const Sortable = await sortable;
+  $("#board").querySelectorAll(".cards").forEach((list) => Sortable?.create(list, {
+    group: "tasks", sort: false, animation: 150, ghostClass: "ghost",
+    onAdd: (e) => setTaskStatus(e.item.dataset.id, e.to.dataset.status),
+  }));
   renderStats();
   renderCalendar();
 }
@@ -508,24 +654,41 @@ async function setTaskStatus(id, value) {
   await api(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ status: value }) });
   refreshTasks();
 }
-$("#task-filter").onchange = refreshTasks;
-$("#task-group").onchange = refreshTasks;
 $("#task-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
   const due = f.get("due") ? new Date(f.get("due")).toISOString() : null;
   await api("/api/tasks", { method: "POST", body: JSON.stringify({ title: f.get("title"), due, schedule: f.get("schedule") || null,
-    category: f.get("category").trim() || null }) });
+    category: f.get("category") || null, alfred: who === "alfred" }) });
   e.target.reset();
   refreshTasks();
 };
 
 // Calendar: Google events + tasks with a due time, a week (a day on narrow screens) at a time.
-const calDays = () => (innerWidth < 760 ? 1 : 7);
-const firstDay = (d) => (calDays() === 1 ? startOfDay(d) : addDays(startOfDay(d), -((d.getDay() + 6) % 7)));
+// Dzień / Tydzień: an hour grid. Miesiąc: what is on each day (click a day -> Dzień).
+const CAL_MODES = { day: "Dzień", week: "Tydzień", month: "Miesiąc" };
+let calMode = "week";
+try { calMode = CAL_MODES[localStorage.getItem("calmode")] ? localStorage.getItem("calmode") : "week"; } catch { /* private mode */ }
+const calDays = () => (calMode === "day" || innerWidth < 760 ? 1 : 7);                 // the hour grid's width
+const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
+const firstDay = (d) => calMode === "month" ? addMonths(d, 0)
+  : calDays() === 1 ? startOfDay(d) : addDays(startOfDay(d), -((d.getDay() + 6) % 7));
+const calStep = (from, dir) => (calMode === "month" ? addMonths(from, dir) : addDays(from, dir * calDays()));
 let calFrom = firstDay(new Date());
+function setCalMode(mode, at = calFrom <= new Date() && new Date() < calStep(calFrom, 1) ? new Date() : calFrom) {
+  calMode = mode;
+  try { localStorage.setItem("calmode", mode); } catch { /* private mode */ }
+  calFrom = firstDay(at);
+  delete $("#calendar").dataset.scrolled;
+  renderCalModes();
+  loadCalendar().catch(warn);
+}
+function renderCalModes() {
+  $("#cal-modes").innerHTML = Object.entries(CAL_MODES).map(([m, l]) => `<button data-m="${m}" class="${m === calMode ? "on" : ""}">${l}</button>`).join("");
+  $("#cal-modes").querySelectorAll("button").forEach((b) => (b.onclick = () => setCalMode(b.dataset.m)));
+}
 async function loadCalendar() {
-  const from = calFrom, to = addDays(from, calDays()), now = new Date();
+  const from = calFrom, to = calStep(from, 1), now = new Date();
   const cal = await api(`/api/calendar?start=${localIso(from)}&end=${localIso(to)}`);
   if (from !== calFrom) return;                        // the user moved on while this was loading
   day.cal = cal;
@@ -540,14 +703,14 @@ async function loadCalendar() {
   renderCalendar();
   renderStats();
 }
-$("#cal-prev").onclick = () => { calFrom = addDays(calFrom, -calDays()); loadCalendar(); };
-$("#cal-next").onclick = () => { calFrom = addDays(calFrom, calDays()); loadCalendar(); };
+$("#cal-prev").onclick = () => { calFrom = calStep(calFrom, -1); loadCalendar(); };
+$("#cal-next").onclick = () => { calFrom = calStep(calFrom, 1); loadCalendar(); };
 $("#cal-today").onclick = () => { calFrom = firstDay(new Date()); loadCalendar(); };
 
 function renderCalendar() {
   if (!day.cal) return;
-  const n = calDays(), days = [...Array(n)].map((_, i) => addDays(calFrom, i)), end = addDays(calFrom, n);
-  const now = new Date(), H = 44;
+  const n = calDays(), days = [...Array(n)].map((_, i) => addDays(calFrom, i)), end = calStep(calFrom, 1);
+  const now = new Date(), H = $("main").dataset.sub === "calendar" ? 52 : 30;  // px per hour: full page vs next to the board
   const items = [
     ...day.cal.events.map((e) => {
       const start = when(e.start), allDay = !e.start?.dateTime;
@@ -556,6 +719,11 @@ function renderCalendar() {
     ...day.tasks.filter((t) => t.due && isOpen(t)).map((t) => ({ kind: "task", title: t.title, start: new Date(t.due), end: new Date(+new Date(t.due) + 30 * 6e4), t })),
   ].filter((i) => i.start && i.start < end && i.end > calFrom);
   day.items = items;
+  $("#cal-note").classList.toggle("hidden", day.cal.status === "ready");
+  $("#cal-note").textContent = `Kalendarz Google nie jest połączony${day.cal.error ? ` (${day.cal.error})` : ""} — widać tylko zadania z terminem. Jak połączyć: README → „MCP servers”.`;
+  const cal = $("#calendar");
+  cal.className = "calendar";
+  if (calMode === "month") return renderMonth(cal, items, now);
   const timed = items.filter((i) => !i.allDay);
   const endHour = (i) => (startOfDay(i.end) - startOfDay(i.start) ? 24 : i.end.getHours() + (i.end.getMinutes() ? 1 : 0));
   const from = Math.min(7, ...timed.map((i) => i.start.getHours()));
@@ -582,7 +750,6 @@ function renderCalendar() {
     const nowLine = startOfDay(now) - d === 0 ? `<div class="now-line" style="top:${(now.getHours() + now.getMinutes() / 60 - from) * H}px"></div>` : "";
     return `<div class="cal-day" data-day="${+d}" style="height:${(to - from) * H}px">${boxes}${nowLine}</div>`;
   }).join("");
-  const cal = $("#calendar");
   cal.style.setProperty("--days", n);
   cal.style.setProperty("--h", `${H}px`);
   cal.innerHTML = `<div class="cal-head"></div>` +
@@ -592,8 +759,6 @@ function renderCalendar() {
     `<div class="cal-hours">${Array.from({ length: to - from }, (_, k) => `<div>${from + k}:00</div>`).join("")}</div>` + cols;
   $("#cal-range").textContent = n === 1 ? calFrom.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" })
     : `${calFrom.toLocaleDateString("pl-PL", { day: "numeric", month: "short" })} – ${addDays(end, -1).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" })}`;
-  $("#cal-note").classList.toggle("hidden", day.cal.status === "ready");
-  $("#cal-note").textContent = `Kalendarz Google nie jest połączony${day.cal.error ? ` (${day.cal.error})` : ""} — widać tylko zadania z terminem. Jak połączyć: README → „MCP servers”.`;
   cal.querySelectorAll(".ev").forEach((x) => (x.onclick = (e) => { e.stopPropagation(); showEvent(day.items[x.dataset.i]); }));
   cal.querySelectorAll(".cal-day").forEach((c) => (c.onclick = (e) => {    // empty slot: ask Alfred to add an event there
     const d = new Date(+c.dataset.day), h = Math.floor(from + (e.clientY - c.getBoundingClientRect().top) / H);
@@ -601,6 +766,25 @@ function renderCalendar() {
     $("#text").focus();
   }));
   if (!cal.dataset.scrolled) { cal.scrollTop = Math.max(0, (Math.min(now.getHours(), to - 3) - from - 1) * H); cal.dataset.scrolled = 1; }
+}
+
+// Miesiąc: a grid of days, each listing what is on it.
+function renderMonth(cal, items, now) {
+  const m = calFrom, first = addDays(m, -((m.getDay() + 6) % 7)), next = addMonths(m, 1);
+  const chip = (i) => `<div class="ev ${i.kind}${i.kind === "task" && i.start < now ? " overdue" : ""}" data-i="${items.indexOf(i)}">` +
+    `${i.allDay ? "" : `<b>${hhmm(i.start)}</b> `}${esc(i.title)}</div>`;
+  const cells = [];
+  for (let d = first; d < next || (d.getDay() + 6) % 7 !== 0; d = addDays(d, 1)) {   // Monday before .. Sunday after
+    const its = items.filter((i) => i.start < addDays(d, 1) && i.end > d).sort((a, b) => a.start - b.start);
+    const out = d.getMonth() !== m.getMonth(), today = startOfDay(now) - d === 0;
+    cells.push(`<div class="mday${out ? " out" : ""}${today ? " today" : ""}" data-day="${+d}"><span class="n">${d.getDate()}</span>` +
+      (out ? "" : its.slice(0, 3).map(chip).join("") + (its.length > 3 ? `<span class="more">+${its.length - 3} więcej</span>` : "")) + `</div>`);
+  }
+  cal.className = "calendar month";
+  cal.innerHTML = `<div class="mgrid">${["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"].map((w) => `<div class="wd">${w}</div>`).join("")}${cells.join("")}</div>`;
+  $("#cal-range").textContent = m.toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
+  cal.querySelectorAll(".ev").forEach((x) => (x.onclick = (e) => { e.stopPropagation(); showEvent(day.items[x.dataset.i]); }));
+  cal.querySelectorAll(".mday").forEach((c) => (c.onclick = () => setCalMode("day", new Date(+c.dataset.day))));
 }
 
 function showEvent(i) {
@@ -618,6 +802,43 @@ function showEvent(i) {
 }
 
 // Session summaries
+// Podsumowanie okresu: tasks, calendar, sessions and cost summed over a day / month / quarter / year (‹ › = earlier/later)
+const SUM_PERIODS = { day: "Dzień", month: "Miesiąc", quarter: "Kwartał", year: "Rok" };
+let sumPeriod = "day", sumOffset = 0;
+try { sumPeriod = SUM_PERIODS[localStorage.getItem("sumperiod")] ? localStorage.getItem("sumperiod") : "day"; } catch { /* private mode */ }
+async function loadSummary() {
+  $("#sum-modes").innerHTML = Object.entries(SUM_PERIODS).map(([p, l]) => `<button data-p="${p}" class="${p === sumPeriod ? "on" : ""}">${l}</button>`).join("");
+  $("#sum-modes").querySelectorAll("button").forEach((b) => (b.onclick = () => {
+    sumPeriod = b.dataset.p; sumOffset = 0;
+    try { localStorage.setItem("sumperiod", sumPeriod); } catch { /* private mode */ }
+    loadSummary().catch(warn);
+  }));
+  const s = await api(`/api/summary?period=${sumPeriod}&offset=${sumOffset}`);
+  if (s.period !== sumPeriod || s.offset !== sumOffset) return;     // clicked on while this was loading
+  const from = new Date(s.start);
+  $("#sum-range").textContent = { day: from.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long", year: "numeric" }),
+    month: from.toLocaleDateString("pl-PL", { month: "long", year: "numeric" }), quarter: `Q${Math.floor(from.getMonth() / 3) + 1} ${from.getFullYear()}`,
+    year: `${from.getFullYear()}` }[s.period] + (s.offset === 0 ? " · bieżący" : "");
+  const t = s.tasks, c = s.cost, sub = status.backend === "subscription";
+  const paid = c.jev_usd + c.elevenlabs_usd + (sub ? 0 : c.cost_usd);
+  const tile = (n, label, small, cls) => `<div class="tile ${cls}"><b>${n}</b><span>${label}</span><small title="${esc(small)}">${esc(small)}</small></div>`;
+  const cats = Object.entries(t.done_by_category).map(([k, v]) => `${k} ${v}`).join(" · ");
+  $("#sum-stats").innerHTML =
+    tile(t.done, "zrobione", cats || "—", "green") + tile(t.planned, "zaplanowane", `${t.created} dodanych`, "purple") +
+    tile(t.rolled, "przeniesione", `${t.cancelled} anulowanych`, t.rolled ? "err" : "green") +
+    tile(s.events ?? "—", "w kalendarzu", s.events == null ? "Google niepołączony" : "wydarzeń", "blue") +
+    tile(s.sessions.count, "sesje", `${s.sessions.turns} tur`, "blue");
+  const claudeTok = c.input + c.output + c.cache_read + c.cache_write;
+  $("#sum-costs").innerHTML =
+    tile(cash(c.jev_usd), "Jev", `${num(c.jev)} tok. · płatne tylko wejście`, "purple") +
+    tile(usd(c.cost_usd), "Claude", `${num(claudeTok)} tok.` + (sub ? " · subskrypcja: równowartość API, nie rachunek" : ""), "blue") +
+    tile(cash(c.elevenlabs_usd), "ElevenLabs", `${num(c.tts_chars)} znaków głosu · ${num(Math.round(c.stt_s))} s mowy`, "green") +
+    tile(cash(paid), "płacisz razem", `Jev + ElevenLabs${sub ? "" : " + Claude"} · ceny: config/brain.yaml → prices`, paid ? "err" : "green");
+  $("#sum-detail").textContent = t.done_titles.length ? `Zrobione: ${t.done_titles.join(" · ")}` : "";
+}
+$("#sum-prev").onclick = () => { sumOffset -= 1; loadSummary().catch(warn); };
+$("#sum-next").onclick = () => { sumOffset += 1; loadSummary().catch(warn); };
+
 async function loadSessions() {
   const sessions = await api("/api/memory/sessions?limit=6");
   $("#sessions").innerHTML = sessions.map((s) => `<div class="card"><div class="row between"><span class="title">${esc(s.title)}</span>
@@ -627,12 +848,24 @@ async function loadSessions() {
     || '<div class="sub">Jeszcze nie ma zapisanych sesji. Alfred podsumowuje sesję po 15 minutach ciszy.</div>';
 }
 
-// ============================================================== tasks view: tabs
-document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => {
-  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== `tab-${b.dataset.tab}`));
-  ({ summary: loadSessions, chat: () => ($("#tab-chat").scrollTop = 1e9), memory: loadBriefing, map: loadMap, persona: loadPersona, modules: loadModules, log: loadLog, settings: loadSettings })[b.dataset.tab]();
-}));
+// ============================================================== tasks view: the panel that slides out of the rail
+const TAB_LOAD = { chat: () => ($("#tab-chat").scrollTop = 1e9), memory: loadBriefing, map: loadMap,
+  persona: loadPersona, modules: loadModules, log: loadLog, settings: loadSettings };
+function openTab(name) {
+  const button = document.querySelector(`.rail button[data-tab="${name}"]`);
+  document.querySelectorAll(".rail button").forEach((b) => b.classList.toggle("active", b === button));
+  document.querySelectorAll("#drawer .tab").forEach((t) => t.classList.toggle("hidden", t.id !== `tab-${name}`));
+  $("#drawer-title").textContent = button.title;
+  $("#drawer").classList.add("open");
+  TAB_LOAD[name]();
+}
+function closeDrawer() {
+  $("#drawer").classList.remove("open");
+  document.querySelectorAll(".rail button").forEach((b) => b.classList.remove("active"));
+}
+document.querySelectorAll(".rail button").forEach((b) => (b.onclick = () => (b.classList.contains("active") ? closeDrawer() : openTab(b.dataset.tab))));
+$("#drawer-x").onclick = closeDrawer;
+document.addEventListener("keydown", (e) => e.key === "Escape" && closeDrawer());
 
 // Memory
 async function loadBriefing() { $("#briefing").textContent = (await api("/api/memory/briefing")).briefing; }
@@ -640,7 +873,7 @@ $("#close-session").onclick = async () => { await api("/api/session/close", { me
 async function openMemoryPage(path) {
   const page = await api(`/api/memory/page?path=${encodeURIComponent(path)}`);
   if (view !== "tasks") setView("tasks");
-  document.querySelector('.tabs button[data-tab="memory"]').click();
+  openTab("memory");
   $("#mem-page").textContent = page.content;
   $("#mem-page").classList.remove("hidden");
 }
@@ -730,8 +963,7 @@ async function openMapPage(path) {
   $("#map-crumbs").innerHTML = [`<a data-page="index.md">brain_map</a>`, ...path.split("/").map((x) => esc(x))].join(" / ");
   $("#map-page").innerHTML = renderMd(page.content, path);
   document.querySelectorAll("#map-page a[data-page], #map-crumbs a[data-page]").forEach((a) => (a.onclick = () => openMapPage(a.dataset.page)));
-  document.querySelector('.tabs button[data-tab="map"]').classList.contains("active") ||
-    document.querySelector('.tabs button[data-tab="map"]').click();
+  if (!document.querySelector('.rail button[data-tab="map"]').classList.contains("active")) openTab("map");
   const id = page.content.match(/\nid: (.+)/)?.[1]?.trim();
   if (id) ["module:", "cap:", "skill:", "tool:", "mcp:", ""].forEach((p) => Brain3D?.flash(p + id));
 }
@@ -803,12 +1035,25 @@ const FIELDS = [
   ["router.ask_below", "Dopytaj poniżej"], ["voice.voice_id", "ElevenLabs voice ID"],
   ["voice.tts_model", "Model TTS"], ["memory.session_idle_minutes", "Zamknij sesję po (min)"],
   ["proactive.heartbeat_minutes", "Heartbeat (min)"],
+  ["proactive.reminders.lead_minutes", "Przypomnienie przed terminem (min, 0 = o czasie)"],
 ];
+const renderCats = () => ($("#cat-list").innerHTML = (status.task_categories || []).map((c) => `<span class="chip on">${esc(c)}</span>`).join(""));
+$("#cat-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  status.task_categories = await api("/api/task-categories", { method: "POST",
+    body: JSON.stringify({ name: f.get("name"), description: f.get("description") }) });
+  e.target.reset();
+  renderCats();
+  refreshTasks();
+};
 async function loadSettings() {
+  renderCats();
   const s = await api("/api/settings");
   const get = (path) => path === "voice.voice_id" ? s.voice_id : path.split(".").reduce((o, k) => o?.[k], s);
   $("#settings-form").innerHTML = FIELDS.map(([p, l]) => `<label class="field">${l}<input name="${p}" value="${esc(get(p) ?? "")}"></label>`).join("") +
     `<label class="switch"><input type="checkbox" name="proactive.enabled" ${s.proactive?.enabled ? "checked" : ""}> Tryb proaktywny</label>
+     <label class="switch"><input type="checkbox" name="proactive.reminders.fastest_path" ${s.proactive?.reminders?.fastest_path ? "checked" : ""}> Przy przypomnieniu proponuj najszybszą drogę do zrobienia zadania</label>
      <label class="switch"><input type="checkbox" name="voice.tts_enabled" ${s.voice?.tts_enabled !== false ? "checked" : ""}> Odpowiedzi głosem ElevenLabs (wyłączone = głos przeglądarki, bez kosztów)</label>
      <button class="primary">Zapisz</button>`;
 }
@@ -816,10 +1061,10 @@ $("#settings-form").onsubmit = async (e) => {
   e.preventDefault();
   const patch = {};
   e.target.querySelectorAll("input").forEach((i) => {
-    const [a, b] = i.name.split(".");
+    const keys = i.name.split("."), last = keys.pop();
     let v = i.type === "checkbox" ? i.checked : i.value;
     if (i.type !== "checkbox" && v !== "" && !isNaN(v)) v = Number(v);
-    (patch[a] ||= {})[b] = v;
+    keys.reduce((o, k) => (o[k] ||= {}), patch)[last] = v;
   });
   await api("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
   addMsg("system", "Ustawienia zapisane.");
@@ -832,6 +1077,9 @@ $("#settings-form").onsubmit = async (e) => {
   let saved = null;
   try { saved = localStorage.getItem("view"); } catch { /* private mode */ }
   setView(["tasks", "chat"].includes(saved) ? saved : "brain");
+  try { saved = localStorage.getItem("tasksub"); } catch { saved = null; }
+  setSub(["kanban", "calendar", "goals"].includes(saved) ? saved : "overview");
+  renderCalModes();
   loadChat().catch(() => {});
   refreshLeft();
   loadBrief().catch(() => {});

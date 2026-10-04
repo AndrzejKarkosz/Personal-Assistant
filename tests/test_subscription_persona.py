@@ -14,7 +14,7 @@ async def test_executor_gives_claude_code_only_the_routed_tools(make_brain):
     prompt, opts = claude.calls[0]
     assert done.text == "Zapisane, szefie." and done.usage["input"] == 100 and done.cost_usd == 0.002
     assert opts.tools == [] and opts.setting_sources == [] and opts.permission_mode == "dontAsk"
-    assert sorted(opts.allowed_tools) == [f"mcp__alfred__{t}" for t in ["task_create", "task_list", "task_update"]]
+    assert sorted(opts.allowed_tools) == [f"mcp__alfred__{t}" for t in ["task_category_add", "task_create", "task_list", "task_update"]]
     assert "Alfred" in opts.system_prompt and "<routing>" in prompt
 
 

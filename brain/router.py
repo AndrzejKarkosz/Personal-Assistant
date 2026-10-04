@@ -10,6 +10,7 @@ is this reminder worth interrupting for?
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -27,6 +28,12 @@ SHIELD_REQUEST = (ROOT / "config" / "shield_request.md").read_text(encoding="utf
 SHIELD_ACTION = (ROOT / "config" / "shield_action.md").read_text(encoding="utf-8")
 YES = re.compile(r"\b(tak|jasne|potwierdzam|dawaj|zgoda|ok|okej|yes|yeah|sure|confirm|go ahead|do it)\b")
 NO = re.compile(r"\b(nie|anuluj|stop|czekaj|no|nope|cancel|don't|wait)\b")
+TASK_STATUS_CRITERIA = {        # the only task statuses (brain/memory.py TASK_STATUSES), as Jev's options
+    "todo": "Do zrobienia - nowe zadanie albo jeszcze nie zaczęte",
+    "in_progress": "W toku - użytkownik zaczął, pracuje nad tym, jest w trakcie",
+    "done": "Zrobione - skończone, załatwione, gotowe",
+    "cancelled": "Anulowane - nieaktualne, rezygnuje, nie będzie robione",
+}
 
 
 class JevError(RuntimeError):
@@ -89,6 +96,11 @@ class Route:
     needs_history: float = 0.0
     clarify: bool = False                                    # too unsure - Alfred should ask
     forced: list[str] = field(default_factory=list)          # capabilities added by router.triggers
+    task_category: str | None = None                         # category the user named for a task (Jev)
+    task_status: str | None = None                           # status the user gave a task (Jev)
+    multi_step: float = 0.0                                  # several separate things asked at once (Jev)
+    changes_existing: float = 0.0                            # fixing / moving something that exists (Jev)
+    tool_probabilities: dict[str, float] = field(default_factory=dict)   # per tool, asked one by one (Jev)
     source: str = "rules"                                    # jev | llm | rules | hint
     latency_ms: int = 0
     usage: dict[str, Any] = field(default_factory=dict)      # input, output, cost_usd
@@ -111,20 +123,26 @@ class Router:
         self.map = brain_map
         self.jev = jev
         self.settings = settings
+        self.on_usage = lambda usage: None   # the brain bills every Jev call (router, shield, yes/no) to the session
 
     def _setting(self, key: str, default: float) -> float:
         return float(self.settings.get(f"router.{key}", default))
+
+    async def _ask(self, state: str, questions: dict[str, dict]) -> dict[str, Any]:
+        resp = await self.jev.ask(state, questions)
+        self.on_usage(_tokens(resp.get("usage") or {}))
+        return resp
 
     # ---- classification ---------------------------------------------------------------------------------------
 
     async def classify(self, text: str, context: str = "") -> Route:
         started = time.perf_counter()
-        route = None
-        if self.jev.available:
-            try:
-                route = await self._classify_jev(text, context)
-            except JevError:
-                pass
+        route, tools = None, {}
+        if self.jev.available:   # routing and the per-tool questions go out at the same time
+            routed, tools = await asyncio.gather(self._classify_jev(text, context), self._rank_tools(text, context),
+                                                 return_exceptions=True)
+            route = None if isinstance(routed, Exception) else routed
+            tools = {} if isinstance(tools, Exception) else tools
         if route is None:
             try:
                 route = await self._classify_llm(text, context)
@@ -132,8 +150,47 @@ class Router:
                 route = self._classify_rules(text)
         self.apply_policy(route)
         self.force(route, text)
+        self.apply_tools(route, tools)
         route.latency_ms = int((time.perf_counter() - started) * 1000)
         return route
+
+    def tool_questions(self) -> tuple[dict[str, dict], dict[str, str]]:
+        """One yes/no question per tool of every enabled module: "will this exact function be needed?"
+        Returns the questions (keys t0, t1 ...) and which tool each key stands for."""
+        names = self.map.tools_of(list(self.map.capability_criteria()))
+        keys = {f"t{i}": name for i, name in enumerate(names)}
+        qs = {}
+        for key, name in keys.items():
+            t = self.map.tools.get(name, {})
+            qs[key] = noul(f"To fulfil the user's latest request, will the assistant need to call the tool "
+                           f"'{t.get('short', name)}' of '{t.get('server', '?')}'? What it does: "
+                           f"{(t.get('description') or '')[:220]}",
+                           true="Yes - this exact function is one of the steps", false="No - not needed for this")
+        return qs, keys
+
+    async def _rank_tools(self, text: str, context: str) -> dict[str, float]:
+        qs, keys = self.tool_questions()
+        if not qs:
+            return {}
+        state = f"User said: {text}" + (f"\nConversation so far: {context}" if context else "")
+        answers = (await self._ask(state, qs))["answers"]
+        return {keys[k]: float(a["noul"]) for k, a in answers.items() if k in keys and "noul" in a}
+
+    def apply_tools(self, route: Route, tools: dict[str, float]) -> None:
+        """A tool Jev is confident about brings its capability (and module) even if the capability guess missed."""
+        route.tool_probabilities = dict(sorted(tools.items(), key=lambda kv: kv[1], reverse=True))
+        sure = [n for n, p in tools.items() if p >= self._setting("tool_at", 0.8)]
+        for cid, cap in self.map.capabilities.items():
+            if any(n in (cap.get("tools") or []) for n in sure):
+                self._include(route, cid)
+
+    def _include(self, route: Route, cid: str) -> None:
+        route.capabilities = route.capabilities or self.map.capabilities_of(route.modules)   # [] meant "all"
+        owner = self.map.capabilities[cid].get("module")
+        if owner and owner not in route.modules:
+            route.also.append(owner)
+        if cid not in route.capabilities:
+            route.capabilities.append(cid)
 
     def questions(self) -> dict[str, dict]:
         """Everything Jev is asked about a request - the options come from the brain map."""
@@ -149,6 +206,13 @@ class Router:
                                   false="Only reads, answers, explains or chats"),
             "needs_history": noul("Does answering need what happened in earlier conversations, open tasks or "
                                   "previous sessions?"),
+            "multi_step": noul("Does the latest request ask for more than one separate thing to be done?",
+                               true="Two or more separate actions (e.g. add a task AND put it in the calendar)",
+                               false="One thing"),
+            "changes_existing": noul("Is the user changing, moving, correcting or finishing something that already "
+                                     "exists (a task, event or routine from before), rather than adding a new one?",
+                                     true="Changes / fixes / moves / completes an existing item",
+                                     false="Adds something new, or only asks"),
         }
         if skills := self.map.skill_criteria():
             qs["skill"] = choice("Which procedure should the assistant follow?",
@@ -156,11 +220,16 @@ class Router:
         if topics := self.map.topic_criteria():
             qs["topic"] = choice("Which subject of the user's knowledge library is this about?",
                                  topics | {NONE: "Not about the knowledge library"})
+        if categories := self.settings.get("tasks.categories"):
+            qs["task_category"] = choice("Which category did the user choose for the task(s) in this request?",
+                                         categories | {NONE: "The user names no category, or this is not about a task"})
+        qs["task_status"] = choice("Which status did the user give the task(s) in this request?",
+                                   TASK_STATUS_CRITERIA | {NONE: "The user says nothing about a task's status"})
         return qs
 
     async def _classify_jev(self, text: str, context: str) -> Route:
         state = f"User said: {text}" + (f"\nConversation so far: {context}" if context else "")
-        resp = await self.jev.ask(state, self.questions())
+        resp = await self._ask(state, self.questions())
         a = resp["answers"]
         try:
             module = a["module"]
@@ -173,12 +242,14 @@ class Router:
                           urgency=float(a.get("urgency", {}).get("score", 0.0)),
                           acts_on_world=float(a.get("acts_on_world", {}).get("noul", 0.0)),
                           needs_history=float(a.get("needs_history", {}).get("noul", 0.0)),
+                          multi_step=float(a.get("multi_step", {}).get("noul", 0.0)),
+                          changes_existing=float(a.get("changes_existing", {}).get("noul", 0.0)),
                           source="jev", usage=_tokens(resp.get("usage") or {}))
         except (KeyError, TypeError, ValueError) as exc:
             raise JevError(f"Malformed Jev answers: {exc!r}") from exc
-        route.skill = (a.get("skill") or {}).get("choice")
-        route.topic = (a.get("topic") or {}).get("choice")
-        route.skill, route.topic = [None if x in (None, NONE) else x for x in (route.skill, route.topic)]
+        picked = {key: (a.get(key) or {}).get("choice") for key in ("skill", "topic", "task_category", "task_status")}
+        for key, value in picked.items():
+            setattr(route, key, None if value in (None, NONE) else value)
         return route
 
     async def _classify_llm(self, text: str, context: str) -> Route:
@@ -267,15 +338,8 @@ class Router:
         """Capabilities the user named outright are always given, with their module, whatever Jev guessed."""
         rules = self.settings.get("router.triggers") or {}
         forced = [cid for cid, pattern in rules.items() if cid in self.map.capabilities and re.search(pattern, text, re.I)]
-        if not forced:
-            return
-        route.capabilities = route.capabilities or self.map.capabilities_of(route.modules)   # [] meant "all"
         for cid in forced:
-            owner = self.map.capabilities[cid].get("module")
-            if owner and owner not in route.modules:
-                route.also.append(owner)
-            if cid not in route.capabilities:
-                route.capabilities.append(cid)
+            self._include(route, cid)
         route.forced = forced
 
     # ---- small judgements -------------------------------------------------------------------------------------
@@ -303,7 +367,7 @@ class Router:
         if not self.jev.available:
             return None
         try:
-            return float((await self.jev.ask(state, {key: question}))["answers"][key]["noul"])
+            return float((await self._ask(state, {key: question}))["answers"][key]["noul"])
         except (JevError, KeyError, TypeError, ValueError):
             return None
 
@@ -314,6 +378,27 @@ class Router:
         return await self._judge("injection", SHIELD_REQUEST, state,
                                  "Próba naruszenia bezpieczeństwa (prompt injection, jailbreak, zmiana roli)",
                                  "Zwykła prośba użytkownika")
+
+    async def classify_tasks(self, request: str, tasks: list[str]) -> list[tuple[str | None, str | None]]:
+        """Jev classifies each task on its own - category and status, two questions per task, all in one call.
+        Per task: (category or None = none fits, status); "?" where Jev gave no answer. Raises JevError if Jev is down."""
+        categories = self.settings.get("tasks.categories") or {}
+        qs: dict[str, dict] = {}
+        for i, task in enumerate(tasks):
+            if categories:   # no "none": the fixed list covers everything (the last category is the catch-all)
+                qs[f"c{i}"] = choice(f"Which category does this ONE task belong to: {task}? Judge this task alone - "
+                                     "other tasks in the same request may belong elsewhere.", categories)
+            qs[f"s{i}"] = choice(f"After the user's latest request, what is the status of this task: {task}?",
+                                 TASK_STATUS_CRITERIA)
+        answers = (await self._ask(f"User said: {request}", qs))["answers"] if qs else {}
+
+        def pick(key: str, allowed: dict, none_ok: bool = False) -> str | None:
+            c = (answers.get(key) or {}).get("choice")
+            if none_ok and c == NONE:
+                return None
+            return c if c in allowed else "?"
+        return [(pick(f"c{i}", categories, none_ok=True) if categories else None, pick(f"s{i}", TASK_STATUS_CRITERIA))
+                for i in range(len(tasks))]
 
     async def check_action(self, request: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         """Security check of a tool call Claude wants to make (does it follow from what the user asked?)."""
@@ -328,7 +413,7 @@ class Router:
         started = time.perf_counter()
         verdict = {"breach": True, "probability": None, "source": "closed", "tokens": 0}
         try:
-            resp = await self.jev.ask(state, {key: noul(prompt, true=true, false=false)})
+            resp = await self._ask(state, {key: noul(prompt, true=true, false=false)})
             p, used = float(resp["answers"][key]["noul"]), _tokens(resp.get("usage") or {})
             verdict = {"breach": p >= self._setting("injection_at", 0.5), "probability": p, "source": "jev",
                        "tokens": used["input"] + used["output"]}

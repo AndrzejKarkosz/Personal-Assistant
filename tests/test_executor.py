@@ -31,7 +31,7 @@ async def test_builtin_memory_and_task_tools(tmp_path):
     task_id = (await h["task_create"]({"tasks": [{"title": "Faktura", "due": "2030-01-01T09:00:00+01:00"}]}, "s-1")).split()[-1]
     listed = json.loads(await h["task_list"]({}, None))
     assert [t["id"] for t in listed] == [task_id] and "history" not in listed[0]
-    assert (await h["task_update"]({"task_id": task_id, "status": "waiting"}, None)).endswith("(still open)")
+    assert (await h["task_update"]({"task_id": task_id, "status": "in_progress"}, None)).endswith("(still open)")
     assert await h["task_update"]({"task_id": task_id, "status": "done"}, None) == f"Task {task_id} is now done"
 
     many = await h["task_create"]({"tasks": [{"title": "Fryzjer"}, {"title": "Trening", "category": "Reszta"}]}, "s-1")

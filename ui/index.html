@@ -9,7 +9,8 @@
   <link rel="stylesheet" href="/static/style.css">
   <script type="importmap">
     { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-                   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+                   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+                   "sortablejs": "https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/+esm" } }
   </script>
 </head>
 <body>
@@ -52,63 +53,128 @@
     </div>
   </section>
 
-  <!-- Tasks: to-do grouped by category + routines -->
+  <!-- Tasks, left: a rail of panels; a click slides the panel out over the board -->
+  <nav class="rail tasks-only" aria-label="Panele">
+    <button data-tab="chat" title="Rozmowa"><i aria-hidden="true">💬</i>Rozmowa</button>
+    <button data-tab="memory" title="Pamięć"><i aria-hidden="true">🧠</i>Pamięć</button>
+    <button data-tab="map" title="Mapa"><i aria-hidden="true">🗺️</i>Mapa</button>
+    <button data-tab="persona" title="Osobowość"><i aria-hidden="true">🎭</i>Osobowość</button>
+    <button data-tab="modules" title="Moduły"><i aria-hidden="true">🧩</i>Moduły</button>
+    <button data-tab="log" title="Log"><i aria-hidden="true">📜</i>Log</button>
+    <button data-tab="settings" title="Ustawienia"><i aria-hidden="true">⚙️</i>Ustawienia</button>
+  </nav>
+
+  <!-- Tasks, middle: Przegląd = summary of tasks and costs + routines; Kanban (drag a card to another column to
+       change its status) and Kalendarz each over the whole page; Cele = goals + the productivity routine. -->
   <div class="col tasks-only">
-    <section class="panel grow">
-      <div class="panel-title row between"><span>Do zrobienia</span>
-        <span class="row"><select id="task-group" aria-label="Grupuj"><option value="category">wg kategorii</option><option value="due">wg terminu</option></select>
-        <select id="task-filter" aria-label="Filtr zadań"><option value="open">otwarte</option><option value="done">zrobione</option><option value="all">wszystkie</option></select></span></div>
-      <form id="task-form" class="stack pad">
-        <div class="row">
-          <input name="title" placeholder="Nowe zadanie" required>
-          <input name="category" list="task-cats" placeholder="Kategoria" title="Kategoria — wpisz nową albo wybierz istniejącą" class="cat-in">
-        </div>
-        <datalist id="task-cats"></datalist>
-        <div class="row">
-          <input name="due" type="datetime-local" title="Termin">
-          <input name="schedule" placeholder="cron, np. 0 8 * * 1-5" title="Powtarzanie">
-        </div>
+    <nav class="subviews" aria-label="Zadania">
+      <button data-sub="overview" class="active">Przegląd</button>
+      <button data-sub="kanban">Kanban</button>
+      <button data-sub="calendar">Kalendarz</button>
+      <button data-sub="goals">Cele</button>
+    </nav>
+    <!-- Przegląd: tasks and costs of a period (‹ › = earlier / later), then the routines -->
+    <section class="panel overview-panel">
+      <div class="panel-title row between"><span>Podsumowanie zadań i kosztów <span class="muted" id="sum-range"></span></span>
+        <span class="row"><button id="sum-prev" class="mini" aria-label="Poprzedni okres">‹</button><span id="sum-modes" class="seg" aria-label="Okres"></span><button id="sum-next" class="mini" aria-label="Następny okres">›</button></span></div>
+      <div class="tab">
+        <h4>Zadania</h4>
+        <div id="sum-stats" class="stats wide"></div>
+        <div id="sum-open" class="chips start"></div>
+        <div id="sum-detail" class="sub"></div>
+        <h4>Koszty</h4>
+        <div id="sum-costs" class="stats wide"></div>
+      </div>
+    </section>
+    <section class="panel routines-panel">
+      <div class="panel-title row between"><span>Rutyny <span class="muted">dziś · config/routines.yaml</span></span>
+        <span class="muted">kliknij rutynę, żeby ją edytować</span></div>
+      <form id="routine-form" class="routine-form pad">
+        <input name="id" placeholder="nazwa, np. poranny-brief" required>
+        <input name="schedule" placeholder="cron: 30 7 * * 1-5 albo @start" title="Kiedy: 5-polowy cron (min godz dzień mies dzień-tyg) albo @start" required class="cron-in">
+        <select name="module" title="Moduł, który ją wykona"></select>
+        <input name="prompt" placeholder="Co Alfred ma zrobić, np. Daj mi poranny brief" required class="grow">
+        <button class="primary">Zapisz</button>
+      </form>
+      <div id="routines" class="tab"></div>
+    </section>
+    <section class="panel board-panel">
+      <div class="panel-title row between"><span class="row">Zadania
+        <span id="board-who" class="seg" aria-label="Czyja tablica"><button data-who="me">Moje</button><button data-who="alfred" title="Przypomnienia i to, co Alfred robi sam o danej porze">Alfreda</button></span></span>
+        <div id="cat-filter" class="chips" aria-label="Kategoria"></div></div>
+      <form id="task-form" class="row pad task-form">
+        <input name="title" placeholder="Nowe zadanie" required>
+        <select name="category" id="task-cats" title="Kategoria (stała lista — nowe w Ustawieniach)" class="cat-in"></select>
+        <input name="due" type="datetime-local" title="Termin">
+        <input name="schedule" placeholder="cron" title="Powtarzanie, np. 0 8 * * 1-5" class="cron-in">
         <button class="primary">Dodaj</button>
       </form>
-      <div id="tasks" class="scroll"></div>
+      <div id="board" class="board"></div>
     </section>
-    <section class="panel grow-less">
-      <div class="panel-title row between"><span>Rutyny <span class="muted">dziś</span></span><span class="muted">config/routines.yaml</span></div>
-      <div id="routines" class="scroll"></div>
+    <section class="panel cal-panel">
+      <div class="panel-title row between">
+        <span>Kalendarz <span class="muted" id="cal-range"></span></span>
+        <span class="row"><span id="cal-status" class="pill"></span>
+          <span id="cal-modes" class="seg" aria-label="Widok kalendarza"></span>
+          <button id="cal-prev" aria-label="Wcześniej">‹</button><button id="cal-today">Dziś</button><button id="cal-next" aria-label="Później">›</button></span>
+      </div>
+      <div id="cal-note" class="cal-note hidden"></div>
+      <div class="cal-wrap"><div id="calendar" class="calendar"></div><div id="event-card" class="node-info hidden"></div></div>
+    </section>
+    <!-- Cele tab: his goals and resolutions - Alfred reads them and asks how a task serves them when it is unclear -->
+    <section class="panel goals-panel">
+      <div class="panel-title row between"><span>Cele i postanowienia</span>
+        <span class="row"><span id="goals-saved" class="muted"></span><button id="goals-save" class="primary">Zapisz</button></span></div>
+      <div class="goals-cols">
+        <label class="field">Moje cele<span class="sub">Do czego dążę — np. jeden cel na linię. Alfred łączy z nimi zadania.</span>
+          <textarea id="goals-text" placeholder="- Wrócić do biegania do wiosny&#10;- Skończyć MVP SmartMeet"></textarea></label>
+        <label class="field">Moje postanowienia<span class="sub">Jak chcę działać na co dzień.</span>
+          <textarea id="resolutions-text" placeholder="- Bez telefonu po 22&#10;- Trening 3 razy w tygodniu"></textarea></label>
+      </div>
+      <!-- the productivity routine (config/brain.yaml → productivity): reminder routines + daily priorities -->
+      <div class="card prod-card">
+        <div class="row between"><span class="title">Rutyna produktywności</span>
+          <label class="switch"><input type="checkbox" id="prod-on"> włączona</label></div>
+        <div class="sub">System Justina Sunga: produktywność to tylko to, co przybliża Cię do 2–3 celów powyżej.
+          Zadania głębokie robisz w szczycie energii, administracyjne — gdy energia spada (flow matching); dla ryzykownych
+          zadań ustalasz z góry „jeśli X, to Y”, a wyzwalacze w otoczeniu ułatwiają start. Raz w tygodniu ~30 minut
+          planowania ustawia cały tydzień. Uzupełnij swój plan — rutyny ruszą o tych godzinach i każda będzie o nim pamiętać:</div>
+        <!-- his own plan: the routines run at these times and every one of them reads the notes -->
+        <form id="prod-plan" class="plan-grid">
+          <label class="field">Szczyt energii — praca głęboka<span class="row"><input name="peak_start" type="time" required> – <input name="peak_end" type="time" required></span></label>
+          <label class="field">Blok płytkich zadań (maile, admin)<input name="shallow" type="time" required></label>
+          <label class="field">Planowanie tygodnia (~30 min)<span class="row"><select name="weekly_day">
+            <option value="1">poniedziałek</option><option value="2">wtorek</option><option value="3">środa</option><option value="4">czwartek</option>
+            <option value="5">piątek</option><option value="6">sobota</option><option value="0">niedziela</option></select><input name="weekly_time" type="time" required></span></label>
+          <label class="field">Domknięcie dnia i regeneracja<input name="close" type="time" required></label>
+          <label class="field">Limit godzin pracy w tygodniu<input name="hours_limit" type="number" min="1" max="100" required></label>
+          <label class="field wide">Plany „jeśli X, to Y” — dla ryzykownych zadań<textarea name="if_then" placeholder="- Jeśli wrócę po 19, to trening 20 min w domu&#10;- Jeśli rano nie mam siły, to zaczynam od 5 minut"></textarea></label>
+          <label class="field wide">Wyzwalacze w otoczeniu — co ułatwia start<textarea name="triggers" placeholder="- Buty do biegania przy drzwiach&#10;- Laptop zostawiony otwarty na dokumencie"></textarea></label>
+          <label class="field wide">Rozpraszacze do usunięcia<textarea name="distractions" placeholder="- Telefon w innym pokoju&#10;- Powiadomienia Slacka wyciszone"></textarea></label>
+          <div class="row wide"><button class="primary">Zapisz plan</button><span id="plan-saved" class="muted"></span></div>
+        </form>
+        <div id="prod-routines" class="stack"></div>
+      </div>
     </section>
   </div>
 
-  <!-- Tasks: Google calendar -->
-  <section class="panel tasks-only">
-    <div class="panel-title row between">
-      <span>Kalendarz <span class="muted" id="cal-range"></span></span>
-      <span class="row"><span id="cal-status" class="pill"></span>
-        <button id="cal-prev" aria-label="Wcześniej">‹</button><button id="cal-today">Dziś</button><button id="cal-next" aria-label="Później">›</button></span>
-    </div>
-    <div id="cal-note" class="cal-note hidden"></div>
-    <div class="cal-wrap"><div id="calendar" class="calendar"></div><div id="event-card" class="node-info hidden"></div></div>
-  </section>
-
-  <!-- Tasks: everything else - summary, conversation, memory, map, persona, modules, log, settings -->
+  <!-- Tasks, right: the day at a glance -->
   <section class="panel side tasks-only">
-    <nav class="tabs">
-      <button data-tab="summary" class="active">Podsumowanie</button>
-      <button data-tab="chat">Rozmowa</button>
-      <button data-tab="memory">Pamięć</button>
-      <button data-tab="map">Mapa</button>
-      <button data-tab="persona">Osobowość</button>
-      <button data-tab="modules">Moduły</button>
-      <button data-tab="log">Log</button>
-      <button data-tab="settings">Ustawienia</button>
-    </nav>
+    <div class="panel-title">Podsumowanie</div>
     <div class="tab" id="tab-summary">
       <div class="greeting" id="greeting">Podsumowanie</div>
       <div id="stats" class="stats"></div>
-      <div class="row brief-actions"><button data-brief="day">Brief dnia</button><button data-brief="week">Podsumuj tydzień</button></div>
+      <div class="row brief-actions"><button data-brief="day">Brief dnia</button><button data-brief="week">Podsumuj tydzień</button>
+        <button data-brief="prio" title="Kolejność zadań według rutyny produktywności">Priorytety</button></div>
       <div id="brief" class="brief"></div>
       <h4>Ostatnie sesje</h4>
       <div id="sessions" class="stack"></div>
     </div>
+  </section>
+
+  <!-- The panel that slides out of the rail -->
+  <aside id="drawer" class="panel drawer tasks-only" aria-label="Panel">
+    <div class="panel-title row between"><span id="drawer-title"></span><button id="drawer-x" aria-label="Zamknij">×</button></div>
     <div class="tab hidden" id="tab-chat">
       <div id="messages" class="messages"></div>
     </div>
@@ -163,9 +229,15 @@
     <div class="tab hidden" id="tab-settings">
       <div class="card"><div class="row between"><span class="title">Push-to-talk</span><button id="ptt-btn" type="button"></button></div>
         <div class="sub">Przytrzymaj ten klawisz i mów, puść — Alfred słucha. Zapamiętane w tej przeglądarce. Litera albo spacja nie działa w polu tekstowym (tam pisze).</div></div>
+      <div class="card"><span class="title">Kategorie zadań</span>
+        <div class="sub">Stała lista — Alfred używa tylko tych. Nową może dodać wyłącznie po Twoim „tak”; tutaj dodajesz ją sam.
+          Usunięcie: config/brain.yaml → tasks.categories.</div>
+        <div id="cat-list" class="chips" style="justify-content:flex-start"></div>
+        <form id="cat-form" class="row"><input name="name" placeholder="Nowa kategoria" required>
+          <input name="description" placeholder="Kiedy tu trafia zadanie (dla Jev)"><button>Dodaj</button></form></div>
       <form id="settings-form" class="stack"></form>
     </div>
-  </section>
+  </aside>
   <!-- Chat: a written conversation - full answers in Markdown, nothing spoken -->
   <section class="chat chat-only">
     <div class="chat-head row between"><span><b>Chat z Alfredem</b> <span class="muted">pełne odpowiedzi na piśmie, bez głosu</span></span>

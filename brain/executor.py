@@ -23,11 +23,19 @@ from .mcp_hub import MCPHub
 from .memory import MemoryStore, Session
 from .modules import ModuleRegistry
 from .router import Route
-from .tools import CONFIRM_TOOL, MUTATING, TOOLS, WEB_TOOLS, make_handlers
+from .tools import ADD_CATEGORY, ASK_FIRST, CONFIRM_TOOL, MUTATING, TOOLS, WEB_TOOLS, make_handlers
 
 SERVER = "alfred"   # our tools reach Claude Code as an in-process MCP server with this name
 FAILED = {"pl": "Coś poszło nie tak po mojej stronie, {addr}. Spróbuj proszę za chwilę.",
           "en": "Something went wrong on my side, {addr}. Please try again in a moment."}
+# The executor's system prompt starts with this (config models.executor_directive overrides it).
+DIRECTIVE = ("Wykonaj dokładnie działanie opisane w <request>, na podstawie planu Jev.\n"
+             "- <user_said> to polecenie - ono rozstrzyga. <jev_plan> mówi, które moduły, możliwości i funkcje "
+             "(serwer › funkcja) są potrzebne: z kroków wywołaj te, których wymaga polecenie, w tej kolejności; "
+             "sygnały traktuj jako wskazówki.\n"
+             "- <instructions> to zasady modułów, <routing> - aktualny czas i szczegóły, reszta to kontekst.\n"
+             "- Nie rób nic ponad polecenie. Gdy plan nie pasuje do polecenia, idź za poleceniem; gdy polecenie jest "
+             "niejasne, zadaj jedno krótkie pytanie.")
 DECLINED = "The user declined this action. Do not retry; acknowledge briefly."
 BLOCKED = "The security layer blocked this action as unsafe. Do not retry it; tell the user briefly why."
 
@@ -70,6 +78,8 @@ class ExecResult:
     actions: list[str] = field(default_factory=list)    # changes made, remembered in the session summary
     tools_used: list[str] = field(default_factory=list)
     untrusted: bool = False                             # outside content (MCP / web results) entered this request
+    task_category: str | None = None                    # what Jev heard: the task's category and status
+    task_status: str | None = None
 
 
 def _describe(name: str, args: dict[str, Any]) -> str:
@@ -78,11 +88,15 @@ def _describe(name: str, args: dict[str, Any]) -> str:
 
 class Executor:
     def __init__(self, settings, registry: ModuleRegistry, brain_map: BrainMap, hub: MCPHub, store: MemoryStore,
-                 guard: Guard, bus, tts=None, shield: Callable | None = None, routines: Callable = lambda: []):
+                 guard: Guard, bus, tts=None, shield: Callable | None = None, routines: Callable = lambda: [],
+                 classify_tasks: Callable | None = None):
         self.settings, self.registry, self.map, self.hub = settings, registry, brain_map, hub
         self.guard, self.bus, self.tts, self.shield, self.routines = guard, bus, tts, shield, routines
+        self.classify_tasks = classify_tasks     # Jev: category + status of each task (router.classify_tasks)
         routines_file = settings.path("proactive.routines") if settings.get("proactive.routines") else None
-        self.handlers = make_handlers(store, routines_file)
+        self.store = store
+        self.handlers = make_handlers(store, routines_file, settings)
+        self.acted: set[str] = set()             # requests that already changed something (see Brain.handle_text)
 
     def capabilities(self, route: Route) -> list[str]:
         """The route's capabilities + the skill's + the modules' "always" ones + the context sources from config."""
@@ -95,32 +109,83 @@ class Executor:
         return self.map.tools_of(self.capabilities(route))
 
     def _instructions(self, route: Route) -> str:
+        """System prompt: the directive (execute exactly what the request describes) + who Alfred is and how he
+        speaks. Everything about THIS request - Jev's plan, module rules, context - is in the one <request>."""
+        return self.settings.get("models.executor_directive", DIRECTIVE) + "\n\n" + persona.system_prompt(self.settings)
+
+    def _module_rules(self, route: Route) -> str:
         modules = [m for m in map(self.registry.get, route.modules) if m]
         parts = [f"## Module: {m.label}\n{m.prompt}".strip() for m in modules]
         if skill := self.registry.skill(route.skill):
             parts.append(f"## Procedure to follow: {skill.name}\n{skill.body}")
         if routines := [f"- {r['id']} ({r['schedule']}): {r['prompt']}" for r in self.routines()]:
-            parts.append("## Your routines (config/routines.yaml)\n" + "\n".join(routines))
-        return persona.system_prompt(self.settings) + "\n\n" + ("\n\n".join(parts) or "No module instructions.")
+            parts.append("## Your routines (config/routines.yaml)\nYour own scheduled prompts, NOT the user's tasks: "
+                         "never list them among his tasks or in his plan for today; mention them only when he asks "
+                         "about routines.\n" + "\n".join(routines))
+        return "\n\n".join(parts) or "No module instructions."
 
     def _prompt(self, text: str, route: Route, session: Session) -> str:
+        """ONE exact request glued from everything: what was said before, memory, the modules' rules, Jev's plan,
+        the context - and, last, what the user said now."""
         history = "\n".join(f"{m['role']}: {m['content']}" for m in session.history_messages())
         blocks = [f"<conversation_so_far>\n{history}\n</conversation_so_far>"] if history else []
-        if not session.turns or route.needs_history >= 0.5:
-            blocks.append(f"<memory_briefing>\n{session.briefing}\n</memory_briefing>")
+        briefed = not session.turns or route.needs_history >= 0.5
+        if briefed:
+            blocks.append(f"<memory_briefing>\n{session.briefing}\n</memory_briefing>")   # has the goals too
+        if not briefed and "task_create" in self.tool_names(route) and (goals := self.store.goals_text()):
+            blocks.append(f"<goals>\n{goals}\n</goals>")    # tasks should serve them - see the tasks module rules
+        blocks.append(f"<instructions>\n{self._module_rules(route)}\n</instructions>")
         hints = [f"now={datetime.now().astimezone():%A %Y-%m-%d %H:%M%z}", f"module={','.join(route.modules)}",
                  f"urgency={route.urgency:.1f}"]
         if route.topic:
             hints.append(f"knowledge topic={self.map.topics.get(route.topic, {}).get('title', route.topic)}")
         if route.clarify:
             hints.append("routing is unsure - ask one short clarifying question if needed")
-        return "\n\n".join([*blocks, f"<routing>{'; '.join(hints)}</routing>", text])
+        if "task_create" in self.tool_names(route):
+            categories = ", ".join(self.settings.get("tasks.categories") or {})
+            hints.append(f"task categories={categories} (fixed; Jev assigns them to each task - a new category only "
+                         f"if the user wants it, via {ADD_CATEGORY}, which asks him)")
+            hints += [f"{k}={v}" for k, v in (("task category", route.task_category),
+                                               ("task status", route.task_status)) if v]
+        blocks += [self._plan(route), f"<routing>{'; '.join(hints)}</routing>", f"<user_said>\n{text}\n</user_said>"]
+        return "<request>\n" + "\n\n".join(blocks) + "\n</request>"
+
+    def _plan(self, route: Route) -> str:
+        """What Jev worked out, laid out for Claude: modules -> capabilities -> server › function, then signals."""
+        pct = lambda p: f"{round(p * 100)}%"
+        tool = lambda n: self.map.tools.get(n, {})
+        lines = ["Modules: " + ", ".join(f"{m} {pct(route.probabilities.get(m, 0))}" + (" (lead)" if m == route.module
+                                                                                     else "") for m in route.modules)]
+        lines.append("Capabilities: " + ", ".join(
+            c + (f" {pct(route.capability_probabilities[c])}" if c in route.capability_probabilities else "")
+            + (" [named by the user]" if c in route.forced else "") for c in self.capabilities(route)))
+        available = set(self.tool_names(route))
+        ranked = [(n, p) for n, p in route.tool_probabilities.items() if n in available]
+        if steps := [(n, p) for n, p in ranked if p >= 0.6]:
+            lines.append("Steps - the functions Jev expects, most likely first (call the ones the request needs, "
+                         "in this order; of near-duplicates pick one):")
+            lines += [f"  {i}. {tool(n).get('server', '?')} › {tool(n).get('short', n)} - {pct(p)}"
+                      for i, (n, p) in enumerate(steps, 1)]
+        if maybe := [(n, p) for n, p in ranked if 0.3 <= p < 0.6]:
+            lines.append("Maybe: " + ", ".join(f"{tool(n).get('short', n)} {pct(p)}" for n, p in maybe))
+        signals = [f"urgency {route.urgency:.1f}/2"]
+        for p, note in ((route.acts_on_world, "changes something in the world - one sentence on what you will do, "
+                                              "then the tool call; the system asks for the yes"),
+                        (route.changes_existing, "changes something that already exists - find it (task_list, search) "
+                                                 "and update it; do not create a new one"),
+                        (route.multi_step, "several things at once - do every part; independent calls together"),
+                        (route.needs_history, "needs what happened before - check memory and open tasks first")):
+            if p >= 0.5:
+                signals.append(f"{note} ({pct(p)})")
+        lines.append("Signals: " + "; ".join(signals))
+        return f"<jev_plan source={route.source}>\n" + "\n".join(lines) + "\n</jev_plan>"
 
     async def run(self, text: str, route: Route, session: Session, request_id: str) -> ExecResult:
         lead = self.registry.get(route.module)
         model = (lead and lead.model) or self.settings.get("models.executor")
         effort = (lead and lead.effort) or self.settings.get("models.executor_effort")
-        result = ExecResult(text="", model=model, request=text)
+        result = ExecResult(text="", model=model, request=text, task_category=route.task_category,
+                            task_status=route.task_status)
 
         names = self.tool_names(route)
         live = self.hub.all_tools()
@@ -176,9 +241,40 @@ class Executor:
         result.text = result.text or last_text or ("Gotowe." if session.language == "pl" else "Done.")
         return result
 
+    async def _jev_classifies(self, tasks: list[dict], result: ExecResult, session: Session, request_id: str,
+                              update: bool = False) -> None:
+        """Sets each task's category (and, for new tasks, status) from Jev - one question per task. Where Jev has
+        no answer for a task: what Jev heard for the whole request, then Claude's own value. Jev down: Claude's."""
+        labels = [" - ".join(str(v) for v in (t.get("title") or t.get("task_id"), t.get("description")) if v)
+                  for t in tasks]
+        try:
+            verdicts, source = await self.classify_tasks(result.request, labels), "jev"
+        except Exception:                        # no Jev: Claude does the classifier's job (the tools still check)
+            verdicts, source = [("?", "?")] * len(tasks), "claude"
+        for task, (category, status) in zip(tasks, verdicts):
+            if category == "?":
+                category = result.task_category or task.get("category")
+            if update and not category:          # Jev sees no fitting category: leave the task where it is
+                task.pop("category", None)
+            else:
+                task["category"] = category
+            if not update:
+                task["status"] = (status if status != "?" else None) or result.task_status or task.get("status") or "todo"
+        self.bus.emit("tasks_classified", "router", request_id, session.id, source=source, tasks=[
+            {"task": label, "category": t.get("category"), "status": t.get("status")} for label, t in zip(labels, tasks)])
+
     async def run_tool(self, name: str, args: dict[str, Any], session: Session, request_id: str,
                        result: ExecResult) -> tuple[str, bool]:
         """Run one tool call from Claude; returns (text for Claude, is_error)."""
+        # Jev classifies, Claude executes: the category (and a new task's status) is Jev's call - Claude's own
+        # values are used only when Jev cannot answer.
+        if name == "task_create":
+            await self._jev_classifies(args.get("tasks") or [], result, session, request_id)
+        elif name == "task_update" and args.get("category"):     # moving a task to a category
+            await self._jev_classifies([args], result, session, request_id, update=True)
+        elif name == "task_update" and result.task_status and not (set(args) - {"task_id", "note"}):
+            args["status"] = result.task_status                  # "zrobione" said about a task
+
         # Alfred's own tools act on the user's own (already checked) words - they are checked only once outside
         # content has entered this request and could have planted instructions.
         if self.shield and (result.untrusted or name not in TOOLS):
@@ -188,8 +284,10 @@ class Executor:
                 result.actions.append(f"blocked: {_describe(name, args)}")
                 return BLOCKED, True
 
-        if name == CONFIRM_TOOL or self.map.needs_confirmation(name):
-            summary = (str(args.get("summary", "")) if name == CONFIRM_TOOL else "") or _describe(name, args)
+        if name in ASK_FIRST or self.map.needs_confirmation(name):
+            summary = (str(args.get("summary", "")) if name == CONFIRM_TOOL
+                       else f"dodam nową kategorię zadań „{args.get('name', '')}”" if name == ADD_CATEGORY
+                       else "") or _describe(name, args)
             question = persona.confirm_prompt(session.language, summary.rstrip("."))
             audio = await self.tts.synthesize(question) if self.tts else None
             if not await self.guard.confirm(request_id, session.id, name, question, audio):
@@ -198,6 +296,8 @@ class Executor:
             if name == CONFIRM_TOOL:
                 return "approved - the user said yes, proceed.", False
 
+        if name in MUTATING or name in ASK_FIRST or self.map.needs_confirmation(name):
+            self.acted.add(request_id)
         node = f"tool:{name}" if name in self.map.tools else "memory" if name in TOOLS else "executor"
         self.bus.emit("tool_call", node, request_id, session.id, tool=name, input=args)
         result.tools_used.append(name)

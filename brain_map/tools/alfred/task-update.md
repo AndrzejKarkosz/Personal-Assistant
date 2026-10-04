@@ -1,8 +1,8 @@
 ---
 type: Tool
 title: task_update
-description: 'Update a task: change status (todo, in_progress, waiting, done, cancelled),
-  due date, schedule, category, title, or add a progress note.'
+description: 'Update a task: change status (todo, in_progress, done, cancelled), due
+  date, schedule, category, title, or add a progress note.'
 id: task_update
 server: alfred
 kind: builtin
@@ -12,14 +12,14 @@ modules: [tasks]
 side_effect: write
 requires_confirmation: false
 status: online
-params: [task_id, title, status, note, due, schedule, category]
+params: [task_id, title, status, note, due, schedule, category, goal, alfred]
 tags: [tool, alfred]
-timestamp: '2026-09-30T13:14:24+02:00'
+timestamp: '2026-10-02T15:40:08+02:00'
 ---
 
 # task_update
 
-Update a task: change status (todo, in_progress, waiting, done, cancelled), due date, schedule, category, title, or add a progress note.
+Update a task: change status (todo, in_progress, done, cancelled), due date, schedule, category, title, or add a progress note.
 
 Server: [alfred](../../servers/alfred.md)
 
@@ -35,4 +35,6 @@ Server: [alfred](../../servers/alfred.md)
 | `note` | string |  |  |
 | `due` | string |  |  |
 | `schedule` | string |  |  |
-| `category` | string |  | Move to this group; empty string clears it |
+| `category` | string |  | Set it (any value) when the user wants the task moved - Jev picks the category |
+| `goal` | string |  | How the task brings him closer to his goal - what he told you when you asked |
+| `alfred` | boolean |  | Move to Alfred's board (true) or the user's (false) |

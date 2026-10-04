@@ -20,6 +20,72 @@ def collect(brain):
     return drain
 
 
+async def test_session_cost_is_split_per_service(make_brain):
+    brain, _ = make_brain("Dodane, szefie.")
+    brain.settings.data["prices"] = {"jev_input_per_mtok": 0.042, "elevenlabs_tts_per_1k_chars": 0.10,
+                                     "elevenlabs_stt_per_hour": 0.22}
+    shield_ask = brain.router.jev.ask
+
+    async def billed(state, questions):   # Jev reports its usage
+        return await shield_ask(state, questions) | {"usage": {"input_tokens": 2000, "output_tokens": 400}}
+    brain.router.jev.ask = billed
+    brain.voice.on_usage(stt_s=36.0)       # speech-to-text happens before the session exists: carried over
+
+    await brain.handle_text("dodaj zadanie kupić mleko")
+    u = brain.sessions.current.usage
+    assert u["jev"] == 2400 and u["jev_usd"] == pytest.approx(2000 * 0.042 / 1e6)   # output tokens are free
+    assert u["stt_s"] == 36.0 and u["elevenlabs_usd"] == pytest.approx(36 / 3600 * 0.22)
+    assert u["cost_usd"] > 0                                                          # Claude, billed separately
+
+    brain.voice.on_usage(tts_chars=500)
+    assert brain.sessions.current.usage["elevenlabs_usd"] == pytest.approx(36 / 3600 * 0.22 + 0.05)
+
+
+async def test_fixed_task_categories_and_a_new_one_only_after_a_yes(make_brain, settings, tmp_path):
+    from brain.memory import MemoryStore
+    from brain.tools import make_handlers
+    store = MemoryStore(tmp_path / "mem")
+    h = make_handlers(store, None, settings)
+    await h["task_create"]({"tasks": [{"title": "Przejrzeć MR", "category": "smart meet"}]}, "s")
+    assert store.list_tasks("open")[0].category == "SmartMeet"          # said loosely -> the fixed name
+    with pytest.raises(ValueError, match="not a task category. Categories: SmartMeet, Praca, Reszta"):
+        await h["task_create"]({"tasks": [{"title": "Odkurzyć", "category": "Dom"}]}, "s")
+    assert len(store.list_tasks("open")) == 1                           # nothing invented, nothing created
+
+    brain, _ = make_brain(("tool", "task_category_add", {"name": "Dom", "description": "Sprawy domowe"}), "Dodana.")
+    asked = asyncio.create_task(brain.handle_text("dodaj kategorię zadań Dom"))
+    while not brain.guard.pending:
+        await asyncio.sleep(0.02)
+    assert "dodam nową kategorię zadań „Dom”" in brain.guard.pending["question"]
+    assert "Dom" not in brain.settings.get("tasks.categories")          # not before the yes
+    brain.guard.resolve(True)
+    await asked
+    assert list(brain.settings.get("tasks.categories")) == ["SmartMeet", "Praca", "Reszta", "Dom"]
+
+
+async def test_jev_plan_reaches_claude(make_brain):
+    brain, fake = make_brain("Dodane.")
+    route = Route(module="tasks", also=["calendar"], confidence=0.9, probabilities={"tasks": 0.87, "calendar": 0.13},
+                  capabilities=["tasks.manage", "calendar.write"], capability_probabilities={"tasks.manage": 0.81},
+                  forced=["calendar.write"], changes_existing=0.9, multi_step=0.8, acts_on_world=0.2,
+                  tool_probabilities={"task_update": 0.91, "task_create": 0.35, "task_list": 0.6, "memory_read": 0.01},
+                  source="jev")
+    plan = brain.executor._plan(route)
+    assert "Modules: tasks 87% (lead), calendar 13%" in plan
+    assert "calendar.write [named by the user]" in plan and "tasks.manage 81%" in plan
+    assert "1. alfred › task_update - 91%" in plan and "2. alfred › task_list - 60%" in plan
+    assert "Maybe: task_create 35%" in plan and "memory_read" not in plan      # not offered, not mentioned
+    assert "update it; do not create a new one (90%)" in plan and "several things at once" in plan
+    assert "changes something in the world" not in plan                        # 20% - below the bar
+
+    await brain.handle_text("przesuń zadanie fryzjer na jutro")
+    prompt, options = fake.calls[0]
+    assert options.system_prompt.startswith("Wykonaj dokładnie działanie opisane w <request>")
+    assert "## Module:" not in options.system_prompt                     # this request's rules live in <request>
+    assert prompt.startswith("<request>") and prompt.endswith("<user_said>\nprzesuń zadanie fryzjer na jutro\n</user_said>\n</request>")
+    assert prompt.index("<instructions>") < prompt.index("<jev_plan") < prompt.index("<user_said>")
+
+
 async def test_checked_tool_then_spoken_answer(make_brain):
     brain, fake = make_brain(
         ("tool", "task_create", {"tasks": [{"title": "Zadzwonić do mamy", "due": "2030-09-26T09:00:00+02:00"}]}),
@@ -151,6 +217,23 @@ async def test_proactive_gate_fires_due_task(make_brain):
     assert brain.store.get_task(task.id) is not None
 
 
+async def test_reminder_comes_before_the_due_time_with_the_fastest_way(make_brain):
+    brain, fake = make_brain("Szefie, za kwadrans faktura.", "Szefie, pora na fakturę.")
+    brain.settings.data["proactive"].update(quiet_hours=[], reminders={"lead_minutes": 15, "fastest_path": True})
+    soon = (datetime.now().astimezone() + timedelta(minutes=10)).isoformat(timespec="seconds")
+    later = (datetime.now().astimezone() + timedelta(hours=2)).isoformat(timespec="seconds")
+    task = brain.store.create_task("Faktura", due=soon)
+    brain.store.create_task("Siłownia", due=later)
+    drain = collect(brain)
+    await brain.proactive.check_due()
+    await brain.proactive.check_due()                    # once ahead of time, not every minute
+    gates = [e.data for e in drain() if e.kind == "proactive_gate"]
+    assert [(g["task"], g["trigger"]) for g in gates] == [("Faktura", "upcoming")]
+    said = next(e["data"]["text"] for e in brain.bus.log.read() if e["kind"] == "transcript" and e["data"]["source"] == "proactive")
+    assert "coming up soon" in said and "fastest way" in said
+    assert brain.store.get_task(task.id).is_open
+
+
 async def test_audio_in_goes_through_speech_to_text(make_brain, monkeypatch):
     brain, fake = make_brain("Dzień dobry, szefie.")
     drain = collect(brain)
@@ -245,7 +328,7 @@ async def test_recurring_tasks_become_cron_jobs(make_brain):
     brain.proactive.start()
     try:
         ids = {j["id"] for j in brain.proactive.status()}
-        assert ids == {"due-check", "idle-close", "heartbeat", f"task:{daily.id}@0 8 * * 1-5"}
+        assert ids == {"due-check", "idle-close", "heartbeat", "rollover", f"task:{daily.id}@0 8 * * 1-5"}
         brain.store.update_task(daily.id, schedule="30 7 * * *")
         brain.proactive.sync_recurring()
         assert {j["id"] for j in brain.proactive.status()} - ids == {f"task:{daily.id}@30 7 * * *"}
@@ -349,3 +432,45 @@ async def test_jev_down_means_nothing_happens(make_brain):
     assert not [e for e in events if e.kind in ("classified", "executor_start", "answer")]
     assert [e.data["source"] for e in events if e.kind == "shield"] == ["closed"]
     assert not fake.calls and brain.store.list_tasks("open") == []   # Claude never asked, nothing changed
+
+
+async def test_more_words_before_the_answer_join_the_request(make_brain):
+    from brain.executor import ExecResult
+    brain, _ = make_brain()
+    seen, hold = [], asyncio.Event()
+
+    async def run(text, route, session, request_id):
+        seen.append(text)
+        if len(seen) == 1:
+            await hold.wait()                      # Alfred is still thinking about the first words
+        return ExecResult(text="Dodane.", model="m")
+    brain.executor.run = run
+    first = asyncio.create_task(brain.handle_text("dodaj zadanie", interruptible=True))
+    while not seen:
+        await asyncio.sleep(0.01)
+    assert await brain.handle_text("kupić mleko jutro", interruptible=True) == "Dodane."
+    assert first.cancelled() and seen[-1] == "dodaj zadanie\nkupić mleko jutro"
+    assert [t.text for t in brain.sessions.current.turns if t.role == "user"] == ["dodaj zadanie\nkupić mleko jutro"]
+    assert await brain.handle_text("a teraz coś innego", interruptible=True) == "Dodane."   # answered: a new request
+    assert seen[-1] == "a teraz coś innego"
+
+
+async def test_a_request_that_already_changed_something_is_not_dropped(make_brain):
+    from brain.executor import ExecResult
+    brain, _ = make_brain()
+    seen, hold = [], asyncio.Event()
+
+    async def run(text, route, session, request_id):
+        seen.append(text)
+        if len(seen) == 1:
+            brain.executor.acted.add(request_id)   # it created a task already
+            await hold.wait()
+        return ExecResult(text="Dodane.", model="m")
+    brain.executor.run = run
+    first = asyncio.create_task(brain.handle_text("dodaj zadanie mleko", interruptible=True))
+    while not seen:
+        await asyncio.sleep(0.01)
+    assert await brain.handle_text("i chleb", interruptible=True) == "Dodane."
+    assert seen[-1] == "i chleb" and not first.done()        # a request of its own; the first one goes on
+    hold.set()
+    assert await first == "Dodane." and not brain.executor.acted

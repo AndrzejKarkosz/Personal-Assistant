@@ -26,6 +26,7 @@ class ElevenLabs:
         self.settings = settings
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.on_usage = lambda **used: None  # tts_chars / stt_s of each billed call - the brain prices them
 
     async def transcribe(self, audio: bytes, filename: str = "speech.webm",
                          language: str | None = None) -> Transcript | None:
@@ -39,6 +40,8 @@ class ElevenLabs:
                                      files={"file": (filename, audio, "application/octet-stream")})
         resp.raise_for_status()
         body = resp.json()
+        # billed per second of audio; the last word's end time is the length of what was said
+        self.on_usage(stt_s=max((float(w.get("end") or 0) for w in body.get("words") or []), default=0.0))
         return Transcript((body.get("text") or "").strip(), (body.get("language_code") or "")[:2].lower() or None)
 
     async def synthesize(self, text: str) -> str | None:
@@ -61,6 +64,7 @@ class ElevenLabs:
             resp.raise_for_status()
         except httpx.HTTPError:
             return None
+        self.on_usage(tts_chars=len(text))  # cached phrases above cost nothing
         if len(text) < 120:
             cached.write_bytes(resp.content)
         return base64.b64encode(resp.content).decode()

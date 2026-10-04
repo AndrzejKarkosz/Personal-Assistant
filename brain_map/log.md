@@ -214,3 +214,21 @@
 - changed modules/research.md
 - changed modules/smalltalk.md
 - changed modules/tasks.md
+
+## 2026-09-30T18:23:26+02:00
+- changed modules/smalltalk.md
+
+## 2026-09-30T18:23:27+02:00
+- changed modules/smalltalk.md
+
+## 2026-09-30T18:23:30+02:00
+- changed modules/bookings.md
+
+## 2026-10-01T10:39:19+02:00
+- changed capabilities/tasks.manage.md
+- changed tools/alfred/task-update.md
+- added tools/alfred/task-category-add.md
+- changed servers/alfred.md
+
+## 2026-10-02T15:40:08+02:00
+- changed tools/alfred/task-update.md

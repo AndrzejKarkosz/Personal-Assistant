@@ -7,6 +7,7 @@ Claude, which then usually fixes its call.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -18,7 +19,10 @@ from . import okf
 from .memory import FACT_CATEGORIES, OPEN_STATUSES, TASK_STATUSES, MemoryStore
 
 CONFIRM_TOOL = "confirm_action"
-MUTATING = {"memory_remember", "task_create", "task_update", "routine_save", "routine_delete"}  # noted in the session
+ADD_CATEGORY = "task_category_add"
+ASK_FIRST = {CONFIRM_TOOL, ADD_CATEGORY}            # always a spoken yes/no before they run
+MUTATING = {"memory_remember", "task_create", "task_update", "routine_save", "routine_delete",
+            ADD_CATEGORY}                          # noted in the session
 # Web tools run inside Claude Code itself: our name -> Claude Code's name, description.
 WEB_TOOLS = {"web_search": ("WebSearch", "Search the web for current information."),
              "web_fetch": ("WebFetch", "Fetch and read a web page by URL.")}
@@ -56,16 +60,33 @@ TOOLS: dict[str, dict[str, Any]] = {t["name"]: t for t in [
          due={"type": "string", "description": "ISO 8601, e.g. 2026-09-26T09:00:00+02:00"},
          schedule={"type": "string", "description": "cron, e.g. '0 8 * * 1-5'"},
          priority={"type": "string", "enum": ["low", "normal", "high"]},
-         category={"type": "string", "description": "Group name the user sorts tasks by, e.g. 'Praca', 'Dom'"},
-         module={"type": "string", "description": "Module that should handle it when it fires"})})},
+         category={"type": "string", "description": "Jev decides the category of each task - you may leave it "
+                                                    "out; used only if Jev is down (then one of the fixed ones)"},
+         status={"type": "string", "enum": list(TASK_STATUSES), "description": "Jev decides; used only if Jev is down"},
+         goal={"type": "string", "description": "How this task brings him closer to one of his goals, in his words - "
+                                                "only when you know it (else ask him and save it with task_update)"},
+         module={"type": "string", "description": "Module that should handle it when it fires"},
+         alfred={"type": "boolean", "description": "true = Alfred's own board: a reminder (\"przypomnij mi\") or "
+                                                   "something Alfred does himself at that time; false (default) = "
+                                                   "the user's own to-do"})})},
     {"name": "task_update",
-     "description": "Update a task: change status (todo, in_progress, waiting, done, cancelled), due date, "
+     "description": "Update a task: change status (todo, in_progress, done, cancelled), due date, "
                     "schedule, category, title, or add a progress note.",
      "input_schema": _schema(["task_id"], task_id={"type": "string", "description": "Exact id from task_list"},
                              title={"type": "string", "description": "New title"},
                              status={"type": "string", "enum": list(TASK_STATUSES)}, note=_str, due=_str,
                              schedule=_str,
-                             category={"type": "string", "description": "Move to this group; empty string clears it"})},
+                             category={"type": "string", "description": "Set it (any value) when the user wants the "
+                                                                        "task moved - Jev picks the category"},
+                             goal={"type": "string", "description": "How the task brings him closer to his goal - "
+                                                                    "what he told you when you asked"},
+                             alfred={"type": "boolean", "description": "Move to Alfred's board (true) or the "
+                                                                      "user's (false)"})},
+    {"name": ADD_CATEGORY,
+     "description": "Add a NEW task category. Only when the user clearly wants a category that is not in the fixed "
+                    "list; the user is asked for a spoken yes first. Then use it in task_create / task_update.",
+     "input_schema": _schema(["name"], name={"type": "string", "description": "Short name, e.g. 'Dom'"},
+                             description={"type": "string", "description": "When a task belongs here, in Polish"})},
     {"name": CONFIRM_TOOL,
      "description": "Ask the user for a spoken yes/no before an irreversible step that has no dedicated tool "
                     "(e.g. pressing the final 'Book' button in a browser). Returns approved or declined.",
@@ -108,10 +129,24 @@ def check_cron(schedule: str | None, allow_start: bool = False) -> None:
             raise ValueError(f"schedule '{schedule}' is not a 5-field cron (e.g. '0 8 * * 1-5')") from None
 
 
+def task_category(value: str | None, allowed: dict | list | None) -> str | None:
+    """The fixed category `value` means ("smart meet" -> "SmartMeet"); None / "" pass through (no category).
+    Anything else is an error that lists the categories - Claude then picks one or asks to add a new one.
+    allowed=None (no settings at all) checks nothing."""
+    if not value or allowed is None:
+        return value
+    key = lambda s: re.sub(r"\s+", "", str(s)).casefold()
+    if match := next((c for c in allowed if key(c) == key(value)), None):
+        return match
+    raise ValueError(f"'{value}' is not a task category. Categories: {', '.join(allowed) or 'none'}. Use one of "
+                     f"them; a new one only if the user wants it - call {ADD_CATEGORY} (it asks him first).")
+
+
 Handler = Callable[[dict[str, Any], str | None], Awaitable[str]]
 
 
-def make_handlers(store: MemoryStore, routines_file: Path | None = None) -> dict[str, Handler]:
+def make_handlers(store: MemoryStore, routines_file: Path | None = None, settings=None) -> dict[str, Handler]:
+    categories = lambda: (settings.get("tasks.categories") or {}) if settings else None
     def find_task(ref: str) -> str:
         """Exact id, else the ONE open task whose id starts with / title contains `ref`. Otherwise an error that
         lists the open tasks, so Claude can retry with the right id."""
@@ -158,6 +193,7 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None) -> dict
                 raise ValueError("every task needs a title")
             check_due(a.get("due"))
             check_cron(a.get("schedule"))
+            a["category"] = task_category(a.get("category"), categories())
         already_open = {(t.title.casefold(), t.due): t.id for t in store.list_tasks("open")}
         created, skipped = [], []
         for a in items:
@@ -166,7 +202,8 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None) -> dict
             else:
                 created.append(store.create_task(a["title"], a.get("description", ""), a.get("due"),
                                                  a.get("schedule"), a.get("module"), a.get("priority", "normal"),
-                                                 sid, a.get("category")).id)
+                                                 sid, a.get("category"), a.get("status") or "todo", a.get("goal"),
+                                                 bool(a.get("alfred"))).id)
         out = f"Created task{'s' if len(created) > 1 else ''} {', '.join(created)}" if created else "Nothing created"
         return out + (f"; already open, not duplicated: {', '.join(skipped)}" if skipped else "")
 
@@ -174,8 +211,22 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None) -> dict
         check_due(args.get("due"))
         check_cron(args.get("schedule"))
         task = store.update_task(find_task(args["task_id"]), args.get("status"), args.get("note"), args.get("due"),
-                                 args.get("title"), args.get("schedule"), sid, args.get("category"))
+                                 args.get("title"), args.get("schedule"), sid,
+                                 task_category(args.get("category"), categories()), args.get("goal"),
+                                 args.get("alfred"))
         return f"Task {task.id} is now {task.status}" + (" (still open)" if task.status in OPEN_STATUSES else "")
+
+    async def task_category_add(args, sid):    # runs only after the user said yes (tools.ASK_FIRST)
+        name = " ".join(str(args.get("name", "")).split())
+        if not name:
+            raise ValueError("a category needs a name")
+        if settings is None:
+            raise ValueError("no settings to store the category in")
+        try:
+            return f"'{task_category(name, categories())}' already exists - use it"
+        except ValueError:
+            settings.update({"tasks": {"categories": {name: str(args.get("description") or name)}}})
+            return f"Added task category '{name}'. Categories now: {', '.join(categories() or {})}"
 
     async def routine_save(args, sid):
         rid = okf.slugify(args["id"])
@@ -203,4 +254,4 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None) -> dict
         return f"Deleted routine {args['id']}"
 
     return {f.__name__: f for f in (memory_search, memory_read, memory_remember, task_list, task_create,
-                                    task_update, routine_save, routine_delete)}
+                                    task_update, task_category_add, routine_save, routine_delete)}

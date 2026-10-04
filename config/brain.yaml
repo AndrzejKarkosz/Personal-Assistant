@@ -10,6 +10,14 @@ assistant:
   # brak zapytań przez after_minutes -> Alfred wita się przed odpowiedzią (TTS, bez LLM)
   welcome_back: { after_minutes: 120, pl: "Witaj z powrotem, szefie.", en: "Welcome back, boss." }
 
+tasks:
+  # The ONLY task categories (the text tells Jev when the user picked one). Alfred cannot invent one: a new
+  # category only through task_category_add, which asks you first - or add it yourself in Ustawienia.
+  categories:
+    SmartMeet: "Zadanie dotyczy SmartMeet (projekt, klient, kod, materiały SmartMeet) albo użytkownik mówi, że to do SmartMeet"
+    Praca: "Zadanie zawodowe, ale nie SmartMeet: druga praca, faktury, rekrutacje, sprawy firmowe"
+    Reszta: "Wszystko poza pracą: sprawy prywatne, zdrowie, sport, dom, zakupy, urzędy, nauka dla siebie"
+
 map:
   dir: brain_map
   topic_sources:
@@ -26,6 +34,7 @@ router:
   jev_url: https://api.typesafe.ai/v1/systemone
   timeout_s: 4.0
   confident_at: 0.6
+  tool_at: 0.8          # a tool Jev scores this sure brings its capability + module, even if the capability guess missed
   ask_below: 0.3
   capability_coverage: 0.8
   injection_at: 0.5
@@ -44,7 +53,7 @@ voice:
   tts_model: eleven_flash_v2_5     # fast; eleven_multilingual_v2 = slower but more natural
   output_format: mp3_44100_128
   settings:
-    speed: 1.1
+    speed: 1.2               # ElevenLabs allows 0.7-1.2
 
 memory:
   dir: data/memory
@@ -56,6 +65,68 @@ proactive:
   heartbeat_minutes: 30
   quiet_hours: ["23:00", "07:00"]
   routines: config/routines.yaml
+  # Przypomnienia o zadaniach z terminem: Alfred odzywa się `lead_minutes` przed terminem (0 = dopiero o czasie)
+  # i - przy fastest_path - proponuje najszybszą drogę do zrobienia zadania (pierwszy krok, co pominąć).
+  reminders:
+    lead_minutes: 15
+    fastest_path: true
+
+# Cele → „Rutyna produktywności” (Justin Sung, „Productivity is Hard Until You Build Systems Like This”):
+# włączenie kopiuje te rutyny do config/routines.yaml (potem edytujesz je w Przeglądzie), wyłączenie je usuwa.
+# 1) produktywność = to, co przybliża do Twoich 2-3 celów, 2) flow matching: zadania głębokie w szczycie energii,
+# administracyjne gdy spada, 3) scripted actions „jeśli X, to Y” dla ryzykownych zadań, 4) wyzwalacze (cues),
+# 5) regeneracja. Raz w tygodniu ~30 min planowania ustawia cały tydzień.
+productivity:
+  # slot = the time from his plan (Cele → Rutyna produktywności): peak, shallow, weekly, close; no slot = schedule as is.
+  # Each prompt gets his plan appended (brain/app.py productivity_routines).
+  routines:
+    - id: prod-plan-tygodnia
+      slot: weekly
+      schedule: "0 19 * * 0"
+      module: tasks
+      prompt: >-
+        Rutyna produktywności - cotygodniowe planowanie. Przejrzyj moje cele i otwarte zadania na najbliższy
+        tydzień. Odrzuć albo odłóż to, co nie przybliża mnie do moich 2-3 najważniejszych celów. Oceń każde zadanie:
+        głębokie (wymaga skupienia) czy płytkie (admin). Zaproponuj plan: głębokie zadania w szczycie energii,
+        płytkie po południu, w limicie godzin z mojego planu. Wskaż zadania ryzykowne (np. trening wieczorem) i dla
+        każdego zaproponuj „jeśli X, to Y” oraz jeden wyzwalacz w otoczeniu, który ułatwi start; zapisz je jako notatkę
+        w zadaniu. Ustaw terminy po mojej zgodzie i powiedz krótko, jak wygląda tydzień.
+    - id: prod-priorytety-dnia
+      schedule: "30 7 * * 1-5"
+      module: tasks
+      prompt: >-
+        Rutyna produktywności - priorytety dnia. Na podstawie moich celów, terminów i kalendarza zaproponuj kolejność
+        dzisiejszych zadań: 1-3 głębokie na szczyt energii, płytkie i admin na popołudnie. Dla
+        najważniejszego podaj najszybszą drogę do zrobienia go i pierwszy krok na 5 minut. Zmieniaj zadania tylko po
+        mojej zgodzie.
+    - id: prod-szczyt-energii
+      slot: peak
+      schedule: "0 9 * * 1-5"
+      module: tasks
+      prompt: >-
+        Rutyna produktywności - szczyt energii. Przypomnij mi krótko, które głębokie zadanie robię teraz, jaki jest
+        pierwszy krok i jaki rozpraszacz usunąć (telefon, powiadomienia). Jeśli nic głębokiego nie jest otwarte, zamilcz.
+    - id: prod-blok-admin
+      slot: shallow
+      schedule: "0 14 * * 1-5"
+      module: tasks
+      prompt: >-
+        Rutyna produktywności - blok płytkich zadań. Energia spada: wymień 2-4 drobne zadania (maile, faktury,
+        telefony), które zrobię hurtem w godzinę, w kolejności od najszybszego. Jeśli nie ma żadnych, zamilcz.
+    - id: prod-regeneracja
+      slot: close
+      schedule: "30 18 * * 1-5"
+      module: tasks
+      prompt: >-
+        Rutyna produktywności - domknięcie dnia i regeneracja. Powiedz w jednym-dwóch zdaniach, co dziś zrobiłem,
+        co przechodzi na jutro i jaki „jeśli X, to Y” mam na wieczór. Przypomnij o przerwie od ekranu - odpoczynek
+        też przybliża mnie do celów.
+
+# USD, for the cost split in the UI (Claude / Jev / ElevenLabs). Public list prices, 2026-09 - adjust to your plan.
+prices:
+  jev_input_per_mtok: 0.042            # typesafe.ai Jev: input tokens only, output is free (early access)
+  elevenlabs_tts_per_1k_chars: 0.10    # Multilingual v2/v3 (Flash/Turbo: 0.05)
+  elevenlabs_stt_per_hour: 0.22        # Scribe v2
 
 logging:
   dir: data/logs

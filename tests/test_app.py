@@ -33,13 +33,27 @@ def test_status_graph_modules_and_map(api):
 
     modules = {m["id"]: m for m in client.get("/api/modules").json()}
     assert {"tasks", "calendar", "smalltalk"} <= set(modules)
-    assert modules["tasks"]["capabilities"][0]["tools"] == ["task_create", "task_list", "task_update"]
+    assert modules["tasks"]["capabilities"][0]["tools"] == ["task_category_add", "task_create", "task_list", "task_update"]
 
     brain_map = client.get("/api/map").json()
     assert brain_map["counts"]["modules"] == len(modules) and "module" in brain_map["jev"]
     assert client.get("/api/map/page", params={"path": "index.md"}).json()["content"].startswith("---")
     assert client.get("/api/map/page", params={"path": "../mcp.json"}).status_code == 404
     assert client.post("/api/map/rebuild").json()["modules"] == len(modules)
+
+
+def test_tasks_from_the_ui_use_the_fixed_categories(api):
+    client, brain, _ = api
+    assert client.get("/api/status").json()["task_categories"] == ["SmartMeet", "Praca", "Reszta"]
+    task = client.post("/api/tasks", json={"title": "Demo", "category": "smart meet"}).json()
+    assert task["category"] == "SmartMeet"
+    assert client.post("/api/tasks", json={"title": "Odkurzyć", "category": "Dom"}).status_code == 400
+    assert client.patch(f"/api/tasks/{task['id']}", json={"category": "Sport"}).status_code == 400
+    assert client.patch(f"/api/tasks/{task['id']}", json={"category": ""}).json()["category"] is None
+    # you add one yourself in Ustawienia - no yes/no needed, you are the one asking
+    assert client.post("/api/task-categories", json={"name": " Dom ", "description": "Sprawy domowe"}).json() == \
+        ["SmartMeet", "Praca", "Reszta", "Dom"]
+    assert client.post("/api/tasks", json={"title": "Odkurzyć", "category": "dom"}).json()["category"] == "Dom"
 
 
 def test_disabling_a_module_is_saved_in_its_manifest(api, tmp_path):
@@ -103,7 +117,8 @@ def test_calendar_reads_google_through_mcp(api, monkeypatch):
                ("invalid_grant", True)]
     calls = []
 
-    async def call(name, args):
+    async def call(name, args, limit=20000):
+        assert limit is None                      # a month / year of events must not be cut to Claude's size
         calls.append((name, args))
         return replies.pop(0)
     monkeypatch.setattr(brain.hub, "call", call)
@@ -130,6 +145,30 @@ def test_routines_show_what_ran_today(api, tmp_path):
     assert (r["brief"]["result"], r["brief"]["answer"], r["brief"]["due_today"]) == ("answer", "Dzień dobry.", True)
     assert (r["broken"]["result"], r["broken"]["answer"]) == ("error", "boom")
     assert r["hello"]["ran_at"] is None and r["hello"]["next_run"] is None and r["brief"]["next_run"]
+
+
+def test_routines_added_in_przeglad_and_the_productivity_routine(api):
+    client, brain, _ = api
+    new = {"id": "Poranny brief", "schedule": "30 7 * * 1-5", "prompt": "Daj brief", "module": "calendar"}
+    assert client.post("/api/routines", json=new).json() == {"result": "Created routine poranny-brief (30 7 * * 1-5)"}
+    assert client.post("/api/routines", json=new | {"schedule": "codziennie"}).status_code == 400
+    assert [r["id"] for r in client.get("/api/routines").json()] == ["poranny-brief"]
+
+    preset = [r["id"] for r in brain.settings.get("productivity.routines")]
+    assert preset and client.get("/api/productivity").json()["enabled"] is False
+    assert client.put("/api/productivity", json={"enabled": True}).json()["enabled"] is True
+    assert [r["id"] for r in client.get("/api/routines").json()] == ["poranny-brief", *preset]
+    plan = client.get("/api/productivity").json()["plan"] | {"peak_start": "08:15", "weekly_day": "6",
+                                                           "if_then": "- Jeśli wrócę po 19, to trening w domu"}
+    client.put("/api/productivity", json={"enabled": True, "plan": plan})
+    r = {x["id"]: x for x in client.get("/api/routines").json()}
+    assert r["prod-szczyt-energii"]["schedule"] == "15 8 * * 1-5" and r["prod-plan-tygodnia"]["schedule"] == "0 19 * * 6"
+    assert r["prod-priorytety-dnia"]["schedule"] == "30 7 * * 1-5"                 # no slot: as in brain.yaml
+    assert "jeśli-to: Jeśli wrócę po 19, to trening w domu" in r["prod-blok-admin"]["prompt"]
+    assert client.put("/api/productivity", json={"enabled": True, "plan": plan | {"close": "25:00"}}).status_code == 422
+    assert client.put("/api/productivity", json={"enabled": False}).json()["enabled"] is False
+    assert client.delete("/api/routines/poranny-brief").status_code == 200
+    assert client.get("/api/routines").json() == [] and client.delete("/api/routines/nope").status_code == 400
 
 
 def test_memory_rest(api):
@@ -207,3 +246,26 @@ def test_cli_classify_chat_and_serve(make_brain, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["alfred", "serve", "--port", "9000"])
     cli.main()
     assert served == {"app": "brain.app:app", "host": "127.0.0.1", "port": 9000, "reload": False}
+
+
+def test_summary_sums_a_day_month_quarter_or_year(api):
+    from datetime import datetime
+    from brain.app import period_range
+    now = datetime(2026, 11, 15, 14, 30)
+    span = lambda p, o=0: tuple(f"{d:%Y-%m-%d}" for d in period_range(p, o, now))
+    assert span("day") == ("2026-11-15", "2026-11-16") and span("day", -1) == ("2026-11-14", "2026-11-15")
+    assert span("month") == ("2026-11-01", "2026-12-01") and span("month", 2) == ("2027-01-01", "2027-02-01")
+    assert span("quarter") == ("2026-10-01", "2027-01-01") and span("quarter", -4) == ("2025-10-01", "2026-01-01")
+    assert span("year") == ("2026-01-01", "2027-01-01") and span("year", -1) == ("2025-01-01", "2026-01-01")
+
+    client, brain, _ = api
+    task = client.post("/api/tasks", json={"title": "Faktura", "category": "Praca"}).json()
+    client.patch(f"/api/tasks/{task['id']}", json={"status": "done"})
+    brain.store.write_session("s-1", datetime.now().astimezone().isoformat(), datetime.now().astimezone().isoformat(),
+                              {"title": "Rano"}, {"cost_usd": 0.02, "jev_usd": 0.001, "elevenlabs_usd": 0.05}, 4)
+    for period in ("day", "month", "quarter", "year"):
+        s = client.get("/api/summary", params={"period": period}).json()
+        assert (s["tasks"]["created"], s["tasks"]["done"], s["tasks"]["done_by_category"]) == (1, 1, {"Praca": 1})
+        assert s["sessions"] == {"count": 1, "turns": 4} and s["cost"]["elevenlabs_usd"] == 0.05
+    assert client.get("/api/summary", params={"period": "day", "offset": -1}).json()["tasks"]["done"] == 0
+    assert client.get("/api/summary", params={"period": "week"}).status_code == 400

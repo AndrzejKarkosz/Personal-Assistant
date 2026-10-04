@@ -1,11 +1,11 @@
 routines:
-  - id: poranny-brief
-    schedule: "0 8 * * 1-5"
-    module: calendar
-    prompt: Daj mi poranny brief na dziś - co mam w kalendarzu i jakie zadania są otwarte.
-
-  - id: powitanie
-    schedule: "@start"
-    prompt: Przywitaj mnie krótko i powiedz, co się wydarzyło od ostatniej sesji i co jest otwarte.
-    min_idle_minutes: 60                     # aktywny w ciągu ostatniej godziny -> cisza
-    welcome_back: true                       # kolejne starty tego samego dnia -> assistant.welcome_back, bez LLM
+- id: poranny-brief
+  schedule: 0 8 * * 1-5
+  module: calendar
+  prompt: Daj mi poranny brief na dziś - co mam w kalendarzu i jakie zadania są otwarte.
+- id: powitanie
+  schedule: '@start'
+  prompt: Przywitaj mnie krótko i powiedz, co się wydarzyło od ostatniej sesji i co
+    jest otwarte.
+  min_idle_minutes: 60
+  welcome_back: true

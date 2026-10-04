@@ -1,20 +1,30 @@
 id: bookings
 label: Reservations and bookings
-description: Booking a table in a restaurant, an appointment, tickets or a service; checking availability.
+description: Booking a table in a restaurant, an appointment, tickets or a service;
+  checking availability.
 examples:
-  - zarezerwuj stolik dla dwóch na piątek na 19
-  - book a haircut next week
-  - sprawdź czy są bilety do kina na sobotę
+- zarezerwuj stolik dla dwóch na piątek na 19
+- book a haircut next week
+- sprawdź czy są bilety do kina na sobotę
 capabilities:
   browse:
     label: Operate a web browser
     description: Open booking pages, read them, fill in forms, click through availability.
-    tools: ["browser__browser_*"]
-    examples: ["sprawdź wolne terminy na stronie", "fill in the booking form"]
+    tools:
+    - browser__browser_*
+    examples:
+    - sprawdź wolne terminy na stronie
+    - fill in the booking form
   confirm:
     label: Ask the user before an irreversible step
     description: Spoken yes/no before submitting a booking, payment or form.
-    tools: [confirm_action]
+    tools:
+    - confirm_action
     always: true
-uses: [research.web, calendar.write, memory.recall, memory.remember, tasks.manage]
-enabled: true
+uses:
+- research.web
+- calendar.write
+- memory.recall
+- memory.remember
+- tasks.manage
+enabled: false

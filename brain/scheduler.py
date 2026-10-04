@@ -18,6 +18,8 @@ import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from .memory import parse_time
+
 if TYPE_CHECKING:
     from .pipeline import Brain
 
@@ -48,12 +50,20 @@ class ProactiveEngine:
         self.scheduler.add_job(self.brain.sessions.close_if_idle, "interval", minutes=1, id="idle-close")
         self.scheduler.add_job(self.heartbeat, "interval", id="heartbeat",
                                minutes=int(self.settings.get("proactive.heartbeat_minutes", 30)))
+        self.scheduler.add_job(self.roll_over, "cron", hour=0, minute=1, id="rollover")
         self.scheduler.start()
+        self.roll_over()                   # catch up on the days the app was off
         self.sync_recurring()
         for r in self.routines():
             if r["schedule"] == START:
                 self.scheduler.add_job(self.run_start_routine, args=[r["id"]], id=f"start:{r['id']}",
                                        replace_existing=True)
+
+    def roll_over(self) -> None:
+        """What was not done yesterday (or earlier) moves to today, same hour."""
+        if moved := self.brain.store.roll_over():
+            self.brain.bus.emit("tasks_rolled", "proactive", tasks=[{"id": t.id, "title": t.title, "due": t.due}
+                                                                     for t in moved])
 
     def shutdown(self) -> None:
         if self.scheduler.running:
@@ -128,9 +138,15 @@ class ProactiveEngine:
         if not self.settings.get("proactive.enabled", True):
             return
         self.sync_recurring()
-        for task in self.brain.store.due_tasks():
-            if (key := f"{task.id}@{task.due}") not in self._fired:
-                await self.fire(task.id, "due", key)
+        lead = timedelta(minutes=float(self.settings.get("proactive.reminders.lead_minutes", 0)))
+        for task in self.brain.store.due_tasks(within=lead):
+            if f"{task.id}@{task.due}" in self._fired:
+                continue
+            if parse_time(task.due) > datetime.now().astimezone():      # a reminder ahead of time, then on time
+                if (key := f"pre:{task.id}@{task.due}") not in self._fired:
+                    await self.fire(task.id, "upcoming", key)
+            else:
+                await self.fire(task.id, "due", f"{task.id}@{task.due}")
 
     async def heartbeat(self) -> None:
         self.brain.bus.emit("heartbeat", "proactive", open_tasks=len(self.brain.store.list_tasks("open")),
@@ -155,11 +171,17 @@ class ProactiveEngine:
                             quiet_hours=quiet, fired=go)
         if go:
             when = f"scheduled {task.schedule}" if task.schedule else f"due {task.due}"
+            soon = trigger == "upcoming"
+            fastest = self.settings.get("proactive.reminders.fastest_path", False)
             await self.brain.handle_text(
-                f"[Proactive - you are speaking first] The task '{task.title}' ({when}) needs attention now."
+                f"[Proactive - you are speaking first] The task '{task.title}' ({when}) "
+                + ("is coming up soon - this is a reminder ahead of time." if soon else "needs attention now.")
                 + (f" Details: {task.description}." if task.description else "")
-                + f" Task id: {task.id}. Do what you can with your tools, update the task status, then tell the user "
-                  "in one or two sentences.", source="proactive", module_hint=task.module)
+                + f" Task id: {task.id}. "
+                + ("Do not change its status yet. " if soon else "Do what you can with your tools, update the task status, ")
+                + ("Propose the fastest way to get it done: the first concrete step and what can be skipped or "
+                   "batched. " if fastest else "")
+                + "Tell the user in one or two sentences.", source="proactive", module_hint=task.module)
 
     def _remember(self, key: str) -> None:
         self._fired[key] = datetime.now().isoformat(timespec="seconds")

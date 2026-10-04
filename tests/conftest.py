@@ -73,17 +73,21 @@ class FakeClaude:
 
 
 class ShieldJev(JevClient):
-    """Jev that answers only the shield's questions (`breach` decides); routing questions fail, so Claude routes."""
+    """Jev that answers the shield's questions (`breach` decides). Routing questions fail, so Claude routes -
+    unless a test sets `routing` (Jev's answers to the router's questions)."""
 
     def __init__(self):
         super().__init__("key", "http://jev", "jev")
         self.breach = False
+        self.routing: dict | None = None
 
     async def ask(self, state, questions):
         key = next(iter(questions))
-        if key not in ("injection", "unsafe_action"):
+        if key in ("injection", "unsafe_action"):
+            return {"answers": {key: {"noul": 0.9 if self.breach else 0.1}}}
+        if self.routing is None:
             raise JevError("only the shield asks this Jev")
-        return {"answers": {key: {"noul": 0.9 if self.breach else 0.1}}}
+        return {"answers": self.routing}
 
 
 @pytest.fixture(autouse=True)

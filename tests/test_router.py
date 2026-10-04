@@ -18,8 +18,36 @@ class FakeJev(JevClient):
         self.sent = None
 
     async def ask(self, state, questions):
-        self.sent = questions
+        if not all(k[0] == "t" and k[1:].isdigit() for k in questions):   # not the per-tool call next to it
+            self.sent = questions
         return {"answers": self.answers, "usage": {"input_tokens": 300, "output_tokens": 20}}
+
+
+async def test_each_tool_is_scored_in_parallel_and_a_sure_tool_brings_its_capability(settings, brain_map):
+    import asyncio, time
+
+    class SlowJev(JevClient):
+        def __init__(self):
+            super().__init__("key", "http://jev", "jev")
+
+        async def ask(self, state, questions):
+            await asyncio.sleep(0.2)
+            if "module" in questions:
+                return {"answers": {"module": {"choice": "tasks", "confidence": 0.9, "probabilities": {"tasks": 0.9}},
+                                    "capability": {"choice": "tasks.manage", "probabilities": {"tasks.manage": 1.0}},
+                                    "multi_step": {"noul": 0.8}, "changes_existing": {"noul": 0.1}}}
+            sure = {"'task_create'": 0.93, "'routine_save'": 0.85}
+            return {"answers": {k: {"noul": next((p for name, p in sure.items() if name in q["instructions"]), 0.02)}
+                                for k, q in questions.items()}}
+
+    started = time.perf_counter()
+    route = await Router(brain_map, SlowJev(), settings).classify("dodaj zadanie i zrób z tego codzienny poranny brief")
+    assert time.perf_counter() - started < 0.35                       # two Jev calls at once, not one after another
+    assert list(route.tool_probabilities)[:2] == ["task_create", "routine_save"]
+    assert route.tool_probabilities["task_list"] == 0.02
+    assert "tasks.routines" in route.capabilities and route.multi_step == 0.8   # routine_save 85% -> its capability
+    questions, keys = Router(brain_map, SlowJev(), settings).tool_questions()
+    assert "task_update" in keys.values() and all(q["type"] == "noul" for q in questions.values())
 
 
 @pytest.fixture
@@ -45,7 +73,7 @@ def test_registry_loads_capabilities_and_skills():
 
 def test_map_relations(brain_map):
     assert brain_map.capabilities_of(["tasks"]) == ["tasks.manage", "tasks.routines", "memory.recall"]
-    assert brain_map.tools_of(["tasks.manage"]) == ["task_create", "task_list", "task_update"]
+    assert brain_map.tools_of(["tasks.manage"]) == ["task_category_add", "task_create", "task_list", "task_update"]
     assert brain_map.tools["task_create"]["server"] == "alfred"
     assert brain_map.needs_confirmation("confirm_action") is False
     assert "topic:spanish" in brain_map.topics
@@ -80,7 +108,8 @@ async def test_jev_categories_come_from_the_map(settings, brain_map):
         "needs_history": {"noul": 0.1},
     })
     route = await Router(brain_map, jev, settings).classify("zarezerwuj stolik na piątek")
-    assert set(jev.sent) == {"module", "capability", "skill", "topic", "urgency", "acts_on_world", "needs_history"}
+    assert set(jev.sent) == {"module", "capability", "skill", "topic", "urgency", "acts_on_world", "needs_history",
+                             "multi_step", "changes_existing", "task_category", "task_status"}
     assert "calendar.write" in jev.sent["capability"]["criteria"]
     assert "topic:spanish" in jev.sent["topic"]["criteria"]
     assert route.module == "bookings" and route.skill == "bookings.restaurant-table" and route.topic is None

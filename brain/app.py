@@ -10,19 +10,20 @@ import base64
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import llm, persona
 from .config import ROOT
 from .pipeline import Brain
 from .scheduler import START
+from .tools import task_category
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 brain = Brain()
@@ -68,12 +69,12 @@ async def ws(socket: WebSocket) -> None:
         while True:
             msg = await socket.receive_json()
             if msg.get("type") == "text" and msg.get("text", "").strip():
-                _in_background(brain.handle_text(msg["text"], language=msg.get("language"),
+                _in_background(brain.handle_text(msg["text"], language=msg.get("language"), interruptible=True,
                                                  mode="chat" if msg.get("mode") == "chat" else "voice"))
             elif msg.get("type") == "audio" and msg.get("b64"):
                 mime = msg.get("mime", "webm")
                 ext = "webm" if "webm" in mime else "ogg" if "ogg" in mime else "wav"
-                _in_background(brain.handle_audio(base64.b64decode(msg["b64"]), f"speech.{ext}"))
+                _in_background(brain.handle_audio(base64.b64decode(msg["b64"]), f"speech.{ext}", interruptible=True))
             elif msg.get("type") == "confirm":
                 brain.guard.resolve(bool(msg.get("approved")))
     except WebSocketDisconnect:
@@ -97,6 +98,7 @@ async def status() -> dict[str, Any]:
         "session": session and {"id": session.id, "turns": len(session.turns), "usage": session.usage,
                                 "language": session.language},
         "pending_confirmation": brain.guard.pending and brain.guard.pending["question"],
+        "task_categories": list(brain.settings.get("tasks.categories") or {}),
     }
 
 
@@ -216,6 +218,7 @@ class TaskIn(BaseModel):
     priority: str = "normal"
     module: str | None = None
     category: str | None = None
+    alfred: bool = False
 
 
 class TaskPatch(BaseModel):
@@ -224,6 +227,8 @@ class TaskPatch(BaseModel):
     due: str | None = None
     schedule: str | None = None
     category: str | None = None
+    goal: str | None = None
+    alfred: bool | None = None
 
 
 @app.get("/api/tasks")
@@ -234,7 +239,7 @@ async def tasks(status: str = "open") -> list[dict[str, Any]]:
 @app.post("/api/tasks")
 async def create_task(body: TaskIn) -> dict[str, Any]:
     task = brain.store.create_task(body.title, body.description, body.due, body.schedule, body.module, body.priority,
-                                   category=body.category)
+                                   category=_category(body.category), alfred=body.alfred)
     if brain.proactive.scheduler.running:
         brain.proactive.sync_recurring()
     return task.to_dict()
@@ -244,21 +249,63 @@ async def create_task(body: TaskIn) -> dict[str, Any]:
 async def patch_task(task_id: str, body: TaskPatch) -> dict[str, Any]:
     try:
         return brain.store.update_task(task_id, body.status, body.note, body.due, schedule=body.schedule,
-                                       category=body.category).to_dict()
+                                       category=_category(body.category), goal=body.goal,
+                                       alfred=body.alfred).to_dict()
     except KeyError:
         raise _not_found("task") from None
 
 
+def _category(value: str | None) -> str | None:
+    """Only the fixed categories (tasks.categories); "smart meet" -> "SmartMeet"."""
+    try:
+        return task_category(value, brain.settings.get("tasks.categories") or {})
+    except ValueError:
+        raise HTTPException(400, f"Nie ma kategorii „{value}”. Kategorie: "
+                                 f"{', '.join(brain.settings.get('tasks.categories') or {})}") from None
+
+
+class GoalsIn(BaseModel):
+    goals: str = ""
+    resolutions: str = ""
+
+
+@app.get("/api/goals")
+async def get_goals() -> dict[str, str]:
+    return brain.store.goals()
+
+
+@app.put("/api/goals")
+async def put_goals(body: GoalsIn) -> dict[str, str]:
+    """The Cele tab. Alfred reads them in every task request and asks how a task serves them when it is unclear."""
+    brain.store.save_goals(body.goals, body.resolutions)
+    return brain.store.goals()
+
+
+class CategoryIn(BaseModel):
+    name: str
+    description: str = ""
+
+
+@app.post("/api/task-categories")
+async def add_task_category(body: CategoryIn) -> list[str]:
+    """You add a category yourself (Ustawienia) - Alfred can only ask for one (task_category_add)."""
+    name = " ".join(body.name.split())
+    if name:
+        brain.settings.update({"tasks": {"categories": {name: body.description.strip() or name}}})
+    return list(brain.settings.get("tasks.categories") or {})
+
+
 @app.get("/api/calendar")
 async def calendar(start: str, end: str) -> dict[str, Any]:
-    """This week's Google Calendar events, read through the google-calendar MCP server."""
+    """Google Calendar events between start and end (a day up to a year), read through the google-calendar MCP
+    server - in full, not cut to Claude's size."""
     server = brain.hub.servers.get("google-calendar")
     if not server or server.status != "ready":
         return {"status": server.status if server else "missing", "error": server and server.error, "events": []}
     try:
         text, is_error = await brain.hub.call("google-calendar__list-events", {
             "calendarId": "primary", "timeMin": start, "timeMax": end,
-            "timeZone": brain.settings.get("assistant.timezone", "Europe/Warsaw")})
+            "timeZone": brain.settings.get("assistant.timezone", "Europe/Warsaw")}, limit=None)
         events = None if is_error else json.loads(text)["events"]
     except Exception as exc:
         text, events = f"{type(exc).__name__}: {exc}", None
@@ -266,6 +313,40 @@ async def calendar(start: str, end: str) -> dict[str, Any]:
         return {"status": "error", "error": text[:300], "events": []}
     brain.bus.emit("calendar_sync", "mcp:google-calendar", events=len(events))
     return {"status": "ready", "error": None, "events": events}
+
+
+PERIODS = {"day": "Dzień", "month": "Miesiąc", "quarter": "Kwartał", "year": "Rok"}
+
+
+def period_range(period: str, offset: int = 0, now: datetime | None = None) -> tuple[datetime, datetime]:
+    """The day / month / quarter / year containing now, moved by `offset` periods (-1 = the previous one)."""
+    now = (now or datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+    if period == "day":
+        start = now + timedelta(days=offset)
+        return start.astimezone(), (start + timedelta(days=1)).astimezone()
+    months = {"month": 1, "quarter": 3, "year": 12}[period]
+    first = (now.month - 1) // months * months + offset * months          # months since January of this year
+    start = datetime(now.year + first // 12, first % 12 + 1, 1)
+    after = start.month - 1 + months
+    return start.astimezone(), datetime(start.year + after // 12, after % 12 + 1, 1).astimezone()
+
+
+@app.get("/api/summary")
+async def summary(period: str = "day", offset: int = 0) -> dict[str, Any]:
+    """Podsumowanie of a day, month, quarter or year: tasks, calendar, sessions and what they cost."""
+    if period not in PERIODS:
+        raise HTTPException(400, f"period: {', '.join(PERIODS)}")
+    start, end = period_range(period, offset)
+    out = brain.store.summary(start, end)
+    session = brain.sessions.current               # not saved yet - counts in the period it is happening in
+    if session and start <= datetime.now().astimezone() < end:
+        for k, v in session.usage.items():
+            if k in out["cost"] and isinstance(v, (int, float)):
+                out["cost"][k] += v
+        out["sessions"]["turns"] += len(session.turns)
+    cal = await calendar(f"{start:%Y-%m-%dT%H:%M:%S}", f"{end:%Y-%m-%dT%H:%M:%S}")
+    return out | {"period": period, "offset": offset, "start": start.isoformat(), "end": end.isoformat(),
+                  "events": len(cal["events"]) if cal["status"] == "ready" else None}
 
 
 @app.get("/api/routines")
@@ -294,6 +375,98 @@ async def routines() -> list[dict[str, Any]]:
                     "answer": error or answer, "due_today": bool(first_today and first_today <= now),
                     "next_run": next_run and next_run.isoformat()})
     return out
+
+
+class RoutineIn(BaseModel):
+    id: str
+    schedule: str
+    prompt: str
+    module: str | None = None
+
+
+async def _routine(tool: str, args: dict[str, Any]) -> str:
+    """The same code as Alfred's routine_save / routine_delete tools; their errors become a 400 for the UI."""
+    try:
+        done = await brain.executor.handlers[tool](args, None)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc).strip("'\"")) from None
+    if brain.proactive.scheduler.running:
+        brain.proactive.sync_recurring()
+    return done
+
+
+@app.post("/api/routines")
+async def save_routine(body: RoutineIn) -> dict[str, str]:
+    """Przegląd → Rutyny: add one, or change it (same id)."""
+    return {"result": await _routine("routine_save", body.model_dump(exclude_none=True))}
+
+
+@app.delete("/api/routines/{routine_id}")
+async def delete_routine(routine_id: str) -> dict[str, str]:
+    return {"result": await _routine("routine_delete", {"id": routine_id})}
+
+
+HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
+class PlanIn(BaseModel):
+    """His productivity plan (Cele → Rutyna produktywności): the routines run at these times and read these notes."""
+    peak_start: str = Field("09:00", pattern=HHMM)      # deep work while energy is at its peak
+    peak_end: str = Field("12:00", pattern=HHMM)
+    shallow: str = Field("14:00", pattern=HHMM)         # admin in one batch when energy drops
+    weekly_day: str = Field("0", pattern=r"^[0-6]$")    # cron weekday, 0 = Sunday
+    weekly_time: str = Field("19:00", pattern=HHMM)
+    close: str = Field("18:30", pattern=HHMM)           # closing the day, rest
+    if_then: str = ""
+    triggers: str = ""
+    distractions: str = ""
+    hours_limit: int = Field(50, ge=1, le=100)
+
+
+class ProductivityIn(BaseModel):
+    enabled: bool
+    plan: PlanIn | None = None
+
+
+def _plan() -> PlanIn:
+    return PlanIn(**(brain.settings.get("productivity.plan") or {}))
+
+
+def productivity_routines(plan: PlanIn, preset: list[dict]) -> list[dict]:
+    """The preset routines (config/brain.yaml productivity) at the times of his plan, with his notes in each prompt."""
+    at = lambda hhmm, days: f"{int(hhmm[3:])} {int(hhmm[:2])} * * {days}"
+    slots = {"peak": at(plan.peak_start, "1-5"), "shallow": at(plan.shallow, "1-5"), "close": at(plan.close, "1-5"),
+             "weekly": at(plan.weekly_time, plan.weekly_day)}
+    lines = lambda text: "; ".join(l.strip(" -") for l in text.splitlines() if l.strip(" -"))
+    notes = [f"szczyt energii {plan.peak_start}-{plan.peak_end}", f"płytkie zadania od {plan.shallow}",
+             f"najwyżej {plan.hours_limit} h pracy w tygodniu"] + [
+        f"{label}: {lines(text)}" for label, text in (("jeśli-to", plan.if_then), ("wyzwalacze", plan.triggers),
+                                                      ("rozpraszacze", plan.distractions)) if lines(text)]
+    return [{**{k: v for k, v in r.items() if k != "slot"}, "schedule": slots.get(r.get("slot"), r["schedule"]),
+             "prompt": f"{r['prompt']} Mój plan: {'. '.join(notes)}."} for r in preset]
+
+
+@app.get("/api/productivity")
+async def productivity() -> dict[str, Any]:
+    """Cele → Rutyna produktywności: on while all its routines are in routines.yaml; his plan sets their times."""
+    plan = _plan()
+    built = productivity_routines(plan, brain.settings.get("productivity.routines") or [])
+    have = {r["id"] for r in brain.proactive.routines()}
+    return {"enabled": bool(built) and all(r["id"] in have for r in built), "routines": built,
+            "plan": plan.model_dump()}
+
+
+@app.put("/api/productivity")
+async def set_productivity(body: ProductivityIn) -> dict[str, Any]:
+    if body.plan:
+        brain.settings.update({"productivity": {"plan": body.plan.model_dump()}})
+    have = {r["id"] for r in brain.proactive.routines()}
+    for r in productivity_routines(_plan(), brain.settings.get("productivity.routines") or []):
+        if body.enabled:
+            await _routine("routine_save", r)      # same id: replaced with the new times and notes
+        elif r["id"] in have:
+            await _routine("routine_delete", {"id": r["id"]})
+    return await productivity()
 
 
 # ---- memory and logs ---------------------------------------------------------------------------------------------

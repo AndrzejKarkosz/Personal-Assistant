@@ -7,6 +7,7 @@ handle_text() is the whole story of one request; read it top to bottom.
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 from datetime import timedelta
 from typing import Any
@@ -47,7 +48,26 @@ class Brain:
         self.guard = Guard(self.bus)
         self.proactive = ProactiveEngine(self, s.path("memory.dir").parent / "proactive_state.json")
         self.executor = Executor(s, self.registry, self.map, self.hub, self.store, self.guard, self.bus,
-                                 tts=self.voice, shield=self.router.check_action, routines=self.proactive.routines)
+                                 tts=self.voice, shield=self.router.check_action, routines=self.proactive.routines,
+                                 classify_tasks=self.router.classify_tasks)
+        self._carry: dict[str, float] = {}   # spent before a session existed (speech-to-text, a proactive check)
+        self._live: tuple[asyncio.Task, str, str] | None = None   # the user's request in progress: task, text, id
+        self.router.on_usage = lambda u: self._spend(jev_in=u["input"], jev_out=u["output"])
+        self.voice.on_usage = self._spend
+
+    def _spend(self, jev_in: int = 0, jev_out: int = 0, tts_chars: int = 0, stt_s: float = 0) -> None:
+        """Bills Jev and ElevenLabs to the session, priced by `prices` in brain.yaml. Claude is billed from its own
+        result (cost_usd; on the subscription that is the API-equivalent, not a charge)."""
+        p = self.settings.get("prices") or {}
+        used = {"jev": jev_in + jev_out, "jev_usd": jev_in * float(p.get("jev_input_per_mtok", 0)) / 1e6,
+                "tts_chars": tts_chars, "stt_s": stt_s,
+                "elevenlabs_usd": tts_chars / 1000 * float(p.get("elevenlabs_tts_per_1k_chars", 0))
+                + stt_s / 3600 * float(p.get("elevenlabs_stt_per_hour", 0))}
+        if self.sessions.current:
+            self.sessions.current.add_usage(used)
+        else:
+            for k, v in used.items():
+                self._carry[k] = self._carry.get(k, 0) + v
 
     async def start(self, with_scheduler: bool = True) -> None:
         self.bus.emit("brain_start", "brain", keys=self.settings.keys())
@@ -73,7 +93,7 @@ class Brain:
 
     # ---- one request ------------------------------------------------------------------------------------------
 
-    async def handle_audio(self, audio: bytes, filename: str = "speech.webm") -> str | None:
+    async def handle_audio(self, audio: bytes, filename: str = "speech.webm", interruptible: bool = False) -> str | None:
         request_id = new_id("r-")
         self.bus.emit("listening", "ears", request_id, bytes=len(audio))
         try:
@@ -84,11 +104,14 @@ class Brain:
         if not heard or not heard.text:
             self.bus.emit("error", "ears", request_id, message="Nothing was transcribed.")
             return None
-        return await self.handle_text(heard.text, language=heard.language, request_id=request_id)
+        return await self.handle_text(heard.text, language=heard.language, request_id=request_id,
+                                      interruptible=interruptible)
 
     async def handle_text(self, text: str, language: str | None = None, source: str = "user",
-                          request_id: str | None = None, module_hint: str | None = None, mode: str = "voice") -> str:
-        """source: user | routine | proactive.  mode: "voice" (short spoken answer) or "chat" (long, written)."""
+                          request_id: str | None = None, module_hint: str | None = None, mode: str = "voice",
+                          interruptible: bool = False) -> str:
+        """source: user | routine | proactive.  mode: "voice" (short spoken answer) or "chat" (long, written).
+        interruptible (what you say or type live): more words before the answer join the request in progress."""
         request_id, text, chat, from_user = request_id or new_id("r-"), text.strip(), mode == "chat", source == "user"
 
         # 1. Alfred is waiting for a yes/no? Then this is the answer, not a new request.
@@ -99,21 +122,39 @@ class Brain:
                 self.guard.resolve(approved)
                 return ""
 
+        # 1b. He added something before Alfred answered: drop the request in progress, handle both as one.
+        #     Not once it has changed something (a task, an event) - that cannot be dropped; then this is a new request.
+        merged = False
+        if interruptible:
+            me = asyncio.current_task()
+            if self._live and self._live[0] is not me and not self._live[0].done() and not self.guard.pending \
+                    and self._live[2] not in self.executor.acted:
+                self._live[0].cancel()
+                text, merged = f"{self._live[1]}\n{text}", True
+            self._live = (me, text, request_id)
+
         # 2. Session and language.
         session = await self.sessions.get()
+        session.add_usage(self._carry)
+        self._carry.clear()
         if from_user:
             spoken = language if language in ("pl", "en") else persona.detect_language(
                 text, session.language or self.settings.get("assistant.default_language", "pl"))
             session.language = self.settings.get("assistant.reply_language") or spoken
         lang = session.language
-        self.bus.emit("transcript", "ears", request_id, session.id, text=text, language=lang, source=source, mode=mode)
+        self.bus.emit("transcript", "ears", request_id, session.id, text=text, language=lang, source=source, mode=mode,
+                      merged=merged)
         idle = self.proactive.idle()
         self.proactive.touch()
 
-        # 3. Shield (Jev only): nothing goes anywhere until it passes. Jev down -> do nothing at all.
+        # 3. Shield and routing ask Jev at the same time (the routing only classifies - it acts on nothing), so the
+        #    plan for Claude is ready the moment the shield passes. Breach or Jev down -> routing cancelled, no action.
+        routing = asyncio.create_task(self._route(text, session, module_hint))
         if from_user:
             verdict = await self.router.is_injection(text, session.recent_text(4))
             self.bus.emit("shield", "shield", request_id, session.id, **verdict)
+            if verdict["source"] == "closed" or verdict["breach"]:
+                routing.cancel()
             if verdict["source"] == "closed":
                 self.bus.emit("error", "shield", request_id, session.id,
                               message="Jev nie odpowiada - tarcza nie sprawdziła prośby, nic nie zrobiłem.")
@@ -126,14 +167,16 @@ class Brain:
             if idle and idle >= away and not chat:
                 await self.welcome_back(lang, request_id, session.id)
 
-        # 4. Route: which module and tools.
-        route = await self._route(text, session, module_hint)
+        # 4. Route: which module, capabilities, tools (each one scored by Jev) and signals.
+        route = await routing
         router_tokens = int(route.usage.get("input") or 0) + int(route.usage.get("output") or 0)
-        session.add_usage({"jev": router_tokens})
+        if route.source == "llm":   # Jev was down and Claude routed: those are Claude tokens (Jev bills itself)
+            session.add_usage({"input": route.usage.get("input") or 0, "output": route.usage.get("output") or 0})
         self.bus.emit("classified", "router", request_id, session.id, **route.to_dict())
 
         # 5. Claude does the work.
         result = await self.executor.run(CHAT_NOTE + text if chat else text, route, session, request_id)
+        self.executor.acted.discard(request_id)
 
         # 6. Remember, speak, report.
         session.add("user", text if from_user else f"(proactive) {text[:200]}", route.module)

@@ -14,16 +14,18 @@ from __future__ import annotations
 
 import re
 import threading
+from collections import Counter
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from . import llm, okf
 from .events import new_id, now_iso
 
-TASK_STATUSES = ("todo", "in_progress", "waiting", "done", "cancelled")
-OPEN_STATUSES = ("todo", "in_progress", "waiting")
+TASK_STATUSES = ("todo", "in_progress", "done", "cancelled")   # do zrobienia, w toku, zrobione, anulowane
+OPEN_STATUSES = ("todo", "in_progress")
+OLD_STATUSES = {"waiting": "in_progress"}                      # statuses that no longer exist, read as their successor
 FACT_CATEGORIES = ("people", "places", "preferences", "projects", "other")
 
 
@@ -47,9 +49,14 @@ class Task:
     module: str | None = None       # module that handles it when it fires
     priority: str = "normal"
     category: str | None = None     # the user's own grouping, e.g. "Dom"
+    goal: str | None = None         # how it brings him closer to one of his goals (goals.md), in his words
+    alfred: bool = False            # on Alfred's board: reminders and things Alfred does himself at a time
     created: str = field(default_factory=now_iso)
     updated: str = field(default_factory=now_iso)
     history: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.alfred = self.alfred or self.title.casefold().startswith("przypomn")   # reminders are always Alfred's
 
     @property
     def is_open(self) -> bool:
@@ -97,7 +104,7 @@ class MemoryStore:
     def _save_task(self, t: Task) -> None:
         meta = {"type": "Task", "title": t.title, "description": t.description[:200], "status": t.status,
                 "priority": t.priority, "due": t.due, "schedule": t.schedule, "module": t.module,
-                "category": t.category, "created": t.created, "timestamp": t.updated,
+                "category": t.category, "goal": t.goal, "alfred": t.alfred, "created": t.created, "timestamp": t.updated,
                 "tags": ["task", t.status] + [x for x in (t.module, t.category) if x]}
         history = "\n".join(f"- {h}" for h in t.history)
         okf.write(self._task_file(t.id), meta, f"# {t.title}\n\n{t.description}\n\n## History\n{history}")
@@ -108,15 +115,16 @@ class MemoryStore:
             return None
         meta, body = okf.read(path)
         text, _, history = body.partition("## History")
-        return Task(id=path.stem, title=meta.get("title", path.stem), status=meta.get("status", "todo"),
+        status = meta.get("status", "todo")
+        return Task(id=path.stem, title=meta.get("title", path.stem), status=OLD_STATUSES.get(status, status),
                     description=re.sub(r"^# .*\n", "", text).strip(), due=meta.get("due"),
                     schedule=meta.get("schedule"), module=meta.get("module"), priority=meta.get("priority", "normal"),
-                    category=meta.get("category"), created=str(meta.get("created", "")),
+                    category=meta.get("category"), goal=meta.get("goal"), alfred=bool(meta.get("alfred")), created=str(meta.get("created", "")),
                     updated=str(meta.get("timestamp", "")),
                     history=[l[2:] for l in history.splitlines() if l.startswith("- ")])
 
     def list_tasks(self, status: str | None = "open") -> list[Task]:
-        """status: "open" (todo/in_progress/waiting), "all", or one status. Soonest due first, then priority."""
+        """status: "open" (todo/in_progress), "all", or one status. Soonest due first, then priority."""
         tasks = [self.get_task(p.stem) for p in sorted((self.root / "tasks").glob("*.md"))]
         if status == "open":
             tasks = [t for t in tasks if t.is_open]
@@ -126,20 +134,25 @@ class MemoryStore:
         rank = {"high": 0, "normal": 1, "low": 2}
         return sorted(tasks, key=lambda t: (parse_time(t.due) or never, rank.get(t.priority, 1)))
 
-    def due_tasks(self) -> list[Task]:
-        now = datetime.now().astimezone()
-        return [t for t in self.list_tasks("open") if (due := parse_time(t.due)) and due <= now]
+    def due_tasks(self, within: timedelta = timedelta(0)) -> list[Task]:
+        """Open tasks due by now (+ `within`, for reminders ahead of time)."""
+        limit = datetime.now().astimezone() + within
+        return [t for t in self.list_tasks("open") if (due := parse_time(t.due)) and due <= limit]
 
     def create_task(self, title: str, description: str = "", due: str | None = None, schedule: str | None = None,
                     module: str | None = None, priority: str = "normal", session_id: str | None = None,
-                    category: str | None = None) -> Task:
+                    category: str | None = None, status: str = "todo", goal: str | None = None,
+                    alfred: bool = False) -> Task:
+        if status not in TASK_STATUSES:
+            raise ValueError(f"status must be one of {TASK_STATUSES}")
         with self._lock:
             task_id = base = f"{datetime.now():%Y%m%d}-{okf.slugify(title, 32)}"
             n = 2
             while self._task_file(task_id).exists():
                 task_id, n = f"{base}-{n}", n + 1
             task = Task(task_id, title, description=description, due=due, schedule=schedule, module=module,
-                        priority=priority, category=category or None)
+                        priority=priority, category=category or None, status=status, goal=goal or None,
+                        alfred=alfred)
             task.history.append(f"{task.created} created")
             self._save_task(task)
             self.log("task.created", f"[{title}](tasks/{task_id}.md)" + (f" due {due}" if due else ""), session_id)
@@ -148,8 +161,8 @@ class MemoryStore:
 
     def update_task(self, task_id: str, status: str | None = None, note: str | None = None, due: str | None = None,
                     title: str | None = None, schedule: str | None = None, session_id: str | None = None,
-                    category: str | None = None) -> Task:
-        """Only the given fields change. An empty string clears due / schedule / category."""
+                    category: str | None = None, goal: str | None = None, alfred: bool | None = None) -> Task:
+        """Only the given fields change. An empty string clears due / schedule / category / goal."""
         with self._lock:
             task = self.get_task(task_id)
             if task is None:
@@ -160,10 +173,13 @@ class MemoryStore:
             if status and status != task.status:
                 changes.append(f"status {task.status} -> {status}")
                 task.status = status
-            for name, value in (("due", due), ("schedule", schedule), ("category", category)):
+            for name, value in (("due", due), ("schedule", schedule), ("category", category), ("goal", goal)):
                 if value is not None and (value or None) != getattr(task, name):
                     changes.append(f"{name} -> {value or 'none'}")
                     setattr(task, name, value or None)
+            if alfred is not None and alfred != task.alfred:
+                changes.append("moved to Alfred's board" if alfred else "moved to the user's board")
+                task.alfred = alfred
             if title and title != task.title:
                 changes.append(f"renamed to {title}")
                 task.title = title
@@ -177,6 +193,70 @@ class MemoryStore:
             self.log("task.updated", f"[{task.title}](tasks/{task_id}.md): " + "; ".join(changes), session_id)
             self.rebuild_index()
             return task
+
+    def roll_over(self, today: date | None = None) -> list[Task]:
+        """Not done by the end of its day -> moved to today, same hour. Only open one-off tasks (a cron task
+        comes back by itself). Returns the moved tasks."""
+        today = today or datetime.now().astimezone().date()
+        moved = []
+        for t in self.list_tasks("open"):
+            due = parse_time(t.due)
+            if due and not t.schedule and (old := due.astimezone()).date() < today:
+                new = datetime.combine(today, old.time()).astimezone()     # local hour, right offset after DST
+                moved.append(self.update_task(t.id, due=new.isoformat(timespec="seconds"), session_id="rollover",
+                                              note=f"niezrobione {old:%Y-%m-%d} - przeniesione na {today:%Y-%m-%d}"))
+        return moved
+
+    # ---- summary of a period ----------------------------------------------------------------------------------
+
+    def summary(self, start: datetime, end: datetime) -> dict[str, Any]:
+        """What happened between start and end, read from the tasks' history and the saved sessions."""
+        inside = lambda when: when is not None and start <= when < end
+        stamp = lambda line: parse_time(line.split(" ", 1)[0])
+        tasks = self.list_tasks("all")
+        changed_to = lambda status: [t for t in tasks if any(inside(stamp(h)) and f"-> {status}" in h for h in t.history)]
+        done = changed_to("done")
+        cost = {"cost_usd": 0.0, "jev_usd": 0.0, "elevenlabs_usd": 0.0, "input": 0, "output": 0, "cache_read": 0,
+                "cache_write": 0, "jev": 0, "tts_chars": 0, "stt_s": 0.0}
+        sessions = [m for m, _ in (okf.read(p) for p in (self.root / "sessions").rglob("*.md"))
+                    if inside(parse_time(m.get("ended")))]
+        for m in sessions:
+            for k, v in (m.get("tokens") or {}).items():
+                if k in cost and isinstance(v, (int, float)):
+                    cost[k] += v
+        return {
+            "tasks": {"created": sum(inside(parse_time(t.created)) for t in tasks), "done": len(done),
+                      "cancelled": len(changed_to("cancelled")),
+                      "planned": sum(inside(parse_time(t.due)) for t in tasks),
+                      "rolled": sum(inside(stamp(h)) and "przeniesione na" in h for t in tasks for h in t.history),
+                      "done_by_category": dict(Counter(t.category or "bez kategorii" for t in done).most_common()),
+                      "done_titles": [t.title for t in done][:8]},
+            "sessions": {"count": len(sessions), "turns": sum(int(m.get("turns") or 0) for m in sessions)},
+            "cost": cost,
+        }
+
+    # ---- goals and resolutions --------------------------------------------------------------------------------
+
+    def goals(self) -> dict[str, str]:
+        """{"goals": ..., "resolutions": ...} - what he wrote in the Cele tab (goals.md), free Markdown each."""
+        path = self.root / "goals.md"
+        body = okf.read(path)[1] if path.exists() else ""
+        parts = re.split(r"^## (Cele|Postanowienia)\s*$", body, flags=re.M)
+        found = dict(zip(parts[1::2], (p.strip() for p in parts[2::2])))
+        return {"goals": found.get("Cele", ""), "resolutions": found.get("Postanowienia", "")}
+
+    def goals_text(self, limit: int = 1500) -> str:
+        """Goals + resolutions for Claude's prompt ("" when he has written none)."""
+        g = self.goals()
+        parts = [f"His goals:\n{g['goals']}" if g["goals"] else "", f"His resolutions:\n{g['resolutions']}"
+                 if g["resolutions"] else ""]
+        return "\n\n".join(p for p in parts if p)[:limit]
+
+    def save_goals(self, goals: str, resolutions: str) -> None:
+        okf.write(self.root / "goals.md", {"type": "Goals", "title": "Cele i postanowienia", "timestamp": now_iso(),
+                                           "description": "What he is working towards - tasks should serve it."},
+                  f"# Cele i postanowienia\n\n## Cele\n\n{goals.strip()}\n\n## Postanowienia\n\n{resolutions.strip()}")
+        self.log("goals.updated", "[Cele i postanowienia](goals.md)")
 
     # ---- facts and sessions -----------------------------------------------------------------------------------
 
@@ -245,6 +325,8 @@ class MemoryStore:
         profile = okf.read(self.root / "profile.md")[1].strip()
         if len(profile) > 40:
             out.append("Profile:\n" + profile[:1200])
+        if goals := self.goals_text():
+            out.append(goals)
         lines = []
         for t in self.list_tasks("open")[:15]:
             overdue = " OVERDUE" if (due := parse_time(t.due)) and due < now else ""
@@ -269,7 +351,8 @@ class MemoryStore:
                         for m, _ in self.recent_sessions(10)]
             body = ["# Alfred's memory", "", "Start here, then open a task, session or fact page.", "",
                     "## Open tasks", *(tasks or ["- none"]), "", "## Recent sessions", *(sessions or ["- none yet"]),
-                    "", "## Sections", "- [profile](profile.md)", "- [change log](log.md)",
+                    "", "## Sections", "- [profile](profile.md)", "- [goals and resolutions](goals.md)",
+                    "- [change log](log.md)",
                     "- tasks/, sessions/YYYY/MM/, facts/<category>/"]
             okf.write(self.root / "index.md", {"type": "Index", "title": "Alfred's memory", "timestamp": now_iso(),
                                                "description": "Brain session memory: tasks, sessions, facts."},

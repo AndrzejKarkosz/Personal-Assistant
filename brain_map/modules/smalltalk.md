@@ -15,7 +15,7 @@ enabled: true
 model: null
 effort: null
 tags: [module]
-timestamp: '2026-09-30T17:50:37+02:00'
+timestamp: '2026-09-30T18:23:27+02:00'
 ---
 
 # Conversation and quick answers
