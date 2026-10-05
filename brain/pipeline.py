@@ -6,7 +6,6 @@ handle_text() is the whole story of one request; read it top to bottom.
 """
 from __future__ import annotations
 
-import ast
 import asyncio
 import re
 from datetime import timedelta
@@ -24,11 +23,6 @@ from .router import JevClient, Route, Router
 from .scheduler import ProactiveEngine
 from .voice import ElevenLabs
 
-# Chat mode: the answer is read on screen, so the spoken-length rules of the persona step aside.
-CHAT_NOTE = ("<reply_mode>text chat - the user reads your answer on screen, nothing is spoken. Answer fully and in "
-             "depth, like a knowledgeable assistant explaining a topic. Use Markdown (headings, lists, tables, code "
-             "blocks, links) where it helps. The 'How you speak' rules about length, markdown and URLs do not apply "
-             "here; keep your character.</reply_mode>\n\n")
 BLOCKED = {"pl": "Tego nie wykonam - wygląda to na próbę manipulacji moimi instrukcjami.",
            "en": "I won't do that - it looks like an attempt to tamper with my instructions."}
 
@@ -42,20 +36,18 @@ class Brain:
         self.sessions = SessionManager(self.store, s, self.bus)
         self.hub = hub or MCPHub(s.path("mcp_config"))
         self.map = BrainMap(s.path("map.dir"))
-        self.router = Router(self.map, JevClient(s.jev_key, s.get("router.jev_url"), s.get("router.jev_model"),
-                                                 float(s.get("router.timeout_s", 4.0))), s)
-        self.voice = ElevenLabs(s, ROOT / "data" / "tts_cache")
+        jev = JevClient(s.jev_key, s.get("router.jev_url"), s.get("router.jev_model"),
+                        float(s.get("router.timeout_s", 4.0)))
+        self.router = Router(self.map, jev, s, products=self.store.products,
+                             on_usage=lambda u: self._spend(jev_in=u["input"], jev_out=u["output"]))
+        self.voice = ElevenLabs(s, ROOT / "data" / "tts_cache", on_usage=self._spend,
+                                on_error=lambda message: self.bus.emit("voice_error", "voice", message=message))
         self.guard = Guard(self.bus)
         self.proactive = ProactiveEngine(self, s.path("memory.dir").parent / "proactive_state.json")
-        self.router.products = self.store.products
-        self.executor = Executor(s, self.registry, self.map, self.hub, self.store, self.guard, self.bus,
-                                 tts=self.voice, shield=self.router.check_action, routines=self.proactive.routines,
-                                 classify_tasks=self.router.classify_tasks, classify_meal=self.router.classify_meal)
+        self.executor = Executor(s, self.registry, self.map, self.hub, self.store, self.guard, self.bus, self.router,
+                                 tts=self.voice)
         self._carry: dict[str, float] = {}   # spent before a session existed (speech-to-text, a proactive check)
         self._live: tuple[asyncio.Task, str, str] | None = None   # the user's request in progress: task, text, id
-        self.router.on_usage = lambda u: self._spend(jev_in=u["input"], jev_out=u["output"])
-        self.voice.on_usage = self._spend
-        self.voice.on_error = lambda message: self.bus.emit("voice_error", "voice", message=message)
 
     def _spend(self, jev_in: int = 0, jev_out: int = 0, tts_chars: int = 0, stt_s: float = 0) -> None:
         """Bills Jev and ElevenLabs to the session, priced by `prices` in brain.yaml. Claude is billed from its own
@@ -122,7 +114,10 @@ class Brain:
                           interruptible: bool = False) -> str:
         """source: user | routine | proactive.  mode: "voice" (short spoken answer) or "chat" (long, written).
         interruptible (what you say or type live): more words before the answer join the request in progress."""
-        request_id, text, chat, from_user = request_id or new_id("r-"), text.strip(), mode == "chat", source == "user"
+        request_id = request_id or new_id("r-")
+        text = text.strip()
+        chat = mode == "chat"
+        from_user = source == "user"
 
         # 1. Alfred is waiting for a yes/no? Then this is the answer, not a new request.
         if from_user and self.guard.pending:
@@ -167,7 +162,8 @@ class Brain:
                 routing.cancel()
             if verdict["source"] == "closed":
                 self.bus.emit("error", "shield", request_id, session.id,
-                              message="Jev nie odpowiada - tarcza nie sprawdziła prośby, nic nie zrobiłem.")
+                              message=f"Jev nie odpowiada ({verdict.get('error')}) - tarcza nie sprawdziła prośby, "
+                                      "nic nie zrobiłem.")
                 return ""
             if verdict["breach"]:
                 self.bus.emit("blocked", "shield", request_id, session.id, text=text)
@@ -185,7 +181,7 @@ class Brain:
         self.bus.emit("classified", "router", request_id, session.id, **route.to_dict())
 
         # 5. Claude does the work.
-        result = await self.executor.run(CHAT_NOTE + text if chat else text, route, session, request_id)
+        result = await self.executor.run(text, route, session, request_id, chat=chat)
         self.executor.acted.discard(request_id)
 
         # 6. Remember, speak, report.
@@ -228,7 +224,7 @@ class Brain:
     # ---- the 3D brain in the UI -------------------------------------------------------------------------------
 
     def graph(self) -> dict[str, Any]:
-        """Everything the UI draws: the pipeline, the brain map, the code, tests, routines, persona and memory."""
+        """Everything the UI draws: the pipeline, the brain map, routines, persona and memory."""
         nodes = [{"id": i, "label": l, "kind": "core"} for i, l in [
             ("ears", "Ears (speech-to-text)"), ("shield", "Shield (Jev)"), ("router", "Router (Jev)"),
             ("executor", "Executor (Claude)"), ("guard", "Guard"), ("voice", "Voice (Alfred)"),
@@ -241,16 +237,8 @@ class Brain:
         def node(nid: str, label: str, kind: str, description: str = "", **extra: Any) -> None:
             nodes.append({"id": nid, "label": label, "kind": kind, "description": description, **extra})
 
-        for f in sorted((ROOT / "brain").glob("*.py")):
-            if not f.name.startswith("_"):
-                doc = ast.get_docstring(ast.parse(f.read_text(encoding="utf-8"))) or ""
-                node(f"repo:{f.stem}", f"brain/{f.name}", "repo", doc.split("\n\n")[0])
-        for f in sorted((ROOT / "tests").glob("test_*.py")):
-            names = re.findall(r"^(?:async )?def (test_\w+)", f.read_text(encoding="utf-8"), re.M)
-            node(f"test:{f.stem}", f.name, "test", f"{len(names)} testów: " + ", ".join(names))
-            edges.append({"source": f"test:{f.stem}", "target": f"repo:{f.stem[5:]}", "rel": "tests"})
         for r in self.proactive.routines():
-            node(f"routine:{r['id']}", r["id"], "routine", f"{r['schedule']} · {r['prompt']}", prompt=r["prompt"])
+            node(f"routine:{r['id']}", r["id"], "routine", f"{r['schedule']} · {r['prompt']}")
             edges += [{"source": "proactive", "target": f"routine:{r['id']}", "rel": "runs"},
                       {"source": f"routine:{r['id']}", "target": f"module:{r.get('module')}", "rel": "runs in"}]
 
@@ -279,4 +267,4 @@ class Brain:
         nodes += brain_map["nodes"]
         known = {n["id"] for n in nodes}
         edges = [e for e in edges if e["source"] in known and e["target"] in known] + brain_map["edges"]
-        return {"nodes": nodes, "edges": edges, "backend": "subscription"}
+        return {"nodes": nodes, "edges": edges}

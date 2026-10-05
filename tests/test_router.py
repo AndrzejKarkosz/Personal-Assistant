@@ -67,7 +67,7 @@ def test_registry_loads_capabilities_and_skills():
     reg = ModuleRegistry(ROOT / "modules")
     assert {"calendar", "knowledge", "tasks", "bookings", "smalltalk"} <= set(reg.modules)
     assert reg.skill("bookings.restaurant-table").uses[0] == "memory.recall"
-    assert not reg.capability("calendar.write").confirm          # calendar changes go through without a yes
+    assert reg.modules["calendar"].capabilities["calendar.write"].confirm is False   # calendar changes: no yes
     assert "tasks.manage" in reg.modules["calendar"].uses
 
 
@@ -126,9 +126,11 @@ async def test_close_call_loads_second_module(settings, brain_map):
     assert route.modules == ["bookings", "calendar"] and not route.clarify
 
 
-async def test_rules_fallback_without_keys(settings, brain_map):
+async def test_nobody_routes_without_jev_and_claude(settings, brain_map):
     route = await Router(brain_map, JevClient(None, "", ""), settings).classify("przypomnij mi jutro żeby zadzwonić")
-    assert route.source == "rules" and route.module == "tasks" and route.forced == ["tasks.manage"]
+    assert (route.source, route.module, route.clarify) == ("none", "smalltalk", True)    # Alfred asks what he means
+    assert route.forced == ["tasks.manage"] and "tasks" in route.modules                # named outright: still given
+    assert route.error.startswith("Claude: RuntimeError")
 
 
 async def test_named_capabilities_are_always_given(settings, brain_map):
@@ -182,6 +184,7 @@ async def test_malformed_jev_answer_falls_back_to_claude(settings, brain_map, cl
     claude.online = True
     route = await Router(brain_map, FakeJev({"module": {}}), settings).classify("przypomnij mi")
     assert route.source == "llm" and route.module == "tasks" and route.capabilities == ["tasks.manage"]
+    assert route.error.startswith("Jev: JevError: Malformed Jev answers")             # the log says why
 
 
 async def test_unclear_yes_no_goes_to_jev(settings, brain_map):
@@ -197,7 +200,7 @@ async def test_unclear_yes_no_goes_to_jev(settings, brain_map):
 async def test_unknown_module_goes_to_smalltalk_and_asks(settings, brain_map):
     jev = FakeJev({"module": {"choice": "ghost", "confidence": 0.2, "probabilities": {"ghost": 0.2}}})
     route = await Router(brain_map, jev, settings).classify("???")
-    assert route.module == "smalltalk" and route.clarify and route.capabilities == []
+    assert route.module == "smalltalk" and route.clarify and route.capabilities == ["smalltalk.chat"]
 
 
 def test_side_effects_of_tools():
@@ -207,19 +210,31 @@ def test_side_effects_of_tools():
     assert side_effect("x__create_note") == "write" and side_effect("x__list_notes") == "read"
 
 
-def test_map_overrides_disabled_modules_and_page_sandbox(tmp_path, brain_map):
-    root = tmp_path / "map"
-    for rel, key, value in (("tools/alfred/task-create.md", "confirm_override", True),
-                            ("modules/research.md", "enabled", False)):
-        meta, body = okf.read(root / rel)
-        meta[key] = value
-        okf.write(root / rel, meta, body)
+def test_disabled_modules_and_page_sandbox(tmp_path, brain_map):
+    page = tmp_path / "map" / "modules" / "research.md"
+    meta, body = okf.read(page)
+    okf.write(page, meta | {"enabled": False}, body)
     brain_map.reload()
-    assert brain_map.needs_confirmation("task_create")
     assert "research" not in brain_map.module_criteria() and "research.web" not in brain_map.capability_criteria()
     assert brain_map.page("index.md").startswith("---")
     with pytest.raises(ValueError):
         brain_map.page("../mcp.json")
+
+
+def test_module_yaml_decides_what_needs_a_yes(tmp_path):
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"google-calendar": {"command": "calendar-server"}}}))
+    hub = MCPHub(cfg)
+    calendar = hub.servers["google-calendar"]
+    names = ["google-calendar__delete-event", "google-calendar__manage-accounts"]
+    calendar.status, calendar.tools = "ready", [{"name": n, "description": n, "input_schema": {}} for n in names]
+    calendar.hints = {n: {"destructive": True} for n in names}
+    build_map(tmp_path / "map", ModuleRegistry(ROOT / "modules"), hub)
+    m = BrainMap(tmp_path / "map")
+    assert m.tools["google-calendar__delete-event"]["side_effect"] == "destructive"
+    assert not m.needs_confirmation("google-calendar__delete-event")    # calendar.write says confirm: false
+    assert m.needs_confirmation("google-calendar__manage-accounts")     # no capability says anything: destructive
+    assert m.needs_confirmation("training_plan_update")                 # training.plan says confirm: true
 
 
 def test_tools_of_an_offline_server_stay_on_the_map(tmp_path):
@@ -251,4 +266,5 @@ async def test_shield_asks_jev_and_fails_closed(brain_map, settings):
     assert (await Router(brain_map, jev, settings).is_injection("kup mleko"))["breach"] is False
     jev.answers = {}
     assert await Router(brain_map, jev, settings).is_injection("kup mleko") == {
-        "breach": True, "probability": None, "source": "closed", "tokens": 0, "ms": pytest.approx(0, abs=50)}
+        "breach": True, "probability": None, "source": "closed", "tokens": 0, "error": "KeyError: 'injection'",
+        "ms": pytest.approx(0, abs=50)}

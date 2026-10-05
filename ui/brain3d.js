@@ -18,8 +18,8 @@ const REGIONS = [
     info: "Tematy z Twojej biblioteki wiedzy. Router może skierować pytanie prosto do tematu." },
   { id: "mcp", label: "Serwery MCP", color: "#38bdf8", nerve: "executor",
     info: "Serwery z narzędziami: MCP, wbudowane narzędzia Alfreda i narzędzia serwerowe Claude. Każdy serwer to folder z narzędziami." },
-  { id: "tech", label: "Mózg techniczny", color: "#a78bfa", nerve: "proactive", folders: ["Umiejętności", "Rutyny", "Repozytorium", "Testy"],
-    info: "Umiejętności (procedury), rutyny z harmonogramu, kod w repozytorium i testy pytest." },
+  { id: "tech", label: "Mózg techniczny", color: "#a78bfa", nerve: "proactive", folders: ["Umiejętności", "Rutyny"],
+    info: "Umiejętności (procedury) i rutyny z harmonogramu." },
   { id: "modules", label: "Moduły", color: "#60a5fa", nerve: "router",
     info: "Płaty mózgu. Router wybiera moduł, a moduł daje Claude swoje możliwości (grupy narzędzi)." },
   { id: "persona", label: "Osobowość Alfreda", color: "#e879f9", nerve: "voice", folders: ["Tożsamość", "Charakter", "Zwroty"],
@@ -28,8 +28,8 @@ const REGIONS = [
 REGIONS.forEach((r) => (r.rgb = new THREE.Color(r.color)));
 const REGION = Object.fromEntries(REGIONS.map((r) => [r.id, r]));
 const REGION_OF = { core: "core", user: "core", memory: "memory", topic: "knowledge", mcp: "mcp", tool: "mcp", skill: "tech",
-                    routine: "tech", repo: "tech", test: "tech", module: "modules", capability: "modules", persona: "persona" };
-const FOLDER_OF = { skill: "Umiejętności", routine: "Rutyny", repo: "Repozytorium", test: "Testy" };
+                    routine: "tech", module: "modules", capability: "modules", persona: "persona" };
+const FOLDER_OF = { skill: "Umiejętności", routine: "Rutyny" };
 const folderOf = (n) => n.kind === "tool" ? `mcp:${n.server}` : n.kind === "capability" ? `module:${n.id.slice(4).split(".")[0]}`
   : n.kind === "topic" ? n.path?.split("/")[1] : FOLDER_OF[n.kind] || n.group || "Inne";
 const LABELLED = ["hub", "folder", "core", "user", "module", "mcp"];
@@ -40,7 +40,7 @@ const INFO = {
   router: ["Router — Jev", "Jedno szybkie zapytanie do Jev: moduł, możliwości (grupy narzędzi), umiejętność, temat z bazy wiedzy, pilność, czy akcja zmienia coś w świecie, czy potrzebna jest pamięć. Wszystkie kategorie pochodzą z mapy mózgu (brain_map/, OKF).", "tekst → trasa z prawdopodobieństwami"],
   executor: ["Wykonawca — Claude", "Claude dostaje tylko narzędzia wybranego modułu, jego prompt, procedurę umiejętności i briefing z pamięci. Wywołuje narzędzia w pętli aż do wyniku.", "trasa + tekst + briefing → wynik"],
   guard: ["Strażnik", "Akcje, które rezerwują, wysyłają lub kasują, czekają na Twoje „tak”. Pytanie jest czytane na głos.", "akcja → pytanie → tak / nie"],
-  voice: ["Głos — Alfred", "Najpierw natychmiastowe „Już się tym zajmuję”, potem krótka odpowiedź do ucha (ElevenLabs TTS).", "wynik → mowa"],
+  voice: ["Głos — Alfred", "Krótka odpowiedź do ucha (ElevenLabs TTS); w czacie pełna odpowiedź na ekranie.", "wynik → mowa"],
   memory: ["Pamięć sesji — OKF", "Zadania ze statusami, podsumowania sesji, fakty i dziennik zmian w plikach markdown. Na starcie sesji powstaje z nich briefing: co otwarte, co się zmieniło.", "tury i akcje → pliki OKF → briefing"],
   proactive: ["Tryb proaktywny", "Zadania z terminem, cron i rutyny uruchamiają się same. Przy zadaniach Jev najpierw ocenia, czy warto Ci przerwać — dopiero potem budzi się Claude.", "zegar → bramka Jev → router"],
 };
@@ -51,8 +51,6 @@ const KIND_INFO = {
   tool: "Narzędzie, które Claude może wywołać.",
   mcp: "Serwer — miejsce, gdzie żyją narzędzia (serwer MCP, wbudowane narzędzia Alfreda albo narzędzia serwerowe Claude).",
   topic: "Temat z Twojej bazy wiedzy. Jev może rozpoznać temat i skierować pytanie prosto do biblioteki.",
-  repo: "Pakiet kodu mózgu (brain/).",
-  test: "Plik testów pytest.",
   routine: "Rutyna — Alfred robi to sam o ustalonej porze albo przy starcie (config/routines.yaml).",
   persona: "Część osobowości Alfreda (config/persona.md, zakładka „Osobowość”).",
   memory: "Wpis w pamięci Alfreda (data/memory).",
@@ -444,7 +442,7 @@ function showInfo(n) {
 }
 
 const C = { text: "#e2e8f0", route: "#60a5fa", tool: "#4ade80", voice: "#c084fc", warn: "#fb7185" };
-const routeOf = {};
+const routeOf = {}, routineOf = {};
 let flowFor = null;
 const flow = () => document.getElementById("flow-steps");
 let flowTokens = 0;
@@ -471,6 +469,7 @@ function event(ev) {
   const d = ev.data || {}, rid = ev.request_id;
   const mod = routeOf[rid] || "executor";
   switch (ev.kind) {
+    case "routine_run": routineOf[rid] = `routine:${d.routine}`; break;     // its transcript follows
     case "listening":
       newFlow(rid);
       send("user", "ears", "nagranie audio", C.text);
@@ -480,7 +479,7 @@ function event(ev) {
       if (d.confirmation) { send("user", "guard", `„${d.text}”`, C.text); step("Twoja odpowiedź trafia do strażnika", `„${d.text}”`, "guard"); break; }
       newFlow(rid);
       if (d.source === "proactive" || d.source === "routine") {
-        const routine = nodes.find((n) => n.kind === "routine" && n.prompt === d.text);
+        const routine = nodesById[routineOf[rid]];
         send(routine ? routine.id : "proactive", "router", routine ? `rutyna ${routine.label}` : "zadanie z harmonogramu", C.route);
         step("Alfred zaczyna sam", short(d.text, 90), routine ? routine.id : "proactive");
         break;
@@ -522,7 +521,7 @@ function event(ev) {
       (d.capabilities || []).slice(0, 4).forEach((cap) => flash(`cap:${cap}`));
       send("memory", "executor", "briefing", C.text);
       flash("hub:persona");
-      step(`4 · Claude (${d.model}, ${d.backend === "subscription" ? "subskrypcja" : "API"}, wysiłek ${d.effort}) zaczyna`, `moduły: ${(d.modules || []).join(", ")} · narzędzia: ${(d.tools || []).slice(0, 6).join(", ")}${(d.tools || []).length > 6 ? "…" : ""}`, "executor");
+      step(`4 · Claude (${d.model}, subskrypcja, wysiłek ${d.effort}) zaczyna`, `moduły: ${(d.modules || []).join(", ")} · narzędzia: ${(d.tools || []).slice(0, 6).join(", ")}${(d.tools || []).length > 6 ? "…" : ""}`, "executor");
       break;
     case "llm_call":
       flash("executor");
@@ -565,8 +564,6 @@ function event(ev) {
       send("proactive", "router", `bramka ${Math.round(d.probability * 100)}%`, d.fired ? C.route : C.warn);
       step(d.fired ? "Bramka Jev: warto przerwać" : "Bramka Jev: nie teraz", `${d.task} (${d.trigger})`, "proactive");
       break;
-    case "calendar_sync": flash("mcp:google-calendar"); break;
-    case "heartbeat": flash("proactive"); break;
     case "persona_updated": flash("hub:persona"); break;
     case "mcp_status": flash("hub:mcp"); break;
     case "map_built": ["hub:modules", "hub:mcp", "hub:tech", "hub:knowledge"].forEach(flash); break;
@@ -585,7 +582,7 @@ function demo() {
     [0, E("listening", "ears", { bytes: 48000 })],
     [900, E("transcript", "ears", { text: "Zarezerwuj stolik dla dwóch w Nolicie na piątek na dziewiętnastą", language: "pl" })],
     [1900, E("classified", "router", { module: "bookings", skill: "bookings.restaurant-table", capabilities: ["bookings.browse", "memory.recall", "research.web", "bookings.confirm", "calendar.write", "memory.remember", "tasks.manage"], capability_probabilities: { "bookings.browse": 0.71, "research.web": 0.12 }, confidence: 0.86, source: "jev", latency_ms: 180, urgency: 1.1, acts_on_world: 0.94, probabilities: { bookings: 0.86, calendar: 0.09, research: 0.05 }, also: [] })],
-    [3600, E("executor_start", "executor", { model: "claude-opus-5", backend: "subscription", capabilities: ["bookings.browse", "memory.recall", "research.web", "bookings.confirm"], effort: "medium", modules: ["bookings"], tools: ["browser__browser_navigate", "browser__browser_click", "memory_search", "confirm_action", "task_create"] })],
+    [3600, E("executor_start", "executor", { model: "claude-opus-5", capabilities: ["bookings.browse", "memory.recall", "research.web", "bookings.confirm"], effort: "medium", modules: ["bookings"], tools: ["browser__browser_navigate", "browser__browser_click", "memory_search", "confirm_action", "task_create"] })],
     [4400, E("llm_call", "executor", { round: 0, ms: 1400, stop_reason: "tool_use", usage: { input: 2100, output: 90 } })],
     [4700, E("tool_call", "memory", { tool: "memory_search", input: { query: "restauracja Nolita" } })],
     [5600, E("tool_result", "memory", { tool: "memory_search", ms: 12, preview: "facts/places/nolita.md — ulubiona włoska, stolik przy oknie" })],

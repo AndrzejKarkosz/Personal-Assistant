@@ -1,5 +1,9 @@
 # Personal Assistant "Brain" — Master Plan
 
+> **Historical.** This is the plan the project started from. Since 2026-10 the backend is a flat package
+> (`brain/*.py`, one file per part - not the `brain/router/`, `brain/executor/` … layout of §5), and there is no
+> spoken acknowledgement step. The README describes the code as it is.
+>
 > Status (2026-09-25): **v0.1 built.** Phases 0–4 plus the proactive core are in place: text and voice
 > pipeline, Jev router, acknowledgement, executor with MCP, guard, OKF session memory, activity log,
 > scheduler with the Jev gate, and the brain UI. Not yet done: the Google Calendar and browser MCP

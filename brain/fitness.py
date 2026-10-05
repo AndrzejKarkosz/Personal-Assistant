@@ -1,5 +1,6 @@
 """Treningi: the triathlon plan (config/brain.yaml -> training), where the season is and how much of the plan is done -
-from Strava (the strava MCP server) - plus how heavy the work week is. Used by the Treningi tab and training_status.
+from Strava (the strava MCP server) - plus how heavy the work week is. Used by the Treningi tab and training_status;
+the fixed blocks for a plan change (PLAN_*) live here too.
 
 What the plan rests on (research, 2026-10):
 - 80/20: ~80% of training time easy (Z1-2), ~20% hard; a 2024 meta-analysis (17 studies, 437 athletes) found a small
@@ -52,26 +53,36 @@ def raised(base: dict, training_kcal: int, eat_back: float = 0.6) -> dict[str, i
     return {k: round(base[k] + raise_by[k]) for k in RAISED if base.get(k)}
 
 
-def base_goals(goals_now: dict, cfg: dict) -> dict:
+def base_goals(goals_now: dict, state: dict) -> dict:
     """His own kcal / carbs goals without training. Alfred writes base + training into Nutrition MCP every day, so
-    the base is kept in training.nutrition_base; goals that differ from what Alfred last wrote were set by him (the
+    the base is kept in nutrition_sync.json; goals that differ from what Alfred last wrote were set by him (the
     weight-goal talk, claude.ai, the app) and become the new base."""
-    last, base = cfg.get("nutrition_synced") or {}, cfg.get("nutrition_base") or {}
+    last, base = state.get("synced") or {}, state.get("base") or {}
     if not base or any(goals_now.get(k) != last.get(k) for k in RAISED):
         base = {k: goals_now[k] for k in RAISED if goals_now.get(k)}
     return base
 
 
+def sync_file(settings) -> Path:
+    """Alfred's own state, not a setting: his base goals and what he last wrote into Nutrition MCP."""
+    return settings.path("memory.dir").parent / "nutrition_sync.json"
+
+
 async def sync_goals(hub, settings, progress: dict, training_kcal: int) -> dict:
     """Today's training into the diet: Nutrition MCP's daily kcal / carbs goals = base + training (back to the base on
     a rest day). Returns the base goals."""
-    cfg = settings.get("training") or {}
+    path = sync_file(settings)
+    # migration: before 2026-10-05 this state lived in settings (training.nutrition_base / nutrition_synced)
+    state = (json.loads(path.read_text(encoding="utf-8")) if path.exists() else
+             {"base": settings.get("training.nutrition_base"), "synced": settings.get("training.nutrition_synced")})
     goals_now = progress.get("goals") or {}
-    base = base_goals(goals_now, cfg)
-    target = raised(base, training_kcal, float(cfg.get("eat_back", 0.6)))
+    base = base_goals(goals_now, state)
+    target = raised(base, training_kcal, float(settings.get("training.eat_back", 0.6)))
     if target and any(goals_now.get(k) != v for k, v in target.items()):
         await hub.call_json("nutrition__set_nutrition_goals", {f"daily_{k}": v for k, v in target.items()})
-    settings.update({"training": {"nutrition_base": base, "nutrition_synced": target}})
+    new = {"base": base, "synced": target}
+    if new != state or not path.exists():
+        path.write_text(json.dumps(new), encoding="utf-8")
     return base
 
 
@@ -153,9 +164,17 @@ def discipline(days: list[dict] | None, goals: dict, today: date, span: int = 30
         d = by_date.get(day.isoformat()) or {}
         kcal, protein = d.get("calories") or 0, d.get("protein_g") or 0
         logged = kcal > 0
-        checks = [ok for ok, goal in ((kcal_goal and abs(kcal - kcal_goal) <= tolerance * kcal_goal, kcal_goal),
-                                      (protein_goal and protein >= protein_share * protein_goal, protein_goal)) if goal]
-        score = (sum(map(bool, checks)) / len(checks) if checks else 1.0) if logged else 0.0
+        checks = []                           # one per goal he has
+        if kcal_goal:
+            checks.append(abs(kcal - kcal_goal) <= tolerance * kcal_goal)
+        if protein_goal:
+            checks.append(protein >= protein_share * protein_goal)
+        if not logged:
+            score = 0.0
+        elif checks:
+            score = sum(checks) / len(checks)
+        else:
+            score = 1.0                       # logged, and no goals to miss
         status = ("today" if day == today else "empty" if not logged else "hit" if score == 1
                   else "partial" if score else "miss")
         rows.append({"date": day.isoformat(), "calories": round(kcal), "protein_g": round(protein), "score": score,
@@ -334,6 +353,69 @@ def roadmap(cfg: dict, today: date, race: date | None) -> list[dict[str, Any]]:
                                  "sessions": week_sessions(now, weekly, VOLUME[now], general_weeks(cfg, today))}
         out.append(item)
     return out
+
+
+# A change to his training plan. Jev answers three questions (brain/router.py): what he wants to change (PLAN_CHANGES),
+# which part of the plan (PLAN_SPORTS), whether it adds load; each answer picks a fixed block of the procedure below.
+PLAN_CHANGES = {
+    "add_activity": "Chce dodać nową aktywność albo sport do planu (np. siłownia, crossfit, joga, wspinaczka, narty, rolki)",
+    "volume": "Chce trenować więcej albo mniej (godziny, liczba jednostek) albo zmienić dni treningów",
+    "pause": "Przerwa albo trudny okres: wyjazd, urlop, choroba, kontuzja, ból, bardzo ciężki czas w pracy",
+    "race": "Zmiana zawodów: inna data, inny dystans, dodatkowy start, rezygnacja ze startu",
+    "focus": "Chce poprawić konkretną rzecz: słabszą dyscyplinę, tempo, technikę, siłę, mobilność",
+    "body": "Zmiana celu sylwetkowego: waga, redukcja, masa mięśniowa, dieta pod trening",
+}
+PLAN_CHANGE_RULES = {
+    "add_activity": "A new activity: fit it in without raising total weekly load by more than ~10%; count it as strength "
+                    "or easy aerobic work and take its time from the same kind of session - never from the long ride or "
+                    "the long run.",
+    "volume": "More or less training: change total weekly hours by at most 10% a week; keep the long ride, the long run "
+              "and one quality session per sport; with less time cut easy sessions first.",
+    "pause": "A pause: up to 7 days off costs almost nothing; 1-3 weeks: keep 2-3 short easy sessions if he can; after an "
+             "illness come back at 50-70% volume for a week; move the phases only for pauses over 2 weeks. With pain or an "
+             "injury send him to a physio and offer cross-training that does not load it.",
+    "race": "A race change: the phases are counted back from the race - with a sooner race shorten base and build, never "
+            "the 3-week peak or the taper; a second race needs a mini-taper of 3-7 days.",
+    "focus": "Improving one thing: move one session from the strongest discipline to the weakest; technique = drills, "
+             "speed = one quality session, strength = the strength block of the current phase.",
+    "body": "A body goal: the weight module rules apply - deficit 300-500 kcal, protein 1.8-2.0 g/kg, food around hard "
+            "sessions; never a deficit in the peak or the taper.",
+}
+PLAN_SPORTS = {
+    "swim": "Pływanie", "bike": "Rower", "run": "Bieganie", "strength": "Siła, siłownia, mobilność, stabilizacja",
+    "all": "Cały plan albo kilka dyscyplin naraz",
+}
+PLAN_SPORT_RULES = {
+    "swim": "It is about swimming: technique gives the most; open water and the wetsuit before the race.",
+    "bike": "It is about cycling: the long ride and the bike-run brick are the key sessions.",
+    "run": "It is about running: it loads the body most - raise run volume slowest (max 10% a week); calf and Achilles "
+           "strength protects it.",
+    "strength": "It is about strength: 2 sessions a week in the base (heavy, 4-6 reps, plus jumps), 1-2 short heavy ones "
+                "in build and peak; strength on an easy day or 6+ hours after a hard endurance session, never the day "
+                "before the long run.",
+    "all": "It touches the whole plan: keep the 80/20 split and the 3:1 cycle.",
+}
+ADDS_LOAD = ("It adds load: show the new weekly total in hours against now and against his 4-6 h budget, and the work "
+             "load of those weeks; at least one option must keep the total unchanged.")
+PLAN_CHANGE_STEPS = (
+    "1. training_status (weeks 4): phase, this week's sessions, what was done, work load; the calendar for the weeks "
+    "the change touches.\n"
+    "2. Research it: web_search for current evidence (reviews, meta-analyses, national federations) on this change "
+    "for age-group triathletes - at most 2 searches, cite the best 1-2 sources.\n"
+    "3. Propose exactly 3 options, each in one or two sentences: what changes in the week (sport, sessions, hours), "
+    "what it does for {race}, the risk, and the evidence with its source.\n"
+    "4. Recommend one option and say why in one sentence. Change nothing yet.\n"
+    "5. Only after his yes: training_plan_update (it asks for a yes; `why` = the chosen option) and the new sessions "
+    "as tasks.")
+
+
+def plan_change_procedure(change: str, sport: str | None, adds_load: float, cfg: dict) -> str:
+    """The fixed procedure for the plan change Jev heard; the race comes from the plan itself (`cfg` = training)."""
+    race = cfg.get("race") or {}
+    goal = (race.get("name") or "the race") + (f" on {race['date']}" if race.get("date") else "")
+    rules = [PLAN_CHANGE_RULES[change], PLAN_SPORT_RULES.get(sport or ""), ADDS_LOAD if adds_load >= 0.5 else None]
+    return ("## Procedure to follow: training plan change\n" + PLAN_CHANGE_STEPS.format(race=goal) + "\nRules:\n"
+            + "\n".join(f"- {r}" for r in rules if r))
 
 
 def steps_week(path: Path, today: date, days: int = 7) -> list[dict[str, Any]]:

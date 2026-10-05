@@ -2,9 +2,10 @@
 
 - every minute: tasks whose due time has passed -> Jev decides "worth interrupting?" -> Alfred tells you;
 - recurring tasks (cron) and routines (config/routines.yaml) as scheduled jobs;
-- "@start" routines once when the app starts; idle sessions closed; a heartbeat every 30 min.
+- "@start" routines once when the app starts; idle sessions closed.
 
 What already fired is remembered in data/proactive_state.json, so a restart does not repeat it.
+The routines file is read and written only here (Alfred's routine tools and the UI use the functions below).
 """
 from __future__ import annotations
 
@@ -18,6 +19,8 @@ import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from . import okf
+from .events import new_id
 from .memory import parse_time
 
 if TYPE_CHECKING:
@@ -26,6 +29,77 @@ if TYPE_CHECKING:
 log = logging.getLogger("alfred.proactive")
 START = "@start"
 LAST_ACTIVITY = "last_activity"
+
+
+def check_cron(schedule: str | None, allow_start: bool = False) -> None:
+    if schedule and not (allow_start and schedule == START):
+        try:
+            CronTrigger.from_crontab(schedule)
+        except ValueError:
+            raise ValueError(f"schedule '{schedule}' is not a 5-field cron (e.g. '0 8 * * 1-5')") from None
+
+
+# ---- routines.yaml -------------------------------------------------------------------------------------------------
+
+def routines_file(settings) -> Path | None:
+    return settings.path("proactive.routines") if settings.get("proactive.routines") else None
+
+
+def read_routines(path: Path) -> list[dict]:
+    """Every routine in the file as it is written ([] without the file). A broken file raises (yaml.YAMLError), so
+    a save never overwrites what it could not read."""
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
+    items = data.get("routines") if isinstance(data, dict) else None
+    return [r for r in items if isinstance(r, dict)] if isinstance(items, list) else []
+
+
+def valid_routines(path: Path | None) -> list[dict]:
+    """The routines that can run - with an id, a prompt and a schedule. Read fresh every time, so edits apply within
+    a minute; a broken file means none (and a warning in the log)."""
+    try:
+        items = read_routines(path) if path else []
+    except yaml.YAMLError as exc:
+        log.warning("Ignoring %s: %s", path, exc)
+        return []
+    good = [r for r in items if r.get("id") and r.get("prompt") and isinstance(r.get("schedule"), str)]
+    if len(good) != len(items):
+        log.warning("%s: skipped %d routine(s) without id, prompt or schedule", path, len(items) - len(good))
+    return good
+
+
+def _write_routines(path: Path, items: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"routines": items}, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def save_routine(path: Path | None, rid: str, schedule: str, prompt: str, module: str | None = None) -> str:
+    """Create a routine, or change the one with the same id (its other keys, e.g. min_idle_minutes, stay)."""
+    if not path:
+        raise ValueError("No routines file configured (proactive.routines)")
+    rid = okf.slugify(rid)
+    check_cron(schedule, allow_start=True)
+    if not str(prompt or "").strip():
+        raise ValueError("a routine needs a prompt")
+    new = {"id": rid, "schedule": schedule, "prompt": prompt.strip()} | ({"module": module} if module else {})
+    items = read_routines(path)
+    old = next((r for r in items if r.get("id") == rid), None)
+    if old:
+        old.update(new)
+    else:
+        items.append(new)
+    _write_routines(path, items)
+    return f"{'Updated' if old else 'Created'} routine {rid} ({schedule})"
+
+
+def delete_routine(path: Path | None, rid: str) -> str:
+    if not path:
+        raise ValueError("No routines file configured (proactive.routines)")
+    items = read_routines(path)
+    kept = [r for r in items if r.get("id") != rid]
+    if len(kept) == len(items):
+        raise KeyError(f"No routine '{rid}'. Routines: {', '.join(str(r.get('id')) for r in items) or 'none'}")
+    _write_routines(path, kept)
+    return f"Deleted routine {rid}"
 
 
 def in_quiet_hours(now: datetime, quiet: list[str] | None) -> bool:
@@ -48,8 +122,6 @@ class ProactiveEngine:
     def start(self) -> None:
         self.scheduler.add_job(self.check_due, "interval", minutes=1, id="due-check", coalesce=True)
         self.scheduler.add_job(self.brain.sessions.close_if_idle, "interval", minutes=1, id="idle-close")
-        self.scheduler.add_job(self.heartbeat, "interval", id="heartbeat",
-                               minutes=int(self.settings.get("proactive.heartbeat_minutes", 30)))
         self.scheduler.add_job(self.roll_over, "cron", hour=0, minute=1, id="rollover")
         self.scheduler.start()
         self.roll_over()                   # catch up on the days the app was off
@@ -74,21 +146,7 @@ class ProactiveEngine:
                 for j in self.scheduler.get_jobs()]
 
     def routines(self) -> list[dict]:
-        """Valid routines from config/routines.yaml (read fresh every time, so edits apply within a minute)."""
-        path = self.settings.path("proactive.routines") if self.settings.get("proactive.routines") else None
-        if not path or not path.exists():
-            return []
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            log.warning("Ignoring %s: %s", path, exc)
-            return []
-        items = (data.get("routines") if isinstance(data, dict) else None) or []
-        good = [r for r in items if isinstance(r, dict) and r.get("id") and r.get("prompt")
-                and isinstance(r.get("schedule"), str)]
-        if len(good) != len(items):
-            log.warning("%s: skipped %d routine(s) without id, prompt or schedule", path, len(items) - len(good))
-        return good
+        return valid_routines(routines_file(self.settings))
 
     def sync_recurring(self) -> None:
         """One cron job per recurring task and per routine; jobs whose task/routine is gone are removed."""
@@ -110,7 +168,10 @@ class ProactiveEngine:
 
     async def run_routine(self, routine_id: str) -> None:
         if routine := next((r for r in self.routines() if r["id"] == routine_id), None):
-            await self.brain.handle_text(routine["prompt"], source="routine", module_hint=routine.get("module"))
+            request_id = new_id("r-")     # the UI finds this run's answer or error by it
+            self.brain.bus.emit("routine_run", "proactive", request_id, routine=routine_id)
+            await self.brain.handle_text(routine["prompt"], source="routine", module_hint=routine.get("module"),
+                                         request_id=request_id)
 
     async def run_start_routine(self, routine_id: str) -> None:
         """Silent if you were active within `min_idle_minutes`. The full routine once a day; later starts that day
@@ -147,10 +208,6 @@ class ProactiveEngine:
                     await self.fire(task.id, "upcoming", key)
             else:
                 await self.fire(task.id, "due", f"{task.id}@{task.due}")
-
-    async def heartbeat(self) -> None:
-        self.brain.bus.emit("heartbeat", "proactive", open_tasks=len(self.brain.store.list_tasks("open")),
-                            overdue=len(self.brain.store.due_tasks()))
 
     async def fire(self, task_id: str, trigger: str, key: str | None = None) -> None:
         """A task needs attention: ask Jev if it is worth interrupting, then let Alfred handle it and speak."""

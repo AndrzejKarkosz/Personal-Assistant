@@ -10,8 +10,7 @@ short: update-event
 capabilities: [calendar.write]
 modules: [calendar]
 side_effect: destructive
-requires_confirmation: true
-confirm_override: false
+requires_confirmation: false
 status: online
 params: [account, calendarId, eventId, summary, description, start, end, timeZone,
   location, attendees, colorId, reminders, recurrence, sendUpdates, modificationScope,

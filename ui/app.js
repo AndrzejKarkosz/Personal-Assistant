@@ -307,7 +307,6 @@ function onEvent(ev) {
       showRoute(d, said[ev.request_id], shields[ev.request_id]);
       break;
     }
-    case "ack": addMsg("ack", d.text); subtitle(d.text, "ack", lastSaid); speak(d.text, d.audio_b64, d.language); break;
     case "confirm_request":
       addMsg("alfred", d.text);
       subtitle(d.text);
@@ -356,30 +355,29 @@ async function loadStatus() {
   status.language = status.session?.language || "pl";
   const pill = (label, ok, title = "") => `<span class="pill ${ok ? "ok" : "bad"}" title="${esc(title)}">${label}</span>`;
   $("#pills").innerHTML =
-    pill(status.backend === "subscription" ? "Claude · subskrypcja" : "Claude · API", status.keys.anthropic,
-      status.claude?.detail || "") + pill("Jev", status.keys.jev, "bez klucza: fallback na Claude Haiku") +
+    pill("Claude · subskrypcja", status.keys.anthropic, status.claude?.detail || "") +
+    pill("Jev", status.keys.jev, "bez klucza tarcza nie przepuści żadnej prośby - Alfred nic nie zrobi") +
     pill("ElevenLabs", status.keys.elevenlabs, "bez klucza: głos przeglądarki") +
     status.mcp.map((s) => s.status === "disabled" ? "" : pill(s.name, s.status === "ready", s.error || "")).join("");
   const u = status.session?.usage || {};
   // Split per service: Claude (subscription = API-equivalent, not a bill), Jev and ElevenLabs (real money).
-  const sub = status.backend === "subscription";
   const claudeTok = ["input", "output", "cache_read", "cache_write"].reduce((s, k) => s + (u[k] || 0), 0);
-  const paid = (u.jev_usd || 0) + (u.elevenlabs_usd || 0) + (sub ? 0 : u.cost_usd || 0);
+  const paid = (u.jev_usd || 0) + (u.elevenlabs_usd || 0);
   $("#session-cost").innerHTML = `<b>Płacisz ${cash(paid)}</b> · Jev ${cash(u.jev_usd)} · ` +
     `ElevenLabs ${cash(u.elevenlabs_usd)} · Claude ${usd(u.cost_usd || 0)}`;
   $("#session-cost").title = [
     `Sesja: ${status.session?.turns || 0} tur`,
-    `Claude: ${num(claudeTok)} tok. · ${usd(u.cost_usd || 0)}` + (sub ? " — subskrypcja: równowartość API, nie rachunek (zużywa limit planu)" : ""),
+    `Claude: ${num(claudeTok)} tok. · ${usd(u.cost_usd || 0)} — subskrypcja: równowartość API, nie rachunek (zużywa limit planu)`,
     `Jev: ${num(u.jev || 0)} tok. · ${cash(u.jev_usd)} (płatne tylko wejście)`,
     `ElevenLabs: ${num(u.tts_chars || 0)} znaków głosu + ${num(Math.round(u.stt_s || 0))} s rozpoznawania mowy · ${cash(u.elevenlabs_usd)}`,
-    `Płacisz: Jev + ElevenLabs${sub ? "" : " + Claude"} = ${cash(paid)} (ceny: config/brain.yaml → prices)`,
+    `Płacisz: Jev + ElevenLabs = ${cash(paid)} (ceny: config/brain.yaml → prices)`,
   ].join("\n");
 }
 const cash = (v) => `$${(v || 0).toFixed(4)}`;
 const tokens = (u) => ["input", "output", "cache_read", "cache_write", "router", "jev"].reduce((s, k) => s + (u[k] || 0), 0);
 const num = (n) => Math.round(+n || 0).toLocaleString("pl-PL");
 // Subscription: no per-token bill, the figure is what the same call would cost on the API.
-const usd = (v) => `${status.backend === "subscription" ? "≈" : ""}$${v.toFixed(4)}`;
+const usd = (v) => `≈$${v.toFixed(4)}`;
 
 // --------------------------------------------------------------------- views
 let view = "brain";
@@ -1131,8 +1129,8 @@ async function loadSummary() {
   $("#sum-range").textContent = { day: from.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long", year: "numeric" }),
     month: from.toLocaleDateString("pl-PL", { month: "long", year: "numeric" }), quarter: `Q${Math.floor(from.getMonth() / 3) + 1} ${from.getFullYear()}`,
     year: `${from.getFullYear()}` }[s.period] + (s.offset === 0 ? " · bieżący" : "");
-  const t = s.tasks, c = s.cost, sub = status.backend === "subscription";
-  const paid = c.jev_usd + c.elevenlabs_usd + (sub ? 0 : c.cost_usd);
+  const t = s.tasks, c = s.cost;
+  const paid = c.jev_usd + c.elevenlabs_usd;
   const tile = (n, label, small, cls) => `<div class="tile ${cls}"><b>${n}</b><span>${label}</span><small title="${esc(small)}">${esc(small)}</small></div>`;
   const cats = Object.entries(t.done_by_category).map(([k, v]) => `${k} ${v}`).join(" · ");
   $("#sum-stats").innerHTML =
@@ -1143,9 +1141,9 @@ async function loadSummary() {
   const claudeTok = c.input + c.output + c.cache_read + c.cache_write;
   $("#sum-costs").innerHTML =
     tile(cash(c.jev_usd), "Jev", `${num(c.jev)} tok. · płatne tylko wejście`, "purple") +
-    tile(usd(c.cost_usd), "Claude", `${num(claudeTok)} tok.` + (sub ? " · subskrypcja: równowartość API, nie rachunek" : ""), "blue") +
+    tile(usd(c.cost_usd), "Claude", `${num(claudeTok)} tok. · subskrypcja: równowartość API, nie rachunek`, "blue") +
     tile(cash(c.elevenlabs_usd), "ElevenLabs", `${num(c.tts_chars)} znaków głosu · ${num(Math.round(c.stt_s))} s mowy`, "green") +
-    tile(cash(paid), "płacisz razem", `Jev + ElevenLabs${sub ? "" : " + Claude"} · ceny: config/brain.yaml → prices`, paid ? "err" : "green");
+    tile(cash(paid), "płacisz razem", "Jev + ElevenLabs · ceny: config/brain.yaml → prices", paid ? "err" : "green");
   $("#sum-detail").textContent = t.done_titles.length ? `Zrobione: ${t.done_titles.join(" · ")}` : "";
 }
 $("#sum-prev").onclick = () => { sumOffset -= 1; loadSummary().catch(warn); };
@@ -1281,7 +1279,6 @@ async function openMapPage(path) {
 }
 async function loadMap() {
   const m = await api("/api/map");
-  $("#map-backend").textContent = `Claude: ${status.backend === "subscription" ? "subskrypcja (Claude Code)" : "API (tokeny)"}`;
   $("#map-counts").innerHTML = Object.entries({ modules: "moduły", capabilities: "możliwości", skills: "umiejętności", tools: "narzędzia", servers: "serwery", topics: "tematy" })
     .map(([k, l]) => `<div><b>${m.counts[k]}</b>${l}</div>`).join("");
   $("#jev-cats").innerHTML = Object.entries(m.jev).map(([k, v]) => {
@@ -1346,7 +1343,6 @@ const FIELDS = [
   ["models.light", "Model lekki"], ["router.confident_at", "Próg pewności routera"],
   ["router.ask_below", "Dopytaj poniżej"], ["voice.voice_id", "ElevenLabs voice ID"],
   ["voice.tts_model", "Model TTS"], ["memory.session_idle_minutes", "Zamknij sesję po (min)"],
-  ["proactive.heartbeat_minutes", "Heartbeat (min)"],
   ["proactive.reminders.lead_minutes", "Przypomnienie przed terminem (min, 0 = o czasie)"],
 ];
 const renderCats = () => ($("#cat-list").innerHTML = (status.task_categories || []).map((c) => `<span class="chip on">${esc(c)}</span>`).join(""));
@@ -1371,15 +1367,18 @@ async function loadSettings() {
 }
 $("#settings-form").onsubmit = async (e) => {
   e.preventDefault();
+  // Only what you changed: an untouched field must not override config/brain.yaml (data/settings.json wins over it).
   const patch = {};
   e.target.querySelectorAll("input").forEach((i) => {
+    if (i.type === "checkbox" ? i.checked === i.defaultChecked : i.value === i.defaultValue) return;
     const keys = i.name.split("."), last = keys.pop();
     let v = i.type === "checkbox" ? i.checked : i.value;
     if (i.type !== "checkbox" && v !== "" && !isNaN(v)) v = Number(v);
     keys.reduce((o, k) => (o[k] ||= {}), patch)[last] = v;
   });
-  await api("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
-  addMsg("system", "Ustawienia zapisane.");
+  if (Object.keys(patch).length) await api("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
+  addMsg("system", Object.keys(patch).length ? "Ustawienia zapisane." : "Nic się nie zmieniło.");
+  loadSettings();                                   // what is saved now becomes the new "unchanged"
 };
 
 // ---------------------------------------------------------------- boot

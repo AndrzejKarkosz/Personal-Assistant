@@ -1,10 +1,10 @@
 # Alfred — personal assistant brain
 
-You talk, Alfred listens, says *"Oczywiście, szefie. Już się tym zajmuję."*, does the work with the right
-tools, and answers you out loud — then remembers what he did so the next session picks up where this one ended.
+You talk, Alfred listens, does the work with the right tools, and answers you out loud — then remembers what he
+did so the next session picks up where this one ended.
 
 ```
- mic ─► Ears (ElevenLabs Scribe) ─► Router (Jev) ─► "On it, boss" ─► Executor (Claude + only this module's tools)
+ mic ─► Ears (ElevenLabs Scribe) ─► Shield + Router (Jev) ─► Executor (Claude + only this module's tools)
                                                                         │        ├─ MCP: Knowledge-Base, Calendar, Browser…
                                                                         │        ├─ built-in: tasks, memory
                                                                         │        └─ Guard: spoken "yes" before booking/sending
@@ -14,7 +14,8 @@ tools, and answers you out loud — then remembers what he did so the next sessi
                           Proactive scheduler (due tasks, cron) ─► Jev gate "worth interrupting?" ─► Alfred speaks first
 ```
 
-The full design and roadmap is in [docs/PLAN.md](docs/PLAN.md).
+The original design and roadmap (historical - this README describes the code as it is) is in
+[docs/PLAN.md](docs/PLAN.md).
 
 ## Quick start
 
@@ -34,7 +35,8 @@ The full design and roadmap is in [docs/PLAN.md](docs/PLAN.md).
 Other entry points: `uv run alfred chat` (terminal conversation) and `uv run alfred classify "zarezerwuj stolik"`
 (see how the router classifies a sentence). Tests: `uv run pytest`.
 
-Every key is optional for a first look. Without Jev the router falls back to Claude Haiku, then keyword rules.
+`JEV_API_KEY` is required: the shield asks only Jev, so without it Alfred does nothing with what you say (the
+log says why). If Jev's routing fails, Claude Haiku routes; if that fails too, Alfred asks what you mean.
 Without ElevenLabs the UI uses the browser's speech recognition and voice.
 
 ## How it thinks
@@ -47,15 +49,19 @@ Start reading at `brain/pipeline.py` → `Brain.handle_text()`: it is the whole 
 | Check | `brain/router.py` | the shield asks **only Jev** whether this is a prompt injection. Nothing goes further until it passes; if Jev does not answer, Alfred does nothing (only an error in the log) |
 | Classify | `brain/router.py` | **one** Jev call over the categories of the **brain map**: `module`, `capability`, `skill`, `topic` (choices), `urgency` (score), `acts_on_world` and `needs_history` (noul). A close call loads the runner-up module too; a very unsure one makes Alfred ask. |
 | Execute | `brain/executor.py` | Claude sees only the tools of the chosen capabilities (plus the skill's and "always" ones), the module prompt and the chosen skill |
-| Confirm | `brain/executor.py` (`Guard`) | tools in a `confirm: true` capability, destructive tools and `confirm_action` wait for your spoken "tak" / "nie" |
+| Confirm | `brain/executor.py` (`Guard`) | tools in a `confirm: true` capability, destructive tools (unless their capability says `confirm: false`) and `confirm_action` wait for your spoken "tak" / "nie" |
 | Speak | `brain/voice.py` | the answer, 1–3 sentences written to be heard |
 | Remember | `brain/memory.py` | turns are kept in the session; after 15 min idle the session is summarised into an OKF page |
 
 The other files: `app.py` (web server + API for the UI), `cli.py` (command line), `config.py` (settings),
 `events.py` (event bus + log), `llm.py` (Claude calls), `persona.py` (who Alfred is), `modules.py` (loads
 `modules/`), `tools.py` (Alfred's own tools), `mcp_hub.py` (MCP servers), `atlas.py` (brain map),
-`scheduler.py` (reminders and routines), `okf.py` (Markdown files with a YAML header). Each file starts with a
-short note saying what it does.
+`scheduler.py` (reminders and routines, the only code that touches `routines.yaml`), `fitness.py` (the training
+plan), `meals.py` (logging meals), `okf.py` (Markdown files with a YAML header). Each file starts with a short
+note saying what it does.
+
+Settings: `config/brain.yaml`, plus what you change in the UI, saved in `data/settings.json` (it wins over the
+yaml for those keys - the UI saves only the fields you actually changed).
 
 ## Claude account: your subscription
 
@@ -85,8 +91,8 @@ brain_map/
 Relations are both markdown links, which you can follow in Obsidian or on GitHub, and ids in the
 frontmatter, which the router reads. **Jev's categories are taken from these pages.** To change how
 something is routed, edit the module manifest, or add `examples_extra:` to a capability page; a rebuild
-keeps that edit, along with `confirm_override`, `side_effect_override` and any `## Notes` section. Tools of
-a server that is offline stay on the map, marked `offline`.
+keeps that edit and any `## Notes` section. Whether a tool needs your "yes" comes only from the module
+manifest (`confirm:` of its capability). Tools of a server that is offline stay on the map, marked `offline`.
 
 Capabilities are defined per module:
 
@@ -97,7 +103,8 @@ capabilities:
     description: Create, move, update, cancel events and answer invitations.
     tools: ["google-calendar__create-*", "google-calendar__update-*"]   # patterns over live tool names
     examples: ["przesuń spotkanie na piątek"]
-    confirm: true                                                       # every tool here needs a "yes"
+    confirm: true      # every tool here needs a "yes"; false: none does, not even a destructive one;
+                       # left out: only the tools the server marks destructive
 uses: [tasks.manage, memory.recall]                                     # borrowed from other modules
 ```
 
@@ -107,8 +114,7 @@ is public, add `brain_map/topics/` to `.gitignore`.
 ## Personality and role (`config/persona.md`)
 
 Who Alfred is lives in one OKF file that you can edit directly or in the **Osobowość** tab:
-- **Frontmatter:** his name, your name, how he addresses you (PL/EN), the acknowledgement phrases and the
-  confirmation question.
+- **Frontmatter:** his name, your name, how he addresses you (PL/EN) and the confirmation question.
 - **Markdown body:** the system prompt, with sections *Role*, *Character*, *How you speak* and *How you work*.
   `{name}`, `{user}`, `{addr_pl}` and `{addr_en}` are filled in.
 
@@ -124,7 +130,7 @@ data/memory/
   index.md                   entry point, regenerated on every change
   log.md                     append-only change log (task.created, task.updated, fact.created, session.closed …)
   profile.md
-  tasks/<id>.md              type: Task — status todo | in_progress | waiting | done | cancelled, due, cron schedule
+  tasks/<id>.md              type: Task — status todo | in_progress | done | cancelled, due, cron schedule
   sessions/YYYY/MM/<id>.md   type: Session — summary, done, changed, open threads, token usage
   facts/<category>/*.md      type: Fact — people, places, preferences, projects
 ```
@@ -135,9 +141,10 @@ He does not replay old transcripts.
 
 ## Logging
 
-Every event (transcript, route, acknowledgement, each LLM call with token usage, each tool call and result,
-confirmations, proactive decisions, errors) goes to `data/logs/YYYY-MM-DD.jsonl`, and you can browse it in
-the **Log** tab. Memory changes are also written in human-readable form to `data/memory/log.md`.
+Every event (transcript, route, each LLM call with token usage, each tool call and result, confirmations,
+proactive decisions, errors) goes to `data/logs/YYYY-MM-DD.jsonl`, and you can browse it in the **Log** tab.
+When Jev or Claude fail and a fallback is taken, the event says why (`error` on `classified`, `shield`,
+`tasks_classified`). Memory changes are also written in human-readable form to `data/memory/log.md`.
 
 ## Modules
 
@@ -145,8 +152,8 @@ A module is a folder in `modules/`:
 
 ```
 modules/bookings/
-  module.yaml      label/description/examples (these become the Jev criteria), mcp_servers, builtin_tools,
-                   server_tools, confirm patterns, model/effort, acknowledge
+  module.yaml      label/description/examples (these become the Jev criteria), capabilities (tool patterns,
+                   confirm, always), uses, model/effort, enabled
   prompt.md        instructions for the executor when this module is active
   skills/*.md      procedures (frontmatter name + description become the Jev skill criteria)
 ```
@@ -154,7 +161,7 @@ modules/bookings/
 Included modules: `calendar`, `knowledge`, `tasks`, `memory`, `research` (web search), `bookings`
 (restaurant-table skill), `training` (triathlon plan from Strava, planned around work - training-week skill),
 `weight` (meals, weigh-ins and goals in Nutrition MCP; Jev picks each logged meal's type - weight-goal skill) and
-`smalltalk` (no acknowledgement). To add a capability, add a folder and press reload, or restart.
+`smalltalk`. To add a capability, add a folder and press reload, or restart.
 
 **Treningi** (Zadania → Treningi, `GET /api/training`, `brain/fitness.py`): the plan from `config/brain.yaml →
 training` (race, weekly hours per sport, 80/20 heart-rate limit) scaled by the season phase (base / build / peak /
@@ -165,13 +172,15 @@ else MET) and the daily steps you tell Alfred (`steps_log`, `data/memory/steps.j
 **Droga do startu** (Treningi): the season's phases with focus, milestones and this week's concrete sessions
 (minutes from your weekly hours; strength periodised per `docs/triathlon-motor-prep.md`). **Plan changes**: say
 what you want (or use "Chcę coś zmienić w planie") - Jev classifies the change type, the discipline and whether it
-adds load, each answer picks a fixed procedure block in the prompt (`executor.PLAN_CHANGE_*`): research, 3 options,
-a recommendation; `training_plan_update` changes the plan only after your yes.
+adds load, each answer picks a fixed procedure block in the prompt (`fitness.PLAN_*`, the race taken from the plan):
+research, 3 options, a recommendation; `training_plan_update` changes the plan only after your yes, and the change
+with its reason goes to `data/memory/log.md` (the next briefing shows it).
 
 **Dieta** (Zadania → Dieta, `GET /api/diet`): today's kcal and macros against the Nutrition MCP goals - raised on a
 training day by 60% of the burnt kcal (`training.eat_back`) - and the log of what you said, the meal type Jev picked
-and what was saved. The meal routine: after every `log_meal` the executor recalculates the day and the week's
-training sessions left and hands it to Claude in the same answer (`Executor._after_meal`).
+and what was saved (`nutrition_logged` events). The meal routine: after every `log_meal` the executor recalculates
+the day and the week's training sessions left and hands it to Claude in the same answer (`brain/meals.py`). The
+base goals Alfred raises live in `data/nutrition_sync.json`.
 
 ## MCP servers — `config/mcp.json`
 
@@ -195,8 +204,7 @@ training sessions left and hands it to Claude in the same answer (`Executor._aft
 The scheduler runs inside the brain:
 - every minute it checks for due tasks;
 - recurring tasks run as cron jobs;
-- idle sessions are closed;
-- a heartbeat runs every 30 min.
+- idle sessions are closed.
 
 Before Claude is woken, Jev answers one question: is this worth interrupting you for? This takes the time,
 your quiet hours (`23:00–07:00`) and when you last spoke into account. Only a "yes" calls Claude, and every
@@ -219,7 +227,7 @@ bars. The speaker icon on the right of the header lights up while Alfred talks; 
   summaries of recent sessions.
 - **Mózg 3D**: the app as a brain. Every vertical level is one part of it, bottom to top: the brainstem
   (the pipeline: ears, router, executor, guard, voice), memory, knowledge, MCP servers, the technical brain
-  (skills, routines, code, tests), modules, and Alfred's personality at the crown. Each level keeps its
+  (skills, routines), modules, and Alfred's personality at the crown. Each level keeps its
   contents in folders. White threads fire like neurons, the levels that are working light up, and events
   travel as labelled packets. Click a level or a node to see what it is; **▶ Pokaż przepływ** plays a sample
   restaurant booking without any API keys. The side tabs hold memory, the brain map, persona, modules, the

@@ -85,7 +85,6 @@ memory:
 
 proactive:
   enabled: true
-  heartbeat_minutes: 30
   quiet_hours: ["23:00", "07:00"]
   routines: config/routines.yaml
   # Przypomnienia o zadaniach z terminem: Alfred odzywa się `lead_minutes` przed terminem (0 = dopiero o czasie)

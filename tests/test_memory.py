@@ -62,11 +62,9 @@ def test_okf_roundtrip_and_slugs():
     assert okf.slugify("Łódź — Kraków!") == "lodz-krakow" and okf.slugify("???") == "item"
 
 
-def test_only_four_statuses_and_old_waiting_tasks_are_in_progress(tmp_path):
+def test_only_four_statuses(tmp_path):
     store = MemoryStore(tmp_path)
     task = store.create_task("Stary", status="in_progress")
-    path = tmp_path / "tasks" / f"{task.id}.md"
-    path.write_text(path.read_text(encoding="utf-8").replace("status: in_progress", "status: waiting"), encoding="utf-8")
     assert store.get_task(task.id).status == "in_progress" and store.list_tasks("open")[0].id == task.id
     for bad in ("waiting", "bogus"):
         with pytest.raises(ValueError):

@@ -1,7 +1,7 @@
 """The router decides WHO handles a request, before Claude does any work:
 
 1. classify(): which module, which capabilities (tool groups), skill and knowledge topic. Asks Jev (one fast call
-   with all the questions); if Jev is down, asks Claude's light model; if that fails too, counts keywords.
+   with all the questions); if Jev is down, asks Claude's light model; if that fails too, small talk - and Alfred asks.
 2. apply_policy(): turns Jev's probabilities into a decision (close call -> 2 modules, unsure -> ask the user).
 3. force(): capabilities you named outright ("kalendarz", "zadanie" ...) are always given - config router.triggers.
 
@@ -12,17 +12,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
-from . import llm
+from . import fitness, llm
 from .atlas import BrainMap
 from .config import ROOT
 
+log = logging.getLogger("alfred.router")
 NONE = "none"
 SHIELD_REQUEST = (ROOT / "config" / "shield_request.md").read_text(encoding="utf-8")
 SHIELD_ACTION = (ROOT / "config" / "shield_action.md").read_text(encoding="utf-8")
@@ -33,18 +35,6 @@ TASK_STATUS_CRITERIA = {        # the only task statuses (brain/memory.py TASK_S
     "in_progress": "W toku - użytkownik zaczął, pracuje nad tym, jest w trakcie",
     "done": "Zrobione - skończone, załatwione, gotowe",
     "cancelled": "Anulowane - nieaktualne, rezygnuje, nie będzie robione",
-}
-PLAN_CHANGES = {                # what he wants to change in his training plan - each picks a fixed procedure (executor)
-    "add_activity": "Chce dodać nową aktywność albo sport do planu (np. siłownia, crossfit, joga, wspinaczka, narty, rolki)",
-    "volume": "Chce trenować więcej albo mniej (godziny, liczba jednostek) albo zmienić dni treningów",
-    "pause": "Przerwa albo trudny okres: wyjazd, urlop, choroba, kontuzja, ból, bardzo ciężki czas w pracy",
-    "race": "Zmiana zawodów: inna data, inny dystans, dodatkowy start, rezygnacja ze startu",
-    "focus": "Chce poprawić konkretną rzecz: słabszą dyscyplinę, tempo, technikę, siłę, mobilność",
-    "body": "Zmiana celu sylwetkowego: waga, redukcja, masa mięśniowa, dieta pod trening",
-}
-PLAN_SPORTS = {                 # which part of the plan the change is about
-    "swim": "Pływanie", "bike": "Rower", "run": "Bieganie", "strength": "Siła, siłownia, mobilność, stabilizacja",
-    "all": "Cały plan albo kilka dyscyplin naraz",
 }
 OTHER_PRODUCT = "other"         # Jev's answer when the food is none of his regular products
 MEAL_TYPES = {                  # nutrition-mcp log_meal meal_type, as Jev's options
@@ -105,7 +95,7 @@ class Route:
     module: str
     skill: str | None = None
     topic: str | None = None
-    capabilities: list[str] = field(default_factory=list)   # [] = all capabilities of the modules
+    capabilities: list[str] = field(default_factory=list)   # every capability Claude gets (apply_policy, force)
     confidence: float = 0.0
     probabilities: dict[str, float] = field(default_factory=dict)             # per module
     capability_probabilities: dict[str, float] = field(default_factory=dict)
@@ -124,7 +114,8 @@ class Route:
     multi_step: float = 0.0                                  # several separate things asked at once (Jev)
     changes_existing: float = 0.0                            # fixing / moving something that exists (Jev)
     tool_probabilities: dict[str, float] = field(default_factory=dict)   # per tool, asked one by one (Jev)
-    source: str = "rules"                                    # jev | llm | rules | hint
+    source: str = "none"                                     # jev | llm | hint | none (nobody could route)
+    error: str | None = None                                 # why Jev / Claude could not route - the fallback taken
     latency_ms: int = 0
     usage: dict[str, Any] = field(default_factory=dict)      # input, output, cost_usd
 
@@ -142,12 +133,13 @@ def _tokens(usage: dict) -> dict[str, Any]:
 
 
 class Router:
-    def __init__(self, brain_map: BrainMap, jev: JevClient, settings):
+    def __init__(self, brain_map: BrainMap, jev: JevClient, settings, products: Callable[[], list[dict]] = lambda: [],
+                 on_usage: Callable[[dict], None] = lambda usage: None):
         self.map = brain_map
         self.jev = jev
         self.settings = settings
-        self.on_usage = lambda usage: None   # the brain bills every Jev call (router, shield, yes/no) to the session
-        self.products = lambda: []           # his regular products (Zadania -> Produkty); the brain plugs in memory
+        self.products = products     # his regular products (Zadania -> Produkty), from memory
+        self.on_usage = on_usage     # the brain bills every Jev call (router, shield, yes/no) to the session
 
     def _setting(self, key: str, default: float) -> float:
         return float(self.settings.get(f"router.{key}", default))
@@ -161,17 +153,25 @@ class Router:
 
     async def classify(self, text: str, context: str = "") -> Route:
         started = time.perf_counter()
-        route, tools = None, {}
+        route, tools, errors = None, {}, []
         if self.jev.available:   # routing and the per-tool questions go out at the same time
-            routed, tools = await asyncio.gather(self._classify_jev(text, context), self._rank_tools(text, context),
-                                                 return_exceptions=True)
-            route = None if isinstance(routed, Exception) else routed
-            tools = {} if isinstance(tools, Exception) else tools
+            routed, ranked = await asyncio.gather(self._classify_jev(text, context), self._rank_tools(text, context),
+                                                  return_exceptions=True)
+            if isinstance(routed, Exception):
+                errors.append(f"Jev: {type(routed).__name__}: {routed}")
+            else:
+                route = routed
+            if isinstance(ranked, Exception):
+                errors.append(f"Jev tools: {type(ranked).__name__}: {ranked}")
+            else:
+                tools = ranked
         if route is None:
             try:
                 route = await self._classify_llm(text, context)
-            except Exception:
-                route = self._classify_rules(text)
+            except Exception as exc:
+                errors.append(f"Claude: {type(exc).__name__}: {exc}")
+                route = Route(module="smalltalk")   # nobody could route: small talk, and Alfred asks what he means
+        route.error = "; ".join(errors)[:500] or None
         self.apply_policy(route)
         self.force(route, text)
         self.apply_tools(route, tools)
@@ -209,7 +209,6 @@ class Router:
                 self._include(route, cid)
 
     def _include(self, route: Route, cid: str) -> None:
-        route.capabilities = route.capabilities or self.map.capabilities_of(route.modules)   # [] meant "all"
         owner = self.map.capabilities[cid].get("module")
         if owner and owner not in route.modules:
             route.also.append(owner)
@@ -251,10 +250,11 @@ class Router:
                                    TASK_STATUS_CRITERIA | {NONE: "The user says nothing about a task's status"})
         if "training" in self.map.modules:
             qs["plan_change"] = choice("Does the user want to change his training plan, and how?",
-                                       PLAN_CHANGES | {NONE: "Nie chce zmieniać planu treningowego (pyta, raportuje, "
-                                                             "zapisuje trening, jedzenie albo kroki, albo inny temat)"})
+                                       fitness.PLAN_CHANGES | {NONE: "Nie chce zmieniać planu treningowego (pyta, "
+                                                                     "raportuje, zapisuje trening, jedzenie albo kroki, "
+                                                                     "albo inny temat)"})
             qs["plan_sport"] = choice("Which part of the training plan is the request about?",
-                                      PLAN_SPORTS | {NONE: "Żadnej konkretnej / nie dotyczy treningu"})
+                                      fitness.PLAN_SPORTS | {NONE: "Żadnej konkretnej / nie dotyczy treningu"})
             qs["adds_load"] = noul("Would doing what the user wants add training load (more hours, more intensity or an "
                                    "extra activity) on top of his current plan?",
                                    true="More load than now", false="The same or less load, or not about training")
@@ -271,11 +271,13 @@ class Router:
         try:
             module = a["module"]
             cap = a.get("capability") or {}
+            cap_probabilities = {k: float(v) for k, v in (cap.get("probabilities") or {}).items()}
+            if not cap_probabilities and cap.get("choice"):     # only a choice, no probabilities: sure of it
+                cap_probabilities = {cap["choice"]: 1.0}
             route = Route(module=module["choice"],
                           confidence=float(module.get("confidence", max(module["probabilities"].values()))),
                           probabilities={k: float(v) for k, v in module["probabilities"].items()},
-                          capability_probabilities={k: float(v) for k, v in (cap.get("probabilities") or {}).items()}
-                          or ({cap["choice"]: 1.0} if cap.get("choice") else {}),
+                          capability_probabilities=cap_probabilities,
                           urgency=float(a.get("urgency", {}).get("score", 0.0)),
                           acts_on_world=float(a.get("acts_on_world", {}).get("noul", 0.0)),
                           needs_history=float(a.get("needs_history", {}).get("noul", 0.0)),
@@ -326,21 +328,6 @@ class Router:
                      urgency=float(data["urgency"]), acts_on_world=float(data["acts_on_world"]),
                      needs_history=float(data["needs_history"]), source="llm", usage=_tokens(usage))
 
-    def _classify_rules(self, text: str) -> Route:
-        """Last resort: the module whose description and examples share the most words with the request."""
-        words = set(re.findall(r"\w+", text.lower()))
-        scores = {}
-        for m in self.map.enabled_modules():
-            vocab = " ".join([m["title"], m.get("description", ""), *(m.get("examples") or [])]).lower()
-            scores[m["id"]] = len(words & {w for w in re.findall(r"\w+", vocab) if len(w) > 3})
-        total = sum(scores.values())
-        if not total:
-            fallback = "smalltalk" if "smalltalk" in self.map.modules else next(iter(scores), "smalltalk")
-            return Route(module=fallback, confidence=0.5, probabilities={fallback: 0.5})
-        probabilities = {k: v / total for k, v in scores.items()}
-        best = max(probabilities, key=probabilities.get)
-        return Route(module=best, confidence=probabilities[best], probabilities=probabilities)
-
     def apply_policy(self, route: Route) -> None:
         """Probabilities -> which modules and capabilities are loaded, and whether Alfred should ask."""
         mods = self.map.modules
@@ -359,7 +346,8 @@ class Router:
                 route.also.append(owner)
         route.also = [m for m in dict.fromkeys(route.also) if m != route.module and m in mods]
 
-        # the most likely capabilities (max 3) until they cover 80%, plus what the skill/topic/module always needs
+        # the most likely capabilities (max 3) until they cover 80% - unsure, or none likely: all of the modules' -
+        # plus what the skill, the topic and the modules always need
         ask_below = self._setting("ask_below", 0.3)
         reachable, chosen, covered = self.map.capabilities_of(route.modules), [], 0.0
         if route.confidence >= ask_below:
@@ -369,12 +357,12 @@ class Router:
                     covered += p
                 if covered >= self._setting("capability_coverage", 0.8):
                     break
-        if chosen:
-            chosen += self.map.skills.get(route.skill or "", {}).get("uses", [])
-            chosen.append(self.map.topics.get(route.topic or "", {}).get("capability"))
-            chosen += self.map.always_capabilities(route.modules)
+        chosen = chosen or list(reachable)
+        chosen += self.map.skills.get(route.skill or "", {}).get("uses", [])
+        chosen.append(self.map.topics.get(route.topic or "", {}).get("capability"))
+        chosen += self.map.always_capabilities(route.modules)
         route.capabilities = [c for c in dict.fromkeys(chosen) if c]
-        route.clarify = route.source not in ("rules", "hint") and route.confidence < ask_below
+        route.clarify = route.source != "hint" and route.confidence < ask_below
 
     def force(self, route: Route, text: str) -> None:
         """Capabilities the user named outright are always given, with their module, whatever Jev guessed."""
@@ -397,7 +385,11 @@ class Router:
             return False
         p = await self._jev_probability(f"Assistant asked: {question}\nUser answered: {text}", "yes",
                                         noul("Did the user approve the action?"))
-        return None if p is None else True if p >= 0.7 else False if p <= 0.3 else None
+        if p is not None and p >= 0.7:
+            return True
+        if p is not None and p <= 0.3:
+            return False
+        return None              # no Jev, or Jev is not sure either: not an answer
 
     async def should_interrupt(self, state: str) -> float:
         """Probability that a due reminder is worth speaking up for right now (1.0 without Jev)."""
@@ -412,7 +404,8 @@ class Router:
             return None
         try:
             return float((await self._ask(state, {key: question}))["answers"][key]["noul"])
-        except (JevError, KeyError, TypeError, ValueError):
+        except (JevError, KeyError, TypeError, ValueError) as exc:
+            log.warning("Jev did not answer '%s': %s: %s", key, type(exc).__name__, exc)
             return None
 
     async def is_injection(self, text: str, context: str = "") -> dict[str, Any]:
@@ -425,7 +418,8 @@ class Router:
 
     async def classify_tasks(self, request: str, tasks: list[str]) -> list[tuple[str | None, str | None]]:
         """Jev classifies each task on its own - category and status, two questions per task, all in one call.
-        Per task: (category or None = none fits, status); "?" where Jev gave no answer. Raises JevError if Jev is down."""
+        Per task: (category, status); "?" where Jev gave no answer, category None when no categories are set.
+        Raises JevError if Jev is down."""
         categories = self.settings.get("tasks.categories") or {}
         qs: dict[str, dict] = {}
         for i, task in enumerate(tasks):
@@ -436,12 +430,10 @@ class Router:
                                  TASK_STATUS_CRITERIA)
         answers = (await self._ask(f"User said: {request}", qs))["answers"] if qs else {}
 
-        def pick(key: str, allowed: dict, none_ok: bool = False) -> str | None:
-            c = (answers.get(key) or {}).get("choice")
-            if none_ok and c == NONE:
-                return None
-            return c if c in allowed else "?"
-        return [(pick(f"c{i}", categories, none_ok=True) if categories else None, pick(f"s{i}", TASK_STATUS_CRITERIA))
+        def pick(key: str, allowed: dict) -> str:
+            picked = (answers.get(key) or {}).get("choice")
+            return picked if picked in allowed else "?"
+        return [(pick(f"c{i}", categories) if categories else None, pick(f"s{i}", TASK_STATUS_CRITERIA))
                 for i in range(len(tasks))]
 
     async def classify_meal(self, request: str, meal: str, now: str) -> str | None:
@@ -460,14 +452,14 @@ class Router:
                                  "Akcja zgodna z prośbą użytkownika")
 
     async def _judge(self, key: str, prompt: str, state: str, true: str, false: str) -> dict[str, Any]:
-        """Always Jev. Passes -> the request goes on. No answer from Jev -> blocked (fail closed)."""
+        """Always Jev. Passes -> the request goes on. No answer from Jev -> blocked (fail closed), with the reason."""
         started = time.perf_counter()
-        verdict = {"breach": True, "probability": None, "source": "closed", "tokens": 0}
         try:
             resp = await self._ask(state, {key: noul(prompt, true=true, false=false)})
             p, used = float(resp["answers"][key]["noul"]), _tokens(resp.get("usage") or {})
             verdict = {"breach": p >= self._setting("injection_at", 0.5), "probability": p, "source": "jev",
                        "tokens": used["input"] + used["output"]}
-        except (JevError, KeyError, TypeError, ValueError):
-            pass
+        except (JevError, KeyError, TypeError, ValueError) as exc:
+            verdict = {"breach": True, "probability": None, "source": "closed", "tokens": 0,
+                       "error": f"{type(exc).__name__}: {exc}"[:300]}
         return verdict | {"ms": int((time.perf_counter() - started) * 1000)}

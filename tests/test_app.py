@@ -26,10 +26,9 @@ def api(make_brain, monkeypatch):
 def test_status_graph_modules_and_map(api):
     client, brain, _ = api
     status = client.get("/api/status").json()
-    assert status["backend"] == "subscription" and status["session"] is None and status["pending_confirmation"] is None
+    assert status["session"] is None and status["pending_confirmation"] is None
     graph = client.get("/api/graph").json()
-    assert graph["backend"] == "subscription" and {"repo", "test", "persona"} <= {n["kind"] for n in graph["nodes"]}
-    assert {"source": "test:test_router", "target": "repo:router", "rel": "tests"} in graph["edges"]
+    assert {"core", "persona", "module", "tool"} <= {n["kind"] for n in graph["nodes"]}
 
     modules = {m["id"]: m for m in client.get("/api/modules").json()}
     assert {"tasks", "calendar", "smalltalk"} <= set(modules)
@@ -126,7 +125,6 @@ def test_calendar_reads_google_through_mcp(api, monkeypatch):
     assert calls[0] == ("google-calendar__list-events", {"calendarId": "primary", "timeMin": week["start"],
                                                          "timeMax": week["end"], "timeZone": "Europe/Warsaw"})
     assert client.get("/api/calendar", params=week).json() == {"status": "error", "error": "invalid_grant", "events": []}
-    assert [r["data"]["events"] for r in brain.bus.log.read(kind="calendar_sync")] == [1]
 
 
 def test_routines_show_what_ran_today(api, tmp_path):
@@ -136,15 +134,19 @@ def test_routines_show_what_ran_today(api, tmp_path):
         "  - {id: brief, schedule: '0 0 * * *', prompt: Daj brief}\n"
         "  - {id: broken, schedule: '0 0 * * *', prompt: Zepsuj}\n"
         "  - {id: hello, schedule: '@start', prompt: Przywitaj}\n", encoding="utf-8")
-    brain.bus.emit("transcript", "ears", "r-1", text="Daj brief", source="routine")
+    brain.bus.emit("routine_run", "proactive", "r-1", routine="brief")
     brain.bus.emit("answer", "voice", "r-1", text="Dzień dobry.", source="routine")
-    brain.bus.emit("transcript", "ears", "r-2", text="Zepsuj", source="routine")
+    brain.bus.emit("routine_run", "proactive", "r-2", routine="broken")
     brain.bus.emit("error", "executor", "r-2", message="boom")
     brain.bus.emit("answer", "voice", "r-2", text="Przepraszam, coś poszło nie tak.", source="routine")
     r = {x["id"]: x for x in client.get("/api/routines").json()}
     assert (r["brief"]["result"], r["brief"]["answer"], r["brief"]["due_today"]) == ("answer", "Dzień dobry.", True)
     assert (r["broken"]["result"], r["broken"]["answer"]) == ("error", "boom")
     assert r["hello"]["ran_at"] is None and r["hello"]["next_run"] is None and r["brief"]["next_run"]
+
+    (tmp_path / "routines.yaml").write_text(        # its prompt changed: the run still counts - it is found by id
+        "routines:\n  - {id: brief, schedule: '0 0 * * *', prompt: Daj krótki brief}\n", encoding="utf-8")
+    assert client.get("/api/routines").json()[0]["answer"] == "Dzień dobry."
 
 
 def test_routines_added_in_przeglad_and_the_productivity_routine(api):

@@ -11,7 +11,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from . import fitness, llm, persona
 from .config import ROOT
 from .pipeline import Brain
-from .scheduler import START
+from .scheduler import START, delete_routine, routines_file, save_routine
 from .tools import task_category
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -92,7 +92,6 @@ async def status() -> dict[str, Any]:
     session = brain.sessions.current
     return {
         "keys": brain.settings.keys() | {"anthropic": bool(claude_status.get("ok"))},
-        "backend": "subscription",
         "claude": claude_status,
         "mcp": brain.hub.status(),
         "jobs": brain.proactive.status() if brain.proactive.scheduler.running else [],
@@ -136,7 +135,7 @@ async def modules() -> list[dict[str, Any]]:
     return [{"id": m.id, "label": m.label, "description": m.description, "enabled": m.enabled,
              "examples": m.examples, "model": m.model, "effort": m.effort, "uses": m.uses,
              "servers": brain.map.modules.get(m.id, {}).get("servers", []),
-             "capabilities": [{"id": c.id, "label": c.label, "confirm": c.confirm,
+             "capabilities": [{"id": c.id, "label": c.label, "confirm": bool(c.confirm),
                                "tools": brain.map.capabilities.get(c.id, {}).get("tools", [])}
                               for c in m.capabilities.values()],
              "skills": [{"id": s.id, "name": s.name, "description": s.description} for s in m.skills]}
@@ -331,7 +330,6 @@ async def calendar(start: str, end: str) -> dict[str, Any]:
         text, events = f"{type(exc).__name__}: {exc}", None
     if events is None:
         return {"status": "error", "error": text[:300], "events": []}
-    brain.bus.emit("calendar_sync", "mcp:google-calendar", events=len(events))
     return {"status": "ready", "error": None, "events": events}
 
 
@@ -390,31 +388,19 @@ async def diet() -> dict[str, Any]:
 
 
 def nutrition_log(days: int = 3, limit: int = 40) -> list[dict[str, Any]]:
-    """What you said -> how Jev classified it -> what went into Nutrition MCP, newest first (from the activity log)."""
-    events = [e for day in reversed(brain.bus.log.days()[:days]) for e in brain.bus.log.read(day, limit=100_000)]
-    said = {e["request_id"]: e["data"].get("text") for e in events if e["kind"] == "transcript"}
-    classified: dict[str, dict] = {}
-    out: list[dict[str, Any]] = []
-    for e in events:
-        rid, d = e["request_id"], e["data"]
-        tool = str(d.get("tool", ""))
-        if e["kind"] == "meal_classified":
-            classified[f"{rid}|{d.get('meal')}"] = d
-        elif e["kind"] == "tool_call" and tool.startswith("nutrition__log_"):
-            args = d.get("input") or {}
-            jev = classified.get(f"{rid}|{args.get('description')}") or {}
-            out.append({"ts": e["ts"], "request_id": rid, "said": said.get(rid), "tool": tool.split("__", 1)[1],
-                        "input": args, "source": jev.get("source"), "ok": None,
-                        "items": fitness.meal_items(args.get("notes"))})
-        elif e["kind"] == "tool_result" and tool.startswith("nutrition__log_"):
-            entry = next((o for o in reversed(out) if o["request_id"] == rid and o["ok"] is None), None)
-            if entry:
-                entry["ok"] = not d.get("is_error")
-        elif e["kind"] == "meal_balance":
-            entry = next((o for o in reversed(out) if o["request_id"] == rid and o["tool"] == "log_meal"), None)
-            if entry:
-                entry["balance"] = {r["key"]: [r["eaten"], r["goal"]] for r in d.get("rows", [])}
-    return out[::-1][:limit]
+    """What you said -> how Jev classified it -> what went into Nutrition MCP, newest first (the executor's
+    nutrition_logged events)."""
+    out = []
+    for day in brain.bus.log.days()[:days]:
+        for e in reversed(brain.bus.log.read(day, limit=100_000, kind="nutrition_logged")):
+            d, args = e["data"], e["data"].get("input") or {}
+            entry = {"ts": e["ts"], "request_id": e["request_id"], "said": d.get("said"),
+                     "tool": d["tool"].split("__", 1)[1], "input": args, "source": d.get("source"), "ok": d.get("ok"),
+                     "items": fitness.meal_items(args.get("notes"))}
+            if d.get("balance"):
+                entry["balance"] = {r["key"]: [r["eaten"], r["goal"]] for r in d["balance"]["rows"]}
+            out.append(entry)
+    return out[:limit]
 
 
 class RaceIn(BaseModel):
@@ -485,8 +471,7 @@ async def routines() -> list[dict[str, Any]]:
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     out = []
     for r in brain.proactive.routines():
-        runs = [e for e in events if e["kind"] == "transcript" and e["data"].get("source") == "routine"
-                and e["data"].get("text") == r["prompt"]]
+        runs = [e for e in events if e["kind"] == "routine_run" and e["data"].get("routine") == r["id"]]
         last = runs[-1] if runs else None
         of_last_run = [e for e in events if last and e["request_id"] == last["request_id"]]
         error = next((e["data"].get("message") for e in reversed(of_last_run) if e["kind"] == "error"), None)
@@ -511,10 +496,11 @@ class RoutineIn(BaseModel):
     module: str | None = None
 
 
-async def _routine(tool: str, args: dict[str, Any]) -> str:
-    """The same code as Alfred's routine_save / routine_delete tools; their errors become a 400 for the UI."""
+def _change_routines(change: Callable[..., str], *args: Any) -> str:
+    """scheduler.save_routine / delete_routine - the same code as Alfred's routine tools; their errors become a 400
+    for the UI, and the scheduler picks the change up right away."""
     try:
-        done = await brain.executor.handlers[tool](args, None)
+        done = change(routines_file(brain.settings), *args)
     except (ValueError, KeyError) as exc:
         raise HTTPException(400, str(exc).strip("'\"")) from None
     if brain.proactive.scheduler.running:
@@ -523,14 +509,14 @@ async def _routine(tool: str, args: dict[str, Any]) -> str:
 
 
 @app.post("/api/routines")
-async def save_routine(body: RoutineIn) -> dict[str, str]:
+async def post_routine(body: RoutineIn) -> dict[str, str]:
     """Przegląd → Rutyny: add one, or change it (same id)."""
-    return {"result": await _routine("routine_save", body.model_dump(exclude_none=True))}
+    return {"result": _change_routines(save_routine, body.id, body.schedule, body.prompt, body.module)}
 
 
 @app.delete("/api/routines/{routine_id}")
-async def delete_routine(routine_id: str) -> dict[str, str]:
-    return {"result": await _routine("routine_delete", {"id": routine_id})}
+async def remove_routine(routine_id: str) -> dict[str, str]:
+    return {"result": _change_routines(delete_routine, routine_id)}
 
 
 HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
@@ -590,10 +576,10 @@ async def set_productivity(body: ProductivityIn) -> dict[str, Any]:
         brain.settings.update({"productivity": {"plan": body.plan.model_dump()}})
     have = {r["id"] for r in brain.proactive.routines()}
     for r in productivity_routines(_plan(), brain.settings.get("productivity.routines") or []):
-        if body.enabled:
-            await _routine("routine_save", r)      # same id: replaced with the new times and notes
+        if body.enabled:           # same id: replaced with the new times and notes
+            _change_routines(save_routine, r["id"], r["schedule"], r["prompt"], r.get("module"))
         elif r["id"] in have:
-            await _routine("routine_delete", {"id": r["id"]})
+            _change_routines(delete_routine, r["id"])
     return await productivity()
 
 

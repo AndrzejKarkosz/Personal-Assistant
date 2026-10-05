@@ -12,11 +12,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-import yaml
-from apscheduler.triggers.cron import CronTrigger
-
-from . import fitness, okf
+from . import fitness
 from .memory import FACT_CATEGORIES, OPEN_STATUSES, TASK_STATUSES, MemoryStore
+from .scheduler import check_cron, delete_routine, save_routine
 
 CONFIRM_TOOL = "confirm_action"
 ADD_CATEGORY = "task_category_add"
@@ -145,14 +143,6 @@ def check_due(due: str | None) -> None:
                          "An hour that has already gone today means tomorrow.")
 
 
-def check_cron(schedule: str | None, allow_start: bool = False) -> None:
-    if schedule and not (allow_start and schedule == "@start"):
-        try:
-            CronTrigger.from_crontab(schedule)
-        except ValueError:
-            raise ValueError(f"schedule '{schedule}' is not a 5-field cron (e.g. '0 8 * * 1-5')") from None
-
-
 def task_category(value: str | None, allowed: dict | list | None) -> str | None:
     """The fixed category `value` means ("smart meet" -> "SmartMeet"); None / "" pass through (no category).
     Anything else is an error that lists the categories - Claude then picks one or asks to add a new one.
@@ -183,18 +173,6 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None, setting
             return hits[0].id
         listing = "; ".join(f"{t.id}: {t.title}" + (f" (due {t.due})" if t.due else "") for t in open_tasks[:25])
         raise KeyError(f"{'Several' if hits else 'No'} task(s) match '{ref}'. Use one exact id. Open tasks: {listing}")
-
-    def load_routines() -> list[dict]:
-        if not routines_file:
-            raise ValueError("No routines file configured (proactive.routines)")
-        data = yaml.safe_load(routines_file.read_text(encoding="utf-8")) if routines_file.exists() else None
-        routines = data.get("routines") if isinstance(data, dict) else None
-        return [r for r in routines if isinstance(r, dict)] if isinstance(routines, list) else []
-
-    def save_routines(routines: list[dict]) -> None:
-        routines_file.parent.mkdir(parents=True, exist_ok=True)
-        routines_file.write_text(yaml.safe_dump({"routines": routines}, allow_unicode=True, sort_keys=False),
-                                 encoding="utf-8")
 
     async def memory_search(args, sid):
         return json.dumps(store.search(args["query"], int(args.get("limit", 8))), ensure_ascii=False)
@@ -253,29 +231,10 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None, setting
             return f"Added task category '{name}'. Categories now: {', '.join(categories() or {})}"
 
     async def routine_save(args, sid):
-        rid = okf.slugify(args["id"])
-        check_cron(args["schedule"], allow_start=True)
-        if not str(args.get("prompt", "")).strip():
-            raise ValueError("a routine needs a prompt")
-        new = {"id": rid, "schedule": args["schedule"], "prompt": args["prompt"].strip()}
-        if args.get("module"):
-            new["module"] = args["module"]
-        routines = load_routines()
-        old = next((r for r in routines if r.get("id") == rid), None)
-        if old:
-            old.update(new)                         # keeps extra keys such as min_idle_minutes
-        else:
-            routines.append(new)
-        save_routines(routines)
-        return f"{'Updated' if old else 'Created'} routine {rid} ({args['schedule']})"
+        return save_routine(routines_file, args["id"], args["schedule"], args.get("prompt", ""), args.get("module"))
 
     async def routine_delete(args, sid):
-        routines = load_routines()
-        kept = [r for r in routines if r.get("id") != args["id"]]
-        if len(kept) == len(routines):
-            raise KeyError(f"No routine '{args['id']}'. Routines: {', '.join(str(r.get('id')) for r in routines) or 'none'}")
-        save_routines(kept)
-        return f"Deleted routine {args['id']}"
+        return delete_routine(routines_file, args["id"])
 
     async def training_status(args, sid):
         if hub is None or settings is None:
@@ -299,9 +258,8 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None, setting
             raise ValueError("nothing to change - pass race, weekly, easy_hr_max or steps_goal")
         if (race := patch.get("race")) and race.get("date"):
             datetime.fromisoformat(race["date"])        # ValueError for a bad date
-        changes = (settings.get("training.changes") or [])[-19:] + [
-            {"date": datetime.now().date().isoformat(), "why": args["why"], "changed": patch}]
-        settings.update({"training": patch | {"changes": changes}})
+        settings.update({"training": patch})
+        store.log("plan.updated", f"{', '.join(patch)}: {args['why']}", sid)   # the next briefing shows it
         return f"Plan updated ({', '.join(patch)}): {args['why']}"
 
     async def steps_log(args, sid):

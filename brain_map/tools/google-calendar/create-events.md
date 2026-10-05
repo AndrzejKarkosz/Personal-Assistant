@@ -11,8 +11,7 @@ short: create-events
 capabilities: [calendar.write]
 modules: [calendar]
 side_effect: write
-requires_confirmation: true
-confirm_override: false
+requires_confirmation: false
 status: online
 params: [account, calendarId, timeZone, sendUpdates, events]
 tags: [tool, google-calendar]

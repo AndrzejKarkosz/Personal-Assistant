@@ -23,7 +23,8 @@ class Capability:
     description: str = ""
     tools: list[str] = field(default_factory=list)   # tool name patterns, e.g. "google-calendar__create-*"
     examples: list[str] = field(default_factory=list)
-    confirm: bool = False      # every tool here needs a spoken "yes"
+    confirm: bool | None = None   # true: every tool here needs a spoken "yes"; false: none, even destructive ones;
+                                  # not set: only the tools the server marks destructive
     always: bool = False       # given whenever the module is active
 
     def matches(self, tool_name: str) -> bool:
@@ -66,7 +67,7 @@ def load_module(folder: Path) -> Module:
     for name, cap in (data.get("capabilities") or {}).items():
         module.capabilities[f"{mid}.{name}"] = Capability(
             id=f"{mid}.{name}", module=mid, label=cap.get("label", name), description=cap.get("description", ""),
-            tools=cap.get("tools", []), examples=cap.get("examples", []), confirm=bool(cap.get("confirm")),
+            tools=cap.get("tools", []), examples=cap.get("examples", []), confirm=cap.get("confirm"),
             always=bool(cap.get("always")))
     for file in sorted((folder / "skills").glob("*.md")):
         meta, body = okf.read(file)
@@ -86,10 +87,6 @@ class ModuleRegistry:
 
     def get(self, module_id: str) -> Module | None:
         return self.modules.get(module_id)
-
-    def capability(self, cap_id: str) -> Capability | None:
-        module = self.get(cap_id.split(".", 1)[0])
-        return module.capabilities.get(cap_id) if module else None
 
     def skill(self, skill_id: str | None) -> Skill | None:
         module = self.get((skill_id or "").split(".", 1)[0])

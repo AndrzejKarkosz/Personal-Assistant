@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from types import SimpleNamespace
 
@@ -5,7 +6,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from brain import fitness
+from brain import fitness, meals
 from brain.executor import ExecResult
 
 RACE = date(2027, 6, 13)
@@ -75,23 +76,20 @@ def test_training_tab_without_strava_or_nutrition(make_brain, monkeypatch):
     assert client.put("/api/training/plan", json=plan | {"race": {"distance": "marathon"}}).status_code == 422
 
 
-async def test_jev_decides_the_meal_type(make_brain):
-    brain, _ = make_brain()
+async def test_jev_decides_the_meal_type():
     asked = {}
 
     async def classify_meal(request, meal, now):
         asked.update(request=request, meal=meal)
         return "breakfast"
-    brain.executor.classify_meal = classify_meal
     args = {"description": "owsianka z bananem", "meal_type": "snack", "calories": 450}
-    await brain.executor._jev_meal(args, ExecResult(text="", model="m", request="zjadłem owsiankę"), SimpleNamespace(id="s"), "r")
+    assert await meals.fill_in(args, "zjadłem owsiankę", None, classify_meal) == "jev"
     assert args["meal_type"] == "breakfast" and asked == {"request": "zjadłem owsiankę", "meal": "owsianka z bananem"}
 
     async def jev_down(*a):
         raise RuntimeError("no Jev")
-    brain.executor.classify_meal = jev_down
     args["meal_type"] = "lunch"
-    await brain.executor._jev_meal(args, ExecResult(text="", model="m", request="obiad"), SimpleNamespace(id="s"), "r")
+    assert await meals.fill_in(args, "obiad", None, jev_down) == "claude"
     assert args["meal_type"] == "lunch"                             # Claude's own value stays
 
 
@@ -138,11 +136,11 @@ async def test_steps_are_logged_against_the_goal(make_brain):
 
 
 async def test_the_meal_routine_recalculates_after_each_meal(make_brain, monkeypatch):
+    from brain import app as server
     brain, _ = make_brain()
     progress = {"date": date.today().isoformat(), "meal_count": 1, "weight": {"current": 80, "target": 75, "unit": "kg"},
                 "goals": {"calories": 2000, "protein_g": 150}, "totals": {"calories": 500, "protein_g": 30}}
-
-    written = []
+    written, logged = [], []
 
     async def call_json(name, args):
         if name == "nutrition__set_nutrition_goals":
@@ -150,25 +148,31 @@ async def test_the_meal_routine_recalculates_after_each_meal(make_brain, monkeyp
             return {}
         assert name == "nutrition__get_goal_progress"
         return progress
+
+    async def call(name, args, limit=20000):
+        logged.append(args)
+        return "Meal logged.", False
+
+    async def breakfast(request, meal, now):
+        return "breakfast"
     monkeypatch.setattr(brain.hub, "call_json", call_json)
-    note = await brain.executor._after_meal("r1", SimpleNamespace(id="s"))
-    assert "Kalorie 500/2000 kcal" in note and "Białko 30/150 g" in note and "still to do" in note
-    balance = brain.bus.log.read(kind="meal_balance")[-1]["data"]
-    assert balance["rows"][0]["eaten"] == 500
+    monkeypatch.setattr(brain.hub, "call", call)
+    monkeypatch.setattr(brain.router, "classify_meal", breakfast)
+    brain.hub._owner["nutrition__log_meal"] = ("nutrition", "log_meal")
+
+    # Claude logs a meal: Jev's meal type goes in, the meal routine comes back in the same answer
+    meal = {"description": "owsianka", "meal_type": "snack", "calories": 450}
+    output, is_error = await brain.executor.run_tool("nutrition__log_meal", meal, SimpleNamespace(id="s"), "r1",
+                                                     ExecResult(text="", model="m", request="zjadłem owsiankę"))
+    assert not is_error and logged[0]["meal_type"] == "breakfast"
+    assert "Kalorie 500/2000 kcal" in output and "Białko 30/150 g" in output and "still to do" in output
+    assert written == [] and json.loads(fitness.sync_file(brain.settings).read_text())["base"] == {"calories": 2000}
 
     # what you said -> Jev -> what was saved, for the Dieta tab
-    from brain import app as server
     monkeypatch.setattr(server, "brain", brain)
-    brain.bus.emit("transcript", "ears", "r1", text="zjadłem owsiankę")
-    brain.bus.emit("meal_classified", "router", "r1", meal="owsianka", meal_type="breakfast", source="jev")
-    brain.bus.emit("tool_call", "tool", "r1", tool="nutrition__log_meal", input={"description": "owsianka",
-                                                                                 "meal_type": "breakfast", "calories": 450})
-    brain.bus.emit("tool_result", "tool", "r1", tool="nutrition__log_meal", is_error=False)
-    brain.bus.emit("meal_balance", "executor", "r1", **fitness.day_balance(progress, 0))
     [entry] = server.nutrition_log()
     assert entry["said"] == "zjadłem owsiankę" and entry["source"] == "jev" and entry["ok"] is True
     assert entry["input"]["meal_type"] == "breakfast" and entry["balance"]["calories"] == [500, 2000]
-    assert written == [] and brain.settings.get("training.nutrition_base") == {"calories": 2000}   # no training today
 
 
 async def test_training_raises_the_goals_in_nutrition_mcp(make_brain, monkeypatch):
@@ -191,8 +195,26 @@ async def test_training_raises_the_goals_in_nutrition_mcp(make_brain, monkeypatc
     assert written[-1] == {"daily_calories": 2000, "daily_carbs_g": 200}
     goals["calories"] = 1900                                                # he set a new goal himself
     assert (await sync(500))["calories"] == 1900 and written[-1]["daily_calories"] == 2200
-    b = fitness.day_balance({"goals": dict(goals), "totals": {"calories": 800}}, 500, base=brain.settings.get("training.nutrition_base"))
+    base = json.loads(fitness.sync_file(brain.settings).read_text())["base"]
+    b = fitness.day_balance({"goals": dict(goals), "totals": {"calories": 800}}, 500, base=base)
     assert b["rows"][0]["goal"] == 2200 and b["rows"][0]["base_goal"] == 1900 and b["extra_kcal"] == 300
+    assert "nutrition_base" not in json.dumps(brain.settings.data)            # Alfred's state, not a setting
+
+
+async def test_the_goal_base_moves_out_of_settings_without_a_second_raise(make_brain, monkeypatch):
+    brain, _ = make_brain()
+    brain.settings.data["training"] |= {"nutrition_base": {"calories": 2000, "carbs_g": 200},      # where it was kept
+                                        "nutrition_synced": {"calories": 2300, "carbs_g": 252}}    # before 2026-10-05
+    written = []
+
+    async def call_json(name, args):
+        written.append(args)
+        return {}
+    monkeypatch.setattr(brain.hub, "call_json", call_json)
+    today = {"goals": {"calories": 2300, "carbs_g": 252}}                   # already raised for today's training
+    assert await fitness.sync_goals(brain.hub, brain.settings, today, 500) == {"calories": 2000, "carbs_g": 200}
+    assert written == []                                                    # not raised a second time
+    assert json.loads(fitness.sync_file(brain.settings).read_text())["base"] == {"calories": 2000, "carbs_g": 200}
 
 
 def test_the_road_to_the_race_and_this_weeks_sessions():
@@ -218,7 +240,7 @@ async def test_the_plan_changes_only_through_its_tool(make_brain):
                         "steps_goal": 9000}, "s")
     assert "weekly" in out and brain.settings.get("training.weekly.strength.sessions") == 1
     assert brain.settings.get("training.weekly.run.hours") == 1.5 and brain.settings.get("training.steps_goal") == 9000
-    assert brain.settings.get("training.changes")[-1]["why"].startswith("Crossfit")
+    assert "plan.updated** weekly, steps_goal: Crossfit" in brain.store.log_since(None)[-1]   # the briefing shows it
     with pytest.raises(ValueError):
         await update({"why": "nic"}, "s")
     assert brain.map.needs_confirmation("training_plan_update")                # he says yes first
@@ -235,9 +257,12 @@ async def test_jev_classifies_a_plan_change_into_fixed_prompt_blocks(make_brain)
     assert (route.source, route.plan_change, route.plan_sport, route.adds_load) == ("jev", "add_activity", "strength", 0.8)
     assert {"training.plan", "research.web"} <= set(route.capabilities)
     rules = brain.executor._module_rules(route)
-    from brain.executor import ADDS_LOAD, PLAN_CHANGE_RULES, PLAN_SPORT_RULES
-    assert "training plan change" in rules and PLAN_CHANGE_RULES["add_activity"] in rules
-    assert PLAN_SPORT_RULES["strength"] in rules and ADDS_LOAD in rules
+    assert "training plan change" in rules and fitness.PLAN_CHANGE_RULES["add_activity"] in rules
+    assert fitness.PLAN_SPORT_RULES["strength"] in rules and fitness.ADDS_LOAD in rules
+    race = brain.settings.get("training.race")
+    assert f"what it does for {race['name']} on {race['date']}," in rules              # the race from the plan itself
+    assert fitness.PLAN_CHANGES.keys() == fitness.PLAN_CHANGE_RULES.keys()              # every option Jev can pick
+    assert fitness.PLAN_SPORTS.keys() == fitness.PLAN_SPORT_RULES.keys()                # has its fixed block
     brain.router.jev.routing["plan_change"] = {"choice": "none"}
     quiet = await brain.router.classify("ile przebiegłem w tym tygodniu?")
     assert quiet.plan_change is None and "training plan change" not in brain.executor._module_rules(quiet)
@@ -264,9 +289,8 @@ async def test_jev_matches_his_regular_product_or_says_other(make_brain):
     from brain.router import OTHER_PRODUCT, Router
     from test_router import FakeJev
 
-    from brain.executor import grams_said
-    assert [grams_said(t) for t in ("150 g skyru", "0,5 kg ryżu", "250ml mleka", "30 gramów odżywki", "jeden baton")] \
-        == [150, 500, 250, 30, None]
+    assert [meals.grams_said(t) for t in ("150 g skyru", "0,5 kg ryżu", "250ml mleka", "30 gramów odżywki",
+                                          "jeden baton")] == [150, 500, 250, 30, None]
 
     brain, _ = make_brain()
     whey = {"name": "Odżywka białkowa", "url": "https://sklep.example/whey", "note": "wanilia, 30 g porcja"}
@@ -283,29 +307,30 @@ async def test_jev_matches_his_regular_product_or_says_other(make_brain):
     brain.store.save_products([whey])
     assert brain.router.products() == [whey]                                          # Jev reads the Produkty list
 
-    async def meal_type(*a):
+    async def snack(request, meal, now):
         return "snack"
-    brain.executor.classify_meal = meal_type
-    ex, session = brain.executor, SimpleNamespace(id="s")
-    args = {"description": "shake 1 porcja", "meal_type": "snack", "calories": 120}
-    await ex._jev_meal(args, ExecResult(text="", model="m", request="wypiłem shake'a", product=whey), session, "r")
+
+    async def jev_down(request, meal, now):
+        raise RuntimeError("Jev is down")
+    args = {"description": "shake 1 porcja", "meal_type": "dinner", "calories": 120}
+    assert await meals.fill_in(args, "wypiłem shake'a", whey, snack) == "jev"
+    assert args["meal_type"] == "snack"                                                # Jev's meal type, not Claude's
     assert args["description"] == "Odżywka białkowa - shake 1 porcja" and args["notes"] == "Stały produkt: https://sklep.example/whey"
-    note = ex._product_note(whey, "x")
+    note = meals.product_note(whey, "x")
     assert whey["url"] in note and "wanilia" in note
 
     skyr = {"name": "Skyr naturalny", "url": "https://sklep.example/skyr", "note": "", "grams": 150}
     args = {"description": "skyr", "meal_type": "snack"}
-    await ex._jev_meal(args, ExecResult(text="", model="m", request="zjadłem 200 g skyru", product=skyr), session, "r")
+    await meals.fill_in(args, "zjadłem 200 g skyru", skyr, snack)
     assert args["description"] == "Skyr naturalny (200 g)"                             # what he said wins
-    await ex._jev_meal(args, ExecResult(text="", model="m", request="zjadłem skyr", product=skyr), session, "r")
+    await meals.fill_in(args, "zjadłem skyr", skyr, snack)
     assert args["description"] == "Skyr naturalny (150 g)"                             # else his usual portion
-    assert "exactly 200 g" in ex._product_note(skyr, "zjadłem 200 g skyru")
-    assert "ask him how many grams" in ex._product_note(skyr | {"grams": None}, "zjadłem skyr")
+    assert "exactly 200 g" in meals.product_note(skyr, "zjadłem 200 g skyru")
+    assert "ask him how many grams" in meals.product_note(skyr | {"grams": None}, "zjadłem skyr")
 
-    said = "<reply_mode>text chat</reply_mode>\n\nzjadłem schabowego z ziemniakami i surówką"
     args = {"description": "Schabowy z ziemniakami", "meal_type": "dinner"}
-    await ex._jev_meal(args, ExecResult(text="", model="m", request=said, product=OTHER_PRODUCT), session, "r")
-    assert args["description"] == "zjadłem schabowego z ziemniakami i surówką"         # his own words
+    assert await meals.fill_in(args, "zjadłem schabowego z ziemniakami i surówką", OTHER_PRODUCT, jev_down) == "claude"
+    assert args == {"description": "zjadłem schabowego z ziemniakami i surówką", "meal_type": "dinner"}  # his words
 
 
 def test_each_product_of_a_meal_shows_its_kcal_and_macros(make_brain, monkeypatch):
@@ -324,11 +349,11 @@ def test_each_product_of_a_meal_shows_its_kcal_and_macros(make_brain, monkeypatc
     from brain import app as server
     brain, _ = make_brain()
     monkeypatch.setattr(server, "brain", brain)
-    brain.bus.emit("transcript", "ears", "r1", text="zjadłem kajzerkę i mleko")
-    brain.bus.emit("tool_call", "mcp:nutrition", "r1", tool="nutrition__log_meal",
-                   input={"description": "Śniadanie", "meal_type": "breakfast", "calories": 315, "notes": notes})
+    brain.bus.emit("nutrition_logged", "executor", "r1", said="zjadłem kajzerkę i mleko", tool="nutrition__log_meal",
+                   input={"description": "Śniadanie", "meal_type": "breakfast", "calories": 315, "notes": notes},
+                   source="jev", ok=True, balance=None)
     entry = server.nutrition_log()[0]
-    assert entry["said"] == "zjadłem kajzerkę i mleko" and len(entry["items"]) == 3
+    assert entry["said"] == "zjadłem kajzerkę i mleko" and len(entry["items"]) == 3 and "balance" not in entry
 
 
 def test_todays_meals_come_from_nutrition_mcp_with_their_products():

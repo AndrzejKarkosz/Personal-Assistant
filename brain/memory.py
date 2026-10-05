@@ -25,7 +25,6 @@ from .events import new_id, now_iso
 
 TASK_STATUSES = ("todo", "in_progress", "done", "cancelled")   # do zrobienia, w toku, zrobione, anulowane
 OPEN_STATUSES = ("todo", "in_progress")
-OLD_STATUSES = {"waiting": "in_progress"}                      # statuses that no longer exist, read as their successor
 FACT_CATEGORIES = ("people", "places", "preferences", "projects", "other")
 
 
@@ -115,8 +114,7 @@ class MemoryStore:
             return None
         meta, body = okf.read(path)
         text, _, history = body.partition("## History")
-        status = meta.get("status", "todo")
-        return Task(id=path.stem, title=meta.get("title", path.stem), status=OLD_STATUSES.get(status, status),
+        return Task(id=path.stem, title=meta.get("title", path.stem), status=meta.get("status", "todo"),
                     description=re.sub(r"^# .*\n", "", text).strip(), due=meta.get("due"),
                     schedule=meta.get("schedule"), module=meta.get("module"), priority=meta.get("priority", "normal"),
                     category=meta.get("category"), goal=meta.get("goal"), alfred=bool(meta.get("alfred")), created=str(meta.get("created", "")),

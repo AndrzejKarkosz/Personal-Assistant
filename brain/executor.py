@@ -10,20 +10,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 import claude_agent_sdk as sdk
 
-from . import fitness, llm, persona
+from . import fitness, llm, meals, persona
 from .atlas import BrainMap
 from .mcp_hub import MCPHub
 from .memory import MemoryStore, Session
 from .modules import ModuleRegistry
-from .router import OTHER_PRODUCT, Route
+from .router import Route, Router
+from .scheduler import routines_file, valid_routines
 from .tools import ADD_CATEGORY, ASK_FIRST, CONFIRM_TOOL, MUTATING, TOOLS, WEB_TOOLS, make_handlers
 
 SERVER = "alfred"   # our tools reach Claude Code as an in-process MCP server with this name
@@ -37,45 +37,11 @@ DIRECTIVE = ("Wykonaj dokładnie działanie opisane w <request>, na podstawie pl
              "- <instructions> to zasady modułów, <routing> - aktualny czas i szczegóły, reszta to kontekst.\n"
              "- Nie rób nic ponad polecenie. Gdy plan nie pasuje do polecenia, idź za poleceniem; gdy polecenie jest "
              "niejasne, zadaj jedno krótkie pytanie.")
-# A training-plan change: Jev picks the type, the discipline and whether it adds load - each picks a fixed block below.
-PLAN_CHANGE_STEPS = (
-    "1. training_status (weeks 4): phase, this week's sessions, what was done, work load; the calendar for the weeks "
-    "the change touches.\n"
-    "2. Research it: web_search for current evidence (reviews, meta-analyses, national federations) on this change "
-    "for age-group triathletes - at most 2 searches, cite the best 1-2 sources.\n"
-    "3. Propose exactly 3 options, each in one or two sentences: what changes in the week (sport, sessions, hours), "
-    "what it does for the half Ironman on 2027-09-02, the risk, and the evidence with its source.\n"
-    "4. Recommend one option and say why in one sentence. Change nothing yet.\n"
-    "5. Only after his yes: training_plan_update (it asks for a yes; `why` = the chosen option) and the new sessions "
-    "as tasks.")
-PLAN_CHANGE_RULES = {
-    "add_activity": "A new activity: fit it in without raising total weekly load by more than ~10%; count it as strength "
-                    "or easy aerobic work and take its time from the same kind of session - never from the long ride or "
-                    "the long run.",
-    "volume": "More or less training: change total weekly hours by at most 10% a week; keep the long ride, the long run "
-              "and one quality session per sport; with less time cut easy sessions first.",
-    "pause": "A pause: up to 7 days off costs almost nothing; 1-3 weeks: keep 2-3 short easy sessions if he can; after an "
-             "illness come back at 50-70% volume for a week; move the phases only for pauses over 2 weeks. With pain or an "
-             "injury send him to a physio and offer cross-training that does not load it.",
-    "race": "A race change: the phases are counted back from the race - with a sooner race shorten base and build, never "
-            "the 3-week peak or the taper; a second race needs a mini-taper of 3-7 days.",
-    "focus": "Improving one thing: move one session from the strongest discipline to the weakest; technique = drills, "
-             "speed = one quality session, strength = the strength block of the current phase.",
-    "body": "A body goal: the weight module rules apply - deficit 300-500 kcal, protein 1.8-2.0 g/kg, food around hard "
-            "sessions; never a deficit in the peak or the taper.",
-}
-PLAN_SPORT_RULES = {
-    "swim": "It is about swimming: technique gives the most; open water and the wetsuit before the race.",
-    "bike": "It is about cycling: the long ride and the bike-run brick are the key sessions.",
-    "run": "It is about running: it loads the body most - raise run volume slowest (max 10% a week); calf and Achilles "
-           "strength protects it.",
-    "strength": "It is about strength: 2 sessions a week in the base (heavy, 4-6 reps, plus jumps), 1-2 short heavy ones "
-                "in build and peak; strength on an easy day or 6+ hours after a hard endurance session, never the day "
-                "before the long run.",
-    "all": "It touches the whole plan: keep the 80/20 split and the 3:1 cycle.",
-}
-ADDS_LOAD = ("It adds load: show the new weekly total in hours against now and against his 4-6 h budget, and the work "
-             "load of those weeks; at least one option must keep the total unchanged.")
+# Chat mode: the answer is read on screen, so the spoken-length rules of the persona step aside.
+CHAT_NOTE = ("<reply_mode>text chat - the user reads your answer on screen, nothing is spoken. Answer fully and in "
+             "depth, like a knowledgeable assistant explaining a topic. Use Markdown (headings, lists, tables, code "
+             "blocks, links) where it helps. The 'How you speak' rules about length, markdown and URLs do not apply "
+             "here; keep your character.</reply_mode>")
 
 DECLINED = "The user declined this action. Do not retry; acknowledge briefly."
 BLOCKED = "The security layer blocked this action as unsafe. Do not retry it; tell the user briefly why."
@@ -113,7 +79,7 @@ class Guard:
 class ExecResult:
     text: str
     model: str
-    request: str = ""                                   # what the user asked (the security check compares to it)
+    request: str = ""                                   # what the user said (the security check compares to it)
     usage: dict[str, int] = field(default_factory=dict)
     cost_usd: float | None = None
     actions: list[str] = field(default_factory=list)    # changes made, remembered in the session summary
@@ -124,45 +90,23 @@ class ExecResult:
     product: dict | str | None = None                   # Jev: his regular product ({name, url, note}) or "other"
 
 
-def said_text(request: str) -> str:
-    """What he actually said: the request without the chat-mode note in front."""
-    return re.sub(r"^<reply_mode>.*?</reply_mode>\s*", "", request, flags=re.S).strip()
-
-
-def grams_said(text: str) -> float | None:
-    """The amount he gave in digits: "150 g", "0,5 kg", "250 ml" (ml counted as grams). None if he gave none.
-    ponytail: digits only and the first amount; "sto pięćdziesiąt gramów" or two products in one sentence fall back
-    to the product's usual portion / Claude."""
-    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(kg|kilo\w*|g|gr|gram\w*|ml|mililitr\w*)\b", text, re.I)
-    if not m:
-        return None
-    value = float(m.group(1).replace(",", "."))
-    return value * 1000 if m.group(2).lower().startswith("k") else value
-
-
 def _describe(name: str, args: dict[str, Any]) -> str:
     return f"{name.split('__')[-1]} {json.dumps(args, ensure_ascii=False)[:160]}"
 
 
 class Executor:
     def __init__(self, settings, registry: ModuleRegistry, brain_map: BrainMap, hub: MCPHub, store: MemoryStore,
-                 guard: Guard, bus, tts=None, shield: Callable | None = None, routines: Callable = lambda: [],
-                 classify_tasks: Callable | None = None, classify_meal: Callable | None = None):
+                 guard: Guard, bus, router: Router, tts=None):
         self.settings, self.registry, self.map, self.hub = settings, registry, brain_map, hub
-        self.guard, self.bus, self.tts, self.shield, self.routines = guard, bus, tts, shield, routines
-        self.classify_tasks = classify_tasks     # Jev: category + status of each task (router.classify_tasks)
-        self.classify_meal = classify_meal       # Jev: the meal type of a logged meal (router.classify_meal)
-        routines_file = settings.path("proactive.routines") if settings.get("proactive.routines") else None
-        self.store = store
-        self.handlers = make_handlers(store, routines_file, settings, hub)
+        self.store, self.guard, self.bus, self.router, self.tts = store, guard, bus, router, tts
+        self.routines_file = routines_file(settings)
+        self.handlers = make_handlers(store, self.routines_file, settings, hub)
         self.acted: set[str] = set()             # requests that already changed something (see Brain.handle_text)
 
     def capabilities(self, route: Route) -> list[str]:
-        """The route's capabilities + the skill's + the modules' "always" ones + the context sources from config."""
-        caps = list(route.capabilities) or self.map.capabilities_of(route.modules)
-        extra = (self.map.skills.get(route.skill or "", {}).get("uses", []) + self.map.always_capabilities(route.modules)
-                 + [c for c in self.settings.get("assistant.context_capabilities") or [] if c in self.map.capabilities])
-        return list(dict.fromkeys(caps + extra))
+        """The route's capabilities (router.apply_policy) + the context sources from config."""
+        context = [c for c in self.settings.get("assistant.context_capabilities") or [] if c in self.map.capabilities]
+        return list(dict.fromkeys(route.capabilities + context))
 
     def tool_names(self, route: Route) -> list[str]:
         return self.map.tools_of(self.capabilities(route))
@@ -177,18 +121,16 @@ class Executor:
         parts = [f"## Module: {m.label}\n{m.prompt}".strip() for m in modules]
         if skill := self.registry.skill(route.skill):
             parts.append(f"## Procedure to follow: {skill.name}\n{skill.body}")
-        if route.plan_change in PLAN_CHANGE_RULES:      # Jev's picks -> fixed blocks, nothing left to Claude's taste
-            rules = [PLAN_CHANGE_RULES[route.plan_change], PLAN_SPORT_RULES.get(route.plan_sport or ""),
-                     ADDS_LOAD if route.adds_load >= 0.5 else None]
-            parts.append("## Procedure to follow: training plan change\n" + PLAN_CHANGE_STEPS + "\nRules:\n"
-                         + "\n".join(f"- {r}" for r in rules if r))
-        if routines := [f"- {r['id']} ({r['schedule']}): {r['prompt']}" for r in self.routines()]:
+        if route.plan_change in fitness.PLAN_CHANGE_RULES:   # Jev's picks -> fixed blocks, nothing left to Claude's taste
+            parts.append(fitness.plan_change_procedure(route.plan_change, route.plan_sport, route.adds_load,
+                                                       self.settings.get("training") or {}))
+        if routines := [f"- {r['id']} ({r['schedule']}): {r['prompt']}" for r in valid_routines(self.routines_file)]:
             parts.append("## Your routines (config/routines.yaml)\nYour own scheduled prompts, NOT the user's tasks: "
                          "never list them among his tasks or in his plan for today; mention them only when he asks "
                          "about routines.\n" + "\n".join(routines))
         return "\n\n".join(parts) or "No module instructions."
 
-    def _prompt(self, text: str, route: Route, session: Session) -> str:
+    def _prompt(self, text: str, route: Route, session: Session, chat: bool = False) -> str:
         """ONE exact request glued from everything: what was said before, memory, the modules' rules, Jev's plan,
         the context - and, last, what the user said now."""
         history = "\n".join(f"{m['role']}: {m['content']}" for m in session.history_messages())
@@ -214,45 +156,29 @@ class Executor:
                          f"if the user wants it, via {ADD_CATEGORY}, which asks him)")
             hints += [f"{k}={v}" for k, v in (("task category", route.task_category),
                                                ("task status", route.task_status)) if v]
-        if any(n.endswith("__log_meal") for n in self.tool_names(route)) and (product := self.product(route)):
-            blocks.append(self._product_note(product, text))
-        blocks += [self._plan(route), f"<routing>{'; '.join(hints)}</routing>", f"<user_said>\n{text}\n</user_said>"]
+        logs_meals = any(n.endswith("__log_meal") for n in self.tool_names(route))
+        if logs_meals and (product := meals.regular_product(self.store, route.product)):
+            blocks.append(meals.product_note(product, text))
+        blocks += [self._plan(route), f"<routing>{'; '.join(hints)}</routing>"]
+        if chat:
+            blocks.append(CHAT_NOTE)
+        blocks.append(f"<user_said>\n{text}\n</user_said>")
         return "<request>\n" + "\n\n".join(blocks) + "\n</request>"
-
-    def product(self, route: Route) -> dict | str | None:
-        """Jev's product answer: the product itself, "other", or None (Jev did not answer / no products)."""
-        if route.product == OTHER_PRODUCT:
-            return OTHER_PRODUCT
-        return next((p for p in self.store.products() if p["name"] == route.product), None)
-
-    @staticmethod
-    def _product_note(product: dict | str, text: str) -> str:
-        """Fixed templates for Nutrition MCP: his regular product with its grams, or "other" = log exactly what he
-        said. Claude only adds the calories and macros."""
-        if product == OTHER_PRODUCT:
-            return ("<product jev=\"other\">None of his regular products. For nutrition__log_meal the description is "
-                    "exactly what he said (the system puts his words in); estimate the nutrition from it.</product>")
-        said, usual = grams_said(said_text(text)), product.get("grams")
-        grams = said or usual
-        head = (f"<product jev=\"{product['name']}\">His regular product: {product['name']}"
-                + (f" ({product['note']})" if product.get("note") else "") + f", {product['url']}.")
-        if not grams:
-            return (head + " He gave no amount and the product has no usual portion - ask him how many grams before "
-                           "nutrition__log_meal.</product>")
-        return (head + f" Amount: {grams:g} g ({'he said it' if said else 'his usual portion'}). For "
-                f"nutrition__log_meal the system sets the description to \"{product['name']} ({grams:g} g)\"; you fill "
-                f"in calories, protein, carbs, fat, fiber and sugars for exactly {grams:g} g - per 100 g from the "
-                "product page (web_fetch the link if you can) or its label, scaled to the grams.</product>")
 
     def _plan(self, route: Route) -> str:
         """What Jev worked out, laid out for Claude: modules -> capabilities -> server › function, then signals."""
         pct = lambda p: f"{round(p * 100)}%"
         tool = lambda n: self.map.tools.get(n, {})
-        lines = ["Modules: " + ", ".join(f"{m} {pct(route.probabilities.get(m, 0))}" + (" (lead)" if m == route.module
-                                                                                     else "") for m in route.modules)]
-        lines.append("Capabilities: " + ", ".join(
-            c + (f" {pct(route.capability_probabilities[c])}" if c in route.capability_probabilities else "")
-            + (" [named by the user]" if c in route.forced else "") for c in self.capabilities(route)))
+
+        def module(m: str) -> str:
+            return f"{m} {pct(route.probabilities.get(m, 0))}" + (" (lead)" if m == route.module else "")
+
+        def capability(c: str) -> str:
+            p = route.capability_probabilities.get(c)
+            return c + (f" {pct(p)}" if p is not None else "") + (" [named by the user]" if c in route.forced else "")
+
+        lines = ["Modules: " + ", ".join(map(module, route.modules)),
+                 "Capabilities: " + ", ".join(map(capability, self.capabilities(route)))]
         available = set(self.tool_names(route))
         ranked = [(n, p) for n, p in route.tool_probabilities.items() if n in available]
         if steps := [(n, p) for n, p in ranked if p >= 0.6]:
@@ -274,12 +200,13 @@ class Executor:
         lines.append("Signals: " + "; ".join(signals))
         return f"<jev_plan source={route.source}>\n" + "\n".join(lines) + "\n</jev_plan>"
 
-    async def run(self, text: str, route: Route, session: Session, request_id: str) -> ExecResult:
+    async def run(self, text: str, route: Route, session: Session, request_id: str, chat: bool = False) -> ExecResult:
+        """`text` is what he said; chat=True: the answer is read on screen (long, Markdown), not spoken."""
         lead = self.registry.get(route.module)
         model = (lead and lead.model) or self.settings.get("models.executor")
         effort = (lead and lead.effort) or self.settings.get("models.executor_effort")
         result = ExecResult(text="", model=model, request=text, task_category=route.task_category,
-                            task_status=route.task_status, product=self.product(route))
+                            task_status=route.task_status, product=meals.regular_product(self.store, route.product))
 
         names = self.tool_names(route)
         live = self.hub.all_tools()
@@ -298,12 +225,12 @@ class Executor:
             allowed_tools=[f"mcp__{SERVER}__{t['name']}" for t in ours] + web,
             max_turns=int(self.settings.get("models.max_tool_rounds", 8)) + 1)
         self.bus.emit("executor_start", "executor", request_id, session.id, model=model, effort=effort,
-                      backend="subscription", modules=route.modules, capabilities=self.capabilities(route),
+                      modules=route.modules, capabilities=self.capabilities(route),
                       tools=[t["name"] for t in ours] + web)
 
         started, last_text, round_no = time.perf_counter(), "", 0
         try:
-            async for message in sdk.query(prompt=self._prompt(text, route, session), options=options):
+            async for message in sdk.query(prompt=self._prompt(text, route, session, chat), options=options):
                 if isinstance(message, sdk.AssistantMessage):     # one round of Claude thinking / calling tools
                     if said := " ".join(b.text for b in message.content if isinstance(b, sdk.TextBlock)).strip():
                         last_text = said
@@ -341,64 +268,44 @@ class Executor:
         no answer for a task: what Jev heard for the whole request, then Claude's own value. Jev down: Claude's."""
         labels = [" - ".join(str(v) for v in (t.get("title") or t.get("task_id"), t.get("description")) if v)
                   for t in tasks]
+        error = None
         try:
-            verdicts, source = await self.classify_tasks(result.request, labels), "jev"
-        except Exception:                        # no Jev: Claude does the classifier's job (the tools still check)
-            verdicts, source = [("?", "?")] * len(tasks), "claude"
+            verdicts, source = await self.router.classify_tasks(result.request, labels), "jev"
+        except Exception as exc:                 # no Jev: Claude does the classifier's job (the tools still check)
+            verdicts, source, error = [("?", "?")] * len(tasks), "claude", f"{type(exc).__name__}: {exc}"[:300]
         for task, (category, status) in zip(tasks, verdicts):
             if category == "?":
                 category = result.task_category or task.get("category")
-            if update and not category:          # Jev sees no fitting category: leave the task where it is
+            if update and not category:          # no category to move it to: leave the task where it is
                 task.pop("category", None)
             else:
                 task["category"] = category
             if not update:
-                task["status"] = (status if status != "?" else None) or result.task_status or task.get("status") or "todo"
-        self.bus.emit("tasks_classified", "router", request_id, session.id, source=source, tasks=[
+                if status == "?":
+                    status = result.task_status or task.get("status") or "todo"
+                task["status"] = status
+        self.bus.emit("tasks_classified", "router", request_id, session.id, source=source, error=error, tasks=[
             {"task": label, "category": t.get("category"), "status": t.get("status")} for label, t in zip(labels, tasks)])
-
-    async def _jev_meal(self, args: dict[str, Any], result: ExecResult, session: Session, request_id: str) -> None:
-        """The meal type of a logged meal is Jev's call; Claude's own value only when Jev cannot answer."""
-        try:
-            kind = await self.classify_meal(result.request, str(args.get("description", "")),
-                                            f"{datetime.now():%A %H:%M}")
-        except Exception:
-            kind = None
-        if kind:
-            args["meal_type"] = kind
-        # Jev's product decides the description: "other" = his own words, a regular product = its name and link
-        if result.product == OTHER_PRODUCT:
-            args["description"] = said_text(result.request)
-        elif isinstance(result.product, dict):
-            name = result.product["name"]
-            grams = grams_said(said_text(result.request)) or result.product.get("grams")
-            if grams:                                    # the template: product + grams; Claude only adds the numbers
-                args["description"] = f"{name} ({grams:g} g)"
-            elif name.lower() not in str(args.get("description", "")).lower():
-                args["description"] = f"{name} - {args.get('description', '')}".rstrip(" -")
-            args["notes"] = "\n".join(filter(None, [args.get("notes"), f"Stały produkt: {result.product['url']}"]))
-        self.bus.emit("meal_classified", "router", request_id, session.id, source="jev" if kind else "claude",
-                      meal=args.get("description"), meal_type=args.get("meal_type"),
-                      product=result.product if isinstance(result.product, str) else (result.product or {}).get("name"))
 
     async def run_tool(self, name: str, args: dict[str, Any], session: Session, request_id: str,
                        result: ExecResult) -> tuple[str, bool]:
         """Run one tool call from Claude; returns (text for Claude, is_error)."""
-        # Jev classifies, Claude executes: the category (and a new task's status) is Jev's call - Claude's own
-        # values are used only when Jev cannot answer.
+        # Jev classifies, Claude executes: the category (and a new task's status) and a meal's type and description
+        # are Jev's call - Claude's own values are used only when Jev cannot answer.
+        meal_type_by = None
         if name == "task_create":
             await self._jev_classifies(args.get("tasks") or [], result, session, request_id)
         elif name == "task_update" and args.get("category"):     # moving a task to a category
             await self._jev_classifies([args], result, session, request_id, update=True)
         elif name == "task_update" and result.task_status and not (set(args) - {"task_id", "note"}):
             args["status"] = result.task_status                  # "zrobione" said about a task
-        elif name.endswith("__log_meal") and self.classify_meal:
-            await self._jev_meal(args, result, session, request_id)
+        elif name.endswith("__log_meal"):
+            meal_type_by = await meals.fill_in(args, result.request, result.product, self.router.classify_meal)
 
         # Alfred's own tools act on the user's own (already checked) words - they are checked only once outside
         # content has entered this request and could have planted instructions.
-        if self.shield and (result.untrusted or name not in TOOLS):
-            verdict = await self.shield(result.request, name, args)
+        if result.untrusted or name not in TOOLS:
+            verdict = await self.router.check_action(result.request, name, args)
             self.bus.emit("action_check", "shield", request_id, session.id, tool=name, **verdict)
             if verdict["breach"]:
                 result.actions.append(f"blocked: {_describe(name, args)}")
@@ -436,21 +343,12 @@ class Executor:
             output, is_error = f"{type(exc).__name__}: {exc}", True
         self.bus.emit("tool_result", node, request_id, session.id, tool=name, is_error=is_error,
                       ms=int((time.perf_counter() - started) * 1000), preview=str(output)[:300])
-        if name.endswith("__log_meal") and not is_error:
-            output = f"{output}\n\n{await self._after_meal(request_id, session)}"
-        return str(output), is_error
 
-    async def _after_meal(self, request_id: str, session: Session) -> str:
-        """The meal routine: after every logged meal, today's intake against the goals - raised by today's training
-        from Strava - and the training sessions left this week. Claude says what is left; the Dieta tab shows it."""
-        try:
-            progress = await self.hub.call_json("nutrition__get_goal_progress", {})
-            training = await fitness.status(self.hub, self.settings, weeks=1,
-                                            weight_kg=(progress.get("weight") or {}).get("current"))
-            base = await fitness.sync_goals(self.hub, self.settings, progress, training["today_kcal"])
-            balance = fitness.day_balance(progress, training["today_kcal"],
-                                          float(self.settings.get("training.eat_back", 0.6)), base)
-        except Exception as exc:
-            return f"(Meal routine: recalculation failed - {type(exc).__name__}: {exc})"
-        self.bus.emit("meal_balance", "executor", request_id, session.id, **balance)
-        return fitness.balance_text(balance, training)
+        if name.startswith("nutrition__log_"):          # what he said -> what was saved, for the Dieta tab
+            balance = None
+            if name.endswith("__log_meal") and not is_error:      # the meal routine
+                note, balance = await meals.after_meal(self.hub, self.settings)
+                output = f"{output}\n\n{note}"
+            self.bus.emit("nutrition_logged", "executor", request_id, session.id, said=result.request, tool=name,
+                          input=args, source=meal_type_by, ok=not is_error, balance=balance)
+        return str(output), is_error

@@ -2,7 +2,8 @@
 
 build_map() writes it from modules/*, the live MCP tools and the knowledge-library topics (at every start and on
 "rebuild"). BrainMap reads it back - the router takes its Jev categories from these pages, so a hand edit of a page
-(examples_extra, confirm_override, a "## Notes" section ...) changes routing and survives the next rebuild.
+(examples_extra, a "## Notes" section) changes routing and survives the next rebuild. Whether a tool needs a "yes"
+comes from module.yaml only (a capability's `confirm:`), never from a hand edit here.
 
     Module --has--> Capability --includes--> Tool --served by--> Server;  Skill --uses--> Capability
 """
@@ -18,7 +19,7 @@ from .events import now_iso
 from .modules import ModuleRegistry
 from .tools import CONFIRM_TOOL, TOOLS, WEB_TOOLS
 
-KEPT_ON_REBUILD = ("examples_extra", "aliases", "side_effect_override", "confirm_override", "notes")
+KEPT_ON_REBUILD = ("examples_extra",)
 MAP_INTRO = ("What the brain is connected to and how the parts relate. Compiled from `modules/`, the live MCP servers "
              "and the knowledge library by `brain/atlas.py`. The router builds its Jev categories from these pages.\n\n"
              "Module --has--> Capability --includes--> Tool --served by--> Server;  Skill --uses--> Capability;  "
@@ -141,7 +142,7 @@ def build_map(root: Path, registry: ModuleRegistry, hub, topic_sources: list[dic
         listed = [f"- {link(tools[n]['short'], tool_path(tools[n]), p)} - {tools[n]['server']}, {tools[n]['side_effect']}"
                   + ("" if tools[n]["status"] == "online" else ", offline") for n in names]
         page(p, {"type": "Capability", "title": c.label, "description": c.description, "id": cid, "module": c.module,
-                 "tools": names, "tool_patterns": c.tools, "confirm": c.confirm, "always": c.always,
+                 "tools": names, "tool_patterns": c.tools, "confirm": bool(c.confirm), "always": c.always,
                  "available": sum(tools[n]["status"] == "online" for n in names), "examples": c.examples,
                  "used_by": used_by.get(cid, []), "tags": ["capability", c.module]},
              f"# {c.label}", c.description, f"Module: {link(c.module, f'modules/{c.module}.md', p)}", "## Tools",
@@ -152,13 +153,14 @@ def build_map(root: Path, registry: ModuleRegistry, hub, topic_sources: list[dic
     for name, t in tools.items():
         p = tool_path(t)
         in_caps = [cid for cid, names in cap_tools.items() if name in names]
+        said = [caps[c].confirm for c in in_caps if caps[c].confirm is not None]   # what module.yaml says decides
         params = ["| name | type | required | description |", "|---|---|---|---|"] + [
             f"| `{x['name']}` | {x['type']} | {'yes' if x['required'] else ''} | {x['description'].replace('|', '/')} |"
             for x in t["params"]]
         page(p, {"type": "Tool", "title": t["short"], "description": t["description"][:240], "id": name,
                  "server": t["server"], "kind": t["kind"], "short": t["short"], "capabilities": in_caps,
                  "modules": sorted({c.split(".", 1)[0] for c in in_caps}), "side_effect": t["side_effect"],
-                 "requires_confirmation": t["side_effect"] == "destructive" or any(caps[c].confirm for c in in_caps),
+                 "requires_confirmation": any(said) if said else t["side_effect"] == "destructive",
                  "status": t["status"], "params": [x["name"] for x in t["params"]], "tags": ["tool", t["server"]]},
              f"# {t['short']}", t["description"], "Server: " + link(t["server"], f"servers/{t['server']}.md", p),
              "## Capabilities", "\n".join(cap_links(in_caps, p))
@@ -294,8 +296,7 @@ class BrainMap:
         return list(dict.fromkeys(names))
 
     def needs_confirmation(self, tool: str) -> bool:
-        meta = self.tools.get(tool) or {}
-        return bool(meta["confirm_override"] if "confirm_override" in meta else meta.get("requires_confirmation"))
+        return bool((self.tools.get(tool) or {}).get("requires_confirmation"))
 
     # ---- the texts Jev chooses between (id -> description) ----------------------------------------------------
 

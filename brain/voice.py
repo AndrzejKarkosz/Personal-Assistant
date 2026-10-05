@@ -1,7 +1,7 @@
 """Ears and mouth: ElevenLabs speech-to-text (Scribe) and text-to-speech.
 
 Without ELEVENLABS_API_KEY both return None and the UI uses the browser's own (free) recognition and voice.
-Short phrases ("Już się tym zajmuję") are cached on disk, so they cost nothing the second time.
+Short phrases ("Witaj z powrotem, szefie.") are cached on disk, so they cost nothing the second time.
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -25,12 +26,13 @@ class Transcript:
 
 
 class ElevenLabs:
-    def __init__(self, settings, cache_dir: Path):
+    def __init__(self, settings, cache_dir: Path, on_usage: Callable[..., None] = lambda **used: None,
+                 on_error: Callable[[str], None] = lambda message: None):
         self.settings = settings
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.on_usage = lambda **used: None  # tts_chars / stt_s of each billed call - the brain prices them
-        self.on_error = lambda message: None  # why there is no ElevenLabs voice (the UI falls back to the browser's)
+        self.on_usage = on_usage   # tts_chars / stt_s of each billed call - the brain prices them
+        self.on_error = on_error   # why there is no ElevenLabs voice (the UI falls back to the browser's)
 
     async def transcribe(self, audio: bytes, filename: str = "speech.webm",
                          language: str | None = None) -> Transcript | None:
