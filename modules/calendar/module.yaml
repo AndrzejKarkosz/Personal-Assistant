@@ -18,6 +18,6 @@ capabilities:
     description: Create, move, update, cancel events and answer invitations.
     tools: ["google-calendar__create-*", "google-calendar__update-*", "google-calendar__delete-*", "google-calendar__respond-*"]
     examples: ["dodaj spotkanie w poniedziałek o 10", "przesuń spotkanie na piątek", "cancel tomorrow's call"]
-    confirm: true
+    confirm: false     # he does not want a yes/no for calendar changes - Alfred makes them right away
 uses: [tasks.manage, memory.recall, bookings.confirm]
 enabled: true

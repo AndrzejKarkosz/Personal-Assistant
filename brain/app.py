@@ -370,7 +370,20 @@ async def diet() -> dict[str, Any]:
         base, synced = await fitness.sync_goals(brain.hub, brain.settings, progress, training["today_kcal"]), True
     except Exception:
         base, synced = None, False
-    return out | {"status": "ready", "week": week, "strava": training["strava"], "goals_synced": synced,
+    try:                                      # 30 days of daily totals -> discipline over time
+        month = await brain.hub.call_json("nutrition__get_nutrition_summary", {
+            "start_date": f"{today - timedelta(days=29)}", "end_date": f"{today}"})
+        disc = fitness.discipline(month.get("days"), progress.get("goals") or {}, today)
+    except Exception:
+        disc = None
+    try:                                      # today's meals as Nutrition MCP has them - with notes (the per-product lines)
+        text, is_error = await brain.hub.call("nutrition__get_meals_by_date", {"date": f"{today}", "detail": "full"},
+                                              limit=None)
+        meals = [] if is_error else fitness.meals_from_text(text)
+    except Exception:
+        meals = []
+    return out | {"status": "ready", "week": week, "strava": training["strava"], "goals_synced": synced, "meals": meals,
+                  "discipline": disc,
                   "balance": fitness.day_balance(progress, training["today_kcal"],
                                                  float(brain.settings.get("training.eat_back", 0.6)), base),
                   "workouts": [a for a in training["activities"] if a["start_date_local"][:10] == f"{today}"]}

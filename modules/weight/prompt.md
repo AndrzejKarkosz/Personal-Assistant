@@ -9,6 +9,9 @@ Logging - he tells you, you log:
   `- <product> (<grams> g): <kcal> kcal, B <protein> g, W <carbs> g, T <fat> g`
   e.g. `- Kajzerka (60 g): 165 kcal, B 5.4 g, W 33 g, T 1.2 g`. Grams as he said them (your estimate: `~60 g`); the
   lines add up to the meal's calories, protein, carbs and fat. Keep any other note on its own line below.
+- Splitting a logged meal into products (the Dieta tab's "Rozbij na produkty" sends you the meal): work out each
+  product from the grams in its description so the lines add up to the meal's totals, then update_meal with only
+  `notes` = those lines, the old note kept below them. Change nothing else.
 - Weight: log_weight in kg as he said it; note "rano, na czczo" when he says so. Compare with the trend, not the day.
 - Measurements (waist, hips ...): log_body_measurement.
 After every log_meal the meal routine adds a recalculation to the tool result: today's totals against the goals,

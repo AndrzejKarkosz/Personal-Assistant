@@ -67,7 +67,7 @@ def test_registry_loads_capabilities_and_skills():
     reg = ModuleRegistry(ROOT / "modules")
     assert {"calendar", "knowledge", "tasks", "bookings", "smalltalk"} <= set(reg.modules)
     assert reg.skill("bookings.restaurant-table").uses[0] == "memory.recall"
-    assert reg.capability("calendar.write").confirm
+    assert not reg.capability("calendar.write").confirm          # calendar changes go through without a yes
     assert "tasks.manage" in reg.modules["calendar"].uses
 
 

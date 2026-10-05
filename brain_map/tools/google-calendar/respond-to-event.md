@@ -11,6 +11,7 @@ capabilities: [calendar.write]
 modules: [calendar]
 side_effect: write
 requires_confirmation: true
+confirm_override: false
 status: online
 params: [calendarId, eventId, account, response, comment, modificationScope, originalStartTime,
   sendUpdates]

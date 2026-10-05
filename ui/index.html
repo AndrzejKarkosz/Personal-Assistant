@@ -103,7 +103,8 @@
     </section>
     <section class="panel board-panel">
       <div class="panel-title row between"><span class="row">Zadania
-        <span id="board-who" class="seg" aria-label="Czyja tablica"><button data-who="me">Moje</button><button data-who="alfred" title="Przypomnienia i to, co Alfred robi sam o danej porze">Alfreda</button></span></span>
+        <span id="board-who" class="seg" aria-label="Czyja tablica"><button data-who="me">Moje</button><button data-who="alfred" title="Przypomnienia i to, co Alfred robi sam o danej porze">Alfreda</button></span>
+        <span id="board-range" class="seg" aria-label="Zakres"><button data-range="all">Wszystkie</button><button data-range="today" title="Termin dziś, zaległe i zrobione dziś">Dzisiaj</button></span></span>
         <div id="cat-filter" class="chips" aria-label="Kategoria"></div></div>
       <form id="task-form" class="row pad task-form">
         <input name="title" placeholder="Nowe zadanie" required>
@@ -223,6 +224,10 @@
           <div id="dt-macros" class="macros"></div>
         </div>
         <div id="dt-stats" class="stats wide"></div>
+        <details id="dt-meals-box" class="meals-box" open><summary>Posiłki dziś <span id="dt-meals-sum" class="muted"></span></summary>
+          <div id="dt-meals" class="stack"></div></details>
+        <h4>Dyscyplina — 30 dni <span class="muted">dzień na celu = kcal ±10% celu i białko ≥ 90% celu</span></h4>
+        <div id="dt-disc" class="disc"></div>
         <h4>Co powiedziałeś → jak to zapisano</h4>
         <div id="dt-log" class="stack"></div>
         <h4>Ostatnie 7 dni</h4>

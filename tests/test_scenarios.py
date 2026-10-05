@@ -37,19 +37,13 @@ async def answer_confirmation(brain, request: str, approved: bool) -> tuple[str,
     return question, await task
 
 
-async def test_adding_a_calendar_event_waits_for_yes(make_brain):
+async def test_calendar_changes_happen_right_away_without_a_yes(make_brain):
     brain, claude = make_brain(("tool", "google-calendar__create-event", MEETING), "Dodane, szefie.")
     reached = with_calendar(brain, claude, ["calendar.write"])
-    question, answer = await answer_confirmation(brain, "dodaj spotkanie z Tomkiem jutro o 14", approved=True)
-    assert "Spotkanie z Tomkiem" in question and answer == "Dodane, szefie."
-    assert reached == [("google-calendar__create-event", MEETING)]
-
-
-async def test_a_declined_calendar_event_is_never_created(make_brain):
-    brain, claude = make_brain(("tool", "google-calendar__create-event", MEETING), "Dobrze, nie dodaję.")
-    reached = with_calendar(brain, claude, ["calendar.write"])
-    await answer_confirmation(brain, "dodaj spotkanie z Tomkiem jutro o 14", approved=False)
-    assert reached == [] and "declined" in claude.tool_results[0][1]
+    queue = brain.bus.subscribe()
+    assert await brain.handle_text("dodaj spotkanie z Tomkiem jutro o 14") == "Dodane, szefie."
+    assert reached == [("google-calendar__create-event", MEETING)] and brain.guard.pending is None
+    assert "confirm_request" not in [queue.get_nowait().kind for _ in range(queue.qsize())]
 
 
 async def test_reading_the_calendar_needs_no_yes(make_brain):

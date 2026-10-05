@@ -344,11 +344,37 @@ main[data-sub="training"] .training-panel, main[data-sub="diet"] .diet-panel { d
 .feed .ok { color: var(--green); font-size: 12px; } .feed .bad { color: var(--err); font-size: 12px; }
 .feed .what { color: var(--ink); }
 .feed details.items summary { cursor: pointer; font-size: 12px; color: var(--blue); }
-.feed details.items table { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.feed details.items :is(th, td) { padding: 3px 6px; text-align: right; border-bottom: 1px solid var(--line); }
-.feed details.items :is(th, td):first-child { text-align: left; }
-.feed details.items th { color: var(--muted); font-weight: 500; }
-.feed details.items tfoot td { border-bottom: 0; color: var(--muted); }
+.items-table { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.items-table :is(th, td) { padding: 3px 6px; text-align: right; border-bottom: 1px solid var(--line); }
+.items-table :is(th, td):first-child { text-align: left; }
+.items-table th { color: var(--muted); font-weight: 500; }
+.items-table tfoot td { border-bottom: 0; color: var(--muted); }
+
+/* Dieta: today's meals - each one opens to its products */
+.meals-box { margin: 10px 0 4px; }
+.meals-box > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.meals-box #dt-meals { margin-top: 8px; }
+details.meal { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); padding: 8px 12px; font-size: 13px; }
+details.meal > summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; list-style: none; }
+details.meal > summary::before { content: "▸"; color: var(--muted); margin-right: 6px; }
+details.meal[open] > summary::before { content: "▾"; }
+details.meal > summary > span:first-child { flex: 1; min-width: 0; }
+details.meal[open] { border-color: rgb(96 165 250 / .5); }
+details.meal .what { margin-top: 6px; }
+.nowrap { white-space: nowrap; }
+
+/* Dieta: discipline over time */
+.disc .cols { margin-top: 10px; }
+.disc .bar-col { --c: var(--blue); }
+.disc .bar-col.hit .plot i { --c: var(--green); }
+.disc .bar-col.partial .plot i { --c: var(--violet); }
+.disc .bar-col.miss .plot i { --c: var(--err); }
+.disc .bar-col.today .plot i { --c: var(--blue); opacity: .6; }
+.disc .bar-col .v { font-size: 9.5px; }
+.disc-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 0 4px; font-size: 11.5px; color: var(--muted); }
+.disc-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; background: var(--soft); }
+.disc-legend .hit i { background: var(--green); } .disc-legend .partial i { background: var(--violet); }
+.disc-legend .miss i { background: var(--err); } .disc-legend .today i { background: var(--blue); opacity: .6; }
 @media (max-width: 700px) {
   .tr-hero { grid-template-columns: 1fr 1fr; } .race-card { grid-column: 1 / -1; }
   .ring { width: 116px; } .ring.kcal { width: 150px; }

@@ -410,7 +410,16 @@ function setSub(s) {
 // Produkty tab: an editable list - every change saves the whole list (a memory page Alfred finds with memory_search)
 let products = [];
 const isLink = (u) => /^https?:\/\/\S+$/.test(u || "");
-async function loadProducts() { products = await api("/api/products"); renderProducts(); }
+async function loadProducts() {
+  try { products = await api("/api/products"); } catch (e) { return productsError("nie udało się wczytać listy", e); }
+  renderProducts();
+}
+// A failed save must show here, not only in the Rozmowa tab - the rows exist only on this page until it works
+function productsError(what, e) {
+  $("#products-saved").className = "bad";
+  $("#products-saved").textContent = `⚠ ${what} (${e.message.slice(0, 80)}) — zrestartuj Alfreda i odśwież stronę, ` +
+    "inaczej wpisane produkty znikną";
+}
 function setLink(row, url) {
   const a = row.querySelector(".open");
   a.classList.toggle("hidden", !isLink(url));
@@ -440,9 +449,10 @@ async function saveProducts() {
   const ready = products.filter((p) => p.name && isLink(p.url));     // half-typed rows stay on screen until complete
   try {
     await api("/api/products", { method: "PUT", body: JSON.stringify(ready) });
+    $("#products-saved").className = "muted";
     $("#products-saved").textContent = `zapisane ${hhmm(new Date())}` +
       (ready.length < products.length ? " · uzupełnij nazwę i link (https://…), żeby zapisać resztę" : "");
-  } catch (e) { warn(e); }
+  } catch (e) { productsError("NIE zapisano", e); }
 }
 $("#product-add").onclick = () => {
   products.push({ name: "", url: "", note: "" });
@@ -488,23 +498,70 @@ function renderDiet(d) {
       tile("green", b.training_kcal ? `~${num(b.training_kcal)}` : "0", "kcal spalone na treningu", (d.workouts || []).map((a) => a.name).join(", ") || "dziś bez treningu w Stravie"),
     ].join("");
   }
+  const meals = d.meals || [];
+  $("#dt-meals-sum").textContent = meals.length ? `· ${meals.length} · ${num(meals.reduce((s, m) => s + (m.calories || 0), 0))} kcal — kliknij posiłek, żeby zobaczyć produkty` : "";
+  renderDiscipline(d.discipline);
+  $("#dt-meals").innerHTML = meals.map(mealCard).join("")
+    || `<div class="sub">${d.status === "ready" ? "Dziś jeszcze nic nie zapisano." : "Posiłki pojawią się po połączeniu z Nutrition MCP."}</div>`;
+  $("#dt-meals").querySelectorAll("[data-split]").forEach((b) => (b.onclick = () => {
+    splitMeal(d.meals.find((m) => m.id === b.dataset.split));
+    b.disabled = true;
+    b.textContent = "Alfred liczy — potwierdź „tak”, potem ↻";
+  }));
   $("#dt-log").innerHTML = d.log.map(feedCard).join("") || '<div class="sub">Powiedz Alfredowi, co zjadłeś albo ile ważysz — tu zobaczysz, jak to zrozumiał i zapisał.</div>';
   const days = d.week?.days || [], goal = d.week?.goals?.calories || Math.max(1, ...days.map((x) => x.calories));
   $("#dt-week").innerHTML = days.map((x) => `<div class="tr-row"><span>${esc(dm(x.date))}</span>${meter(x.calories, goal)}
     <span class="sub">${num(x.calories)} kcal · B ${num(x.protein_g)} · W ${num(x.carbs_g)} · T ${num(x.fat_g)} g</span></div>`).join("");
 }
 // Per product: what each one gave (Claude writes it into the meal's notes; the backend reads the lines)
-function mealItems(items) {
-  if (!items?.length) return "";
+const mealItems = (items) => `<details class="items"><summary>Produkty (${items.length}) — kcal i makro każdego</summary>${itemsTable(items)}</details>`;
+function itemsTable(items) {
   const g = (v) => (v == null ? "—" : num(Math.round(v * 10) / 10));
   const sum = (k) => items.reduce((s, i) => s + (i[k] || 0), 0);
   const row = (i) => `<tr><td>${esc(i.name)}</td><td>${i.approx ? "~" : ""}${g(i.grams)} g</td><td><b>${g(i.kcal)}</b></td>
     <td>${g(i.protein_g)}</td><td>${g(i.carbs_g)}</td><td>${g(i.fat_g)}</td></tr>`;
-  return `<details class="items"><summary>Produkty (${items.length}) — kcal i makro każdego</summary>
-    <table><thead><tr><th>Produkt</th><th>Ilość</th><th>kcal</th><th>B g</th><th>W g</th><th>T g</th></tr></thead>
+  return `<table class="items-table"><thead><tr><th>Produkt</th><th>Ilość</th><th>kcal</th><th>B g</th><th>W g</th><th>T g</th></tr></thead>
     <tbody>${items.map(row).join("")}</tbody>
     <tfoot><tr><td>Razem</td><td>${g(sum("grams"))} g</td><td><b>${g(sum("kcal"))}</b></td><td>${g(sum("protein_g"))}</td>
-    <td>${g(sum("carbs_g"))}</td><td>${g(sum("fat_g"))}</td></tr></tfoot></table></details>`;
+    <td>${g(sum("carbs_g"))}</td><td>${g(sum("fat_g"))}</td></tr></tfoot></table>`;
+}
+// One of today's meals from Nutrition MCP: totals, then each product - or a button that asks Alfred to split it
+function mealCard(m) {
+  const n = (v) => (v == null ? "—" : num(v));
+  return `<details class="meal"><summary><span><b>${esc((m.time || "").slice(11, 16))}</b> · ${esc(MEAL_PL[m.type] || m.type || "")}
+      <span class="muted">${esc(m.description.length > 70 ? `${m.description.slice(0, 70)}…` : m.description)}</span></span>
+    <span class="nowrap"><b>${n(m.calories)} kcal</b> <span class="muted">· B ${n(m.protein_g)} · W ${n(m.carbs_g)} · T ${n(m.fat_g)} g</span>
+      ${m.items.length ? `<span class="chip">${m.items.length} prod.</span>` : ""}</span></summary>
+    <div class="what">${esc(m.description)}</div>
+    ${m.items.length ? itemsTable(m.items) : `<div class="row"><span class="sub">bez rozbicia na produkty</span>
+      <button class="mini" data-split="${esc(m.id)}" title="Alfred policzy kcal i makro każdego produktu i dopisze to do notatki posiłku">Rozbij na produkty</button></div>`}</details>`;
+}
+// Discipline over 30 days: tiles, one bar per day (kcal against the goal, coloured by how the day went), weekly scores
+const DISC_PL = { hit: "na celu", partial: "połowicznie", miss: "poza celem", empty: "nic nie zapisano", today: "dziś — w toku" };
+function renderDiscipline(x) {
+  if (!x) { $("#dt-disc").innerHTML = '<div class="sub">Analiza pojawi się po połączeniu z Nutrition MCP.</div>'; return; }
+  const pct = (v) => (v == null ? "—" : `${Math.round(v * 100)}%`), kg = x.goals.calories;
+  const top = Math.max(kg ? kg * 1.3 : 0, ...x.days.map((r) => r.calories), 1);
+  $("#dt-disc").innerHTML = `<div class="stats wide">${[
+      tile(x.score >= 0.7 ? "green" : x.score >= 0.4 ? "purple" : "err", pct(x.score), "dyscyplina", `${x.total_days} zakończonych dni`),
+      tile("blue", `${x.logged_days}/${x.total_days}`, "dni zapisane", "dzień bez posiłków = 0"),
+      tile("green", pct(x.kcal_on_target), "kcal na celu", kg ? `±10% od ${num(kg)} kcal` : "brak celu kcal"),
+      tile("purple", pct(x.protein_on_target), "białko na celu", x.goals.protein_g ? `≥ 90% z ${num(x.goals.protein_g)} g` : "brak celu białka"),
+      tile(x.streak ? "green" : "blue", `${x.streak} 🔥`, "dni z rzędu na celu", `rekord: ${x.best_streak}`),
+      tile("blue", x.avg_kcal == null ? "—" : num(x.avg_kcal), "średnio kcal / dzień", kg ? `cel ${num(kg)}` : ""),
+    ].join("")}</div>
+    ${columns(x.days.map((r) => ({ h: (r.calories / top) * 100, value: r.calories ? `${Math.round(r.calories / 100) / 10}k` : "",
+      label: r.date.slice(8), cls: r.status, title: `${r.date}: ${DISC_PL[r.status]} · ${num(r.calories)} kcal · białko ${num(r.protein_g)} g` })),
+      kg ? (kg / top) * 100 : 0, kg ? `cel ${num(kg)}` : "")}
+    <div class="disc-legend">${["hit", "partial", "miss", "empty", "today"].map((s) => `<span class="${s}"><i></i>${DISC_PL[s]}</span>`).join("")}</div>
+    <h4>Tydzień po tygodniu</h4><div class="tr-list">${x.weeks.map((w) => `<div class="tr-row"><span>od ${esc(dm(w.start))}</span>
+      ${meter(w.score || 0, 1)}<span class="sub">${pct(w.score)} · zapisane ${w.logged}/${w.days} dni</span></div>`).join("")}</div>`;
+}
+// The split goes through Alfred (chat mode): he computes each product and writes the lines into the meal's notes
+function splitMeal(m) {
+  sendChat(`Rozbij posiłek ${m.id} na produkty (${(m.time || "").slice(11, 16)}, „${m.description}”, razem ${m.calories} kcal, ` +
+    `B ${m.protein_g} g, W ${m.carbs_g} g, T ${m.fat_g} g): każdy produkt z kcal i makro w formacie z zasad, dopisz do notatki ` +
+    "tego posiłku przez update_meal, sum nie zmieniaj.");
 }
 function feedCard(e) {
   const a = e.input || {};
@@ -521,7 +578,7 @@ function feedCard(e) {
     <span class="muted">${esc(dm(e.ts))} ${esc(e.ts.slice(11, 16))}</span></div>
     <div class="flow-line"><span class="muted">→</span>${jev}<span class="chip">${esc(LOG_PL[e.tool] || e.tool)}</span>
     <span class="${e.ok === false ? "bad" : "ok"}">${e.ok === false ? "✗ błąd zapisu" : e.ok ? "✓ zapisane w Nutrition MCP" : "…"}</span></div>
-    <div class="what">${what.filter(Boolean).map(esc).join(" · ")}</div>${bal}${mealItems(e.items)}</div>`;
+    <div class="what">${what.filter(Boolean).map(esc).join(" · ")}</div>${bal}${e.items?.length ? mealItems(e.items) : ""}</div>`;
 }
 $("#dt-refresh").onclick = () => loadDiet().catch(warn);
 
@@ -830,8 +887,11 @@ async function loadBrief() {
 // To-do: a kanban board - one column per status; drag a card to another column to change its status (SortableJS)
 const sortable = import("sortablejs").then((m) => m.default).catch(() => null);   // CDN down: the board still shows
 const NO_CAT = "__none__";                              // the "no category" chip
-let catFilter = "", who = "me";                         // "" = every category; whose board: "me" | "alfred"
-try { catFilter = localStorage.getItem("catfilter") || ""; who = localStorage.getItem("board") || "me"; } catch { /* private mode */ }
+let catFilter = "", who = "me", range = "all";          // "" = every category; whose board: "me" | "alfred"; "all" | "today"
+try {
+  catFilter = localStorage.getItem("catfilter") || ""; who = localStorage.getItem("board") || "me";
+  range = localStorage.getItem("boardrange") || "all";
+} catch { /* private mode */ }
 function setFilter(c) {
   catFilter = c;
   try { localStorage.setItem("catfilter", c); } catch { /* private mode */ }
@@ -842,11 +902,21 @@ document.querySelectorAll("#board-who button").forEach((b) => (b.onclick = () =>
   try { localStorage.setItem("board", who); } catch { /* private mode */ }
   refreshTasks().catch(warn);
 }));
+document.querySelectorAll("#board-range button").forEach((b) => (b.onclick = () => {
+  range = b.dataset.range;
+  try { localStorage.setItem("boardrange", range); } catch { /* private mode */ }
+  refreshTasks().catch(warn);
+}));
+// "Dzisiaj": open tasks due today or already late, and what was finished today.
+// ponytail: a recurring task (cron) without a due date does not count as today's; add a cron check if it should.
+const forToday = (t, now) => (isOpen(t) ? !!t.due && new Date(t.due) < addDays(startOfDay(now), 1)
+  : new Date(t.updated) >= startOfDay(now));
 async function refreshTasks() {
   day.tasks = await api("/api/tasks?status=all");
   document.querySelectorAll("#board-who button").forEach((b) => b.classList.toggle("on", b.dataset.who === who));
-  const board = day.tasks.filter((t) => !!t.alfred === (who === "alfred"));
+  document.querySelectorAll("#board-range button").forEach((b) => b.classList.toggle("on", b.dataset.range === range));
   const now = new Date();
+  const board = day.tasks.filter((t) => !!t.alfred === (who === "alfred") && (range !== "today" || forToday(t, now)));
   const fixed = status.task_categories || [];      // config/brain.yaml tasks.categories - the only ones, in that order
   const others = board.map((t) => t.category).filter((c) => c && !fixed.includes(c)).sort((a, b) => a.localeCompare(b, "pl"));
   const cats = [...new Set([...fixed, ...others])];   // `others` only for old tasks from before the fixed list

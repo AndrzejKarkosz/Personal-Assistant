@@ -109,6 +109,83 @@ def meal_items(notes: str | None) -> list[dict[str, Any]]:
     return out
 
 
+_MEAL_FIELDS = {"ID": "id", "Time": "time", "Type": "type", "Description": "description", "Calories": "calories",
+                "Protein": "protein_g", "Carbs": "carbs_g", "Fat": "fat_g", "Notes": "notes"}
+
+
+def meals_from_text(text: str) -> list[dict[str, Any]]:
+    """Nutrition MCP get_meals_by_date(detail="full") answers in text: meals split by "---", one "Key: value" per line;
+    the notes may run over several lines. Each meal gets `items` - its per-product lines (meal_items)."""
+    meals = []
+    for block in re.split(r"^---\s*$", text, flags=re.M):
+        meal: dict[str, Any] = {}
+        key = None
+        for line in block.splitlines():
+            m = re.match(r"^(\w[\w ]*?):\s?(.*)$", line)
+            if m and m[1] in _MEAL_FIELDS:
+                key = _MEAL_FIELDS[m[1]]
+                meal[key] = m[2].strip()
+            elif key == "notes" and line.strip():
+                meal["notes"] += "\n" + line.strip()
+        if not meal.get("id"):
+            continue
+        for k in ("calories", "protein_g", "carbs_g", "fat_g"):
+            number = re.search(r"\d+(?:[.,]\d+)?", meal.get(k, ""))
+            meal[k] = float(number[0].replace(",", ".")) if number else None
+        meal["items"] = meal_items(meal.get("notes"))
+        meals.append(meal)
+    return meals
+
+
+def discipline(days: list[dict] | None, goals: dict, today: date, span: int = 30, tolerance: float = 0.1,
+               protein_share: float = 0.9) -> dict[str, Any]:
+    """Diet discipline over the last `span` days, from Nutrition MCP's daily totals (get_nutrition_summary).
+    A finished day is "hit" when kcal is within +-tolerance of the goal (Nutrition MCP's own +-10%) and protein reaches
+    protein_share of its goal, "partial" when one of the two holds, "miss" when neither, "empty" with nothing logged.
+    Today is shown but not scored - it is not over yet.
+    ponytail: every day is judged against today's goals; Nutrition MCP's get_trends has the goal in effect per period
+    if the old goals ever matter."""
+    kcal_goal, protein_goal = goals.get("calories"), goals.get("protein_g")
+    by_date = {d.get("date"): d for d in days or []}
+    rows = []
+    for i in range(span - 1, -1, -1):
+        day = today - timedelta(days=i)
+        d = by_date.get(day.isoformat()) or {}
+        kcal, protein = d.get("calories") or 0, d.get("protein_g") or 0
+        logged = kcal > 0
+        checks = [ok for ok, goal in ((kcal_goal and abs(kcal - kcal_goal) <= tolerance * kcal_goal, kcal_goal),
+                                      (protein_goal and protein >= protein_share * protein_goal, protein_goal)) if goal]
+        score = (sum(map(bool, checks)) / len(checks) if checks else 1.0) if logged else 0.0
+        status = ("today" if day == today else "empty" if not logged else "hit" if score == 1
+                  else "partial" if score else "miss")
+        rows.append({"date": day.isoformat(), "calories": round(kcal), "protein_g": round(protein), "score": score,
+                     "status": status, "logged": logged})
+    done = [r for r in rows if r["status"] != "today"]
+    streak = 0
+    for r in reversed(done):                  # hit days in a row up to yesterday
+        if r["status"] != "hit":
+            break
+        streak += 1
+    best = run = 0
+    for r in done:
+        run = run + 1 if r["status"] == "hit" else 0
+        best = max(best, run)
+    logged = [r for r in done if r["logged"]]
+    share = lambda rows_, ok: round(sum(map(ok, rows_)) / len(rows_), 2) if rows_ else None
+    weeks: dict[str, list[dict]] = {}
+    for r in done:
+        weeks.setdefault(week_start(date.fromisoformat(r["date"])).isoformat(), []).append(r)
+    return {"days": rows, "goals": {"calories": kcal_goal, "protein_g": protein_goal},
+            "total_days": len(done), "logged_days": len(logged),
+            "score": share(done, lambda r: r["score"]),
+            "kcal_on_target": share(logged, lambda r: bool(kcal_goal) and abs(r["calories"] - kcal_goal) <= tolerance * kcal_goal),
+            "protein_on_target": share(logged, lambda r: bool(protein_goal) and r["protein_g"] >= protein_share * protein_goal),
+            "avg_kcal": round(sum(r["calories"] for r in logged) / len(logged)) if logged else None,
+            "streak": streak, "best_streak": best,
+            "weeks": [{"start": k, "score": share(v, lambda r: r["score"]), "logged": sum(r["logged"] for r in v),
+                       "days": len(v)} for k, v in sorted(weeks.items())]}
+
+
 def week_start(day: date) -> date:
     return day - timedelta(days=day.weekday())
 

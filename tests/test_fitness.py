@@ -329,3 +329,60 @@ def test_each_product_of_a_meal_shows_its_kcal_and_macros(make_brain, monkeypatc
                    input={"description": "Śniadanie", "meal_type": "breakfast", "calories": 315, "notes": notes})
     entry = server.nutrition_log()[0]
     assert entry["said"] == "zjadłem kajzerkę i mleko" and len(entry["items"]) == 3
+
+
+def test_todays_meals_come_from_nutrition_mcp_with_their_products():
+    text = """Times are local (Europe/Warsaw).
+
+ID: 79c68098-522b-46ac-852f-b5a7ba9adf7f
+Time: 2026-10-05 09:59
+Type: breakfast
+Description: Śniadanie: kajzerka (60 g), mleko wysokobiałkowe Pilos (70 g)
+Calories: 717
+Protein: 64g
+Carbs: 47g
+Fat: 31.5g
+Fiber: 2.6g
+Sugar: 11g (1g added)
+Notes: Wartości szacowane z typowych etykiet. Mleko Pilos przyjęte jako 70 g (8 g białka/100 ml).
+
+---
+
+ID: 0f248a87-03ab-471b-9103-9b046cf595cf
+Time: 2026-10-05 13:10
+Type: lunch
+Description: Skyr naturalny (200 g), banan (120 g)
+Calories: 237
+Protein: 22g
+Carbs: 33g
+Fat: 0.6g
+Notes: - Skyr naturalny (200 g): 130 kcal, B 22 g, W 8 g, T 0.4 g
+- Banan (120 g): 107 kcal, B 1.3 g, W 25 g, T 0.2 g
+Stały produkt: https://sklep.example/skyr
+"""
+    breakfast, lunch = fitness.meals_from_text(text)
+    assert breakfast["id"].startswith("79c6") and breakfast["type"] == "breakfast" and breakfast["time"] == "2026-10-05 09:59"
+    assert (breakfast["calories"], breakfast["protein_g"], breakfast["fat_g"]) == (717, 64, 31.5)
+    assert breakfast["items"] == []                                       # an old meal: no split yet -> the button
+    assert [i["name"] for i in lunch["items"]] == ["Skyr naturalny", "Banan"]
+    assert lunch["items"][1]["kcal"] == 107 and "Stały produkt" in lunch["notes"]
+    assert fitness.meals_from_text("No meals logged on 2026-10-04.") == []
+
+
+def test_diet_discipline_over_time():
+    today = date(2026, 10, 5)                                           # Monday
+    goals = {"calories": 2000, "protein_g": 150}
+    day = lambda n, kcal, protein: {"date": (today - timedelta(days=n)).isoformat(), "calories": kcal, "protein_g": protein}
+    days = [day(0, 700, 60),                                            # today: shown, not scored
+            day(1, 2100, 150), day(2, 1900, 140), day(3, 2000, 160),   # three hits in a row up to yesterday
+            day(4, 2600, 160),                                          # kcal over by 30% -> partial
+            day(5, 1200, 50),                                           # both off -> miss
+            day(7, 2050, 145)]                                          # day 6 nothing logged -> empty
+    x = fitness.discipline(days, goals, today, span=8)
+    assert [r["status"] for r in x["days"]] == ["hit", "empty", "miss", "partial", "hit", "hit", "hit", "today"]
+    assert x["total_days"] == 7 and x["logged_days"] == 6
+    assert x["streak"] == 3 and x["best_streak"] == 3
+    assert x["kcal_on_target"] == round(4 / 6, 2) and x["protein_on_target"] == round(5 / 6, 2)
+    assert x["score"] == round((4 + 0.5) / 7, 2) and x["avg_kcal"] == round((2100 + 1900 + 2000 + 2600 + 1200 + 2050) / 6)
+    assert [w["start"] for w in x["weeks"]] == ["2026-09-28"] and x["weeks"][0]["logged"] == 6
+    assert fitness.discipline([], {}, today, span=3)["score"] == 0          # nothing logged, no goals
