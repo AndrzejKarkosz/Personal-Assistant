@@ -1,0 +1,34 @@
+id: training
+label: Treningi (triathlon)
+description: Triathlon training - swimming, cycling, running; the training plan and how it goes, workouts from Strava,
+  planning the training week around work, recovery, the race and the taper.
+examples:
+  - jak mi idzie plan treningowy w tym tygodniu?
+  - co dziś trenuję?
+  - ile przepłynąłem w tym miesiącu?
+  - zaplanuj mi treningi na przyszły tydzień
+  - mam ciężki tydzień w pracy, co z treningami?
+  - zrobiłem dziś 9 tysięcy kroków
+  - chciałbym dodać crossfit raz w tygodniu, co proponujesz?
+  - co mam dziś na siłowni?
+  - how far am I from my weekly training target
+capabilities:
+  status:
+    label: Training plan and Strava
+    description: The plan, the season phase, target vs done per sport and week, the 80/20 share, activities from Strava.
+    tools: [training_status, strava__activities]
+    examples: ["jak idzie plan?", "co dziś trenowałem?", "ile godzin roweru w tym tygodniu?"]
+  plan:
+    label: Change the training plan
+    description: After he agreed to a proposal - change the race, weekly sessions and hours per sport (swim, bike, run,
+      strength), the easy heart-rate limit or the step goal.
+    tools: [training_plan_update]
+    examples: ["chcę dodać siłownię", "mogę trenować tylko 4 godziny", "wyjeżdżam na dwa tygodnie", "zmieniam zawody na lipiec"]
+    confirm: true
+  steps:
+    label: Steps
+    description: Save the steps he walked on a day and compare them with his daily step goal.
+    tools: [steps_log]
+    examples: ["zrobiłem dziś 8500 kroków", "wczoraj 12 tysięcy kroków", "ile kroków w tym tygodniu?"]
+uses: [calendar.read, calendar.write, tasks.manage, weight.read, research.web, memory.recall, memory.remember]
+enabled: true

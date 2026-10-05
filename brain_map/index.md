@@ -1,5 +1,5 @@
 ---
-{type: Index, title: Alfred's brain map, okf_version: '0.2', timestamp: '2026-10-01T10:39:19+02:00',
+{type: Index, title: Alfred's brain map, okf_version: '0.2', timestamp: '2026-10-05T10:16:01+02:00',
   description: 'Modules, capabilities, skills, tools, servers and topics of the brain.'}
 ---
 
@@ -9,10 +9,10 @@ What the brain is connected to and how the parts relate. Compiled from `modules/
 Module --has--> Capability --includes--> Tool --served by--> Server;  Skill --uses--> Capability;  Module --uses--> Capability of another module.
 
 # Sections
-* [modules](modules/index.md) - 7 modules
-* [capabilities](capabilities/index.md) - 12 capabilities
-* [skills](skills/index.md) - 3 skills
-* [tools](tools/index.md) - 34 tools, 34 online
-* [servers](servers/index.md) - alfred (ready), anthropic (ready), knowledge-base (ready), google-calendar (ready), browser (disabled)
+* [modules](modules/index.md) - 9 modules
+* [capabilities](capabilities/index.md) - 19 capabilities
+* [skills](skills/index.md) - 5 skills
+* [tools](tools/index.md) - 79 tools, 79 online
+* [servers](servers/index.md) - alfred (ready), anthropic (ready), knowledge-base (ready), google-calendar (ready), strava (ready), nutrition (ready), browser (disabled)
 * [topics](topics/index.md) - 9 knowledge topics
 * [log](log.md) - changes between builds

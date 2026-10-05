@@ -34,6 +34,25 @@ TASK_STATUS_CRITERIA = {        # the only task statuses (brain/memory.py TASK_S
     "done": "Zrobione - skończone, załatwione, gotowe",
     "cancelled": "Anulowane - nieaktualne, rezygnuje, nie będzie robione",
 }
+PLAN_CHANGES = {                # what he wants to change in his training plan - each picks a fixed procedure (executor)
+    "add_activity": "Chce dodać nową aktywność albo sport do planu (np. siłownia, crossfit, joga, wspinaczka, narty, rolki)",
+    "volume": "Chce trenować więcej albo mniej (godziny, liczba jednostek) albo zmienić dni treningów",
+    "pause": "Przerwa albo trudny okres: wyjazd, urlop, choroba, kontuzja, ból, bardzo ciężki czas w pracy",
+    "race": "Zmiana zawodów: inna data, inny dystans, dodatkowy start, rezygnacja ze startu",
+    "focus": "Chce poprawić konkretną rzecz: słabszą dyscyplinę, tempo, technikę, siłę, mobilność",
+    "body": "Zmiana celu sylwetkowego: waga, redukcja, masa mięśniowa, dieta pod trening",
+}
+PLAN_SPORTS = {                 # which part of the plan the change is about
+    "swim": "Pływanie", "bike": "Rower", "run": "Bieganie", "strength": "Siła, siłownia, mobilność, stabilizacja",
+    "all": "Cały plan albo kilka dyscyplin naraz",
+}
+OTHER_PRODUCT = "other"         # Jev's answer when the food is none of his regular products
+MEAL_TYPES = {                  # nutrition-mcp log_meal meal_type, as Jev's options
+    "breakfast": "Śniadanie - pierwszy posiłek dnia, rano",
+    "lunch": "Obiad / lunch - główny posiłek w środku dnia",
+    "dinner": "Kolacja - posiłek wieczorem",
+    "snack": "Przekąska - coś małego między posiłkami: owoc, baton, shake, jedzenie przed albo po treningu",
+}
 
 
 class JevError(RuntimeError):
@@ -98,6 +117,10 @@ class Route:
     forced: list[str] = field(default_factory=list)          # capabilities added by router.triggers
     task_category: str | None = None                         # category the user named for a task (Jev)
     task_status: str | None = None                           # status the user gave a task (Jev)
+    plan_change: str | None = None                           # the change he wants in his training plan (Jev)
+    plan_sport: str | None = None                            # which discipline that change is about (Jev)
+    adds_load: float = 0.0                                   # the change means more training load (Jev)
+    product: str | None = None                               # his regular product the food is (Jev); "other" = none
     multi_step: float = 0.0                                  # several separate things asked at once (Jev)
     changes_existing: float = 0.0                            # fixing / moving something that exists (Jev)
     tool_probabilities: dict[str, float] = field(default_factory=dict)   # per tool, asked one by one (Jev)
@@ -124,6 +147,7 @@ class Router:
         self.jev = jev
         self.settings = settings
         self.on_usage = lambda usage: None   # the brain bills every Jev call (router, shield, yes/no) to the session
+        self.products = lambda: []           # his regular products (Zadania -> Produkty); the brain plugs in memory
 
     def _setting(self, key: str, default: float) -> float:
         return float(self.settings.get(f"router.{key}", default))
@@ -225,6 +249,19 @@ class Router:
                                          categories | {NONE: "The user names no category, or this is not about a task"})
         qs["task_status"] = choice("Which status did the user give the task(s) in this request?",
                                    TASK_STATUS_CRITERIA | {NONE: "The user says nothing about a task's status"})
+        if "training" in self.map.modules:
+            qs["plan_change"] = choice("Does the user want to change his training plan, and how?",
+                                       PLAN_CHANGES | {NONE: "Nie chce zmieniać planu treningowego (pyta, raportuje, "
+                                                             "zapisuje trening, jedzenie albo kroki, albo inny temat)"})
+            qs["plan_sport"] = choice("Which part of the training plan is the request about?",
+                                      PLAN_SPORTS | {NONE: "Żadnej konkretnej / nie dotyczy treningu"})
+            qs["adds_load"] = noul("Would doing what the user wants add training load (more hours, more intensity or an "
+                                   "extra activity) on top of his current plan?",
+                                   true="More load than now", false="The same or less load, or not about training")
+        if products := self.products():
+            qs["product"] = choice("Which of the user's regular products is the food or drink he talks about?",
+                                   {p["name"]: p["name"] + (f" - {p['note']}" if p.get("note") else "") for p in products}
+                                   | {OTHER_PRODUCT: "None of these products - other food or drink, or not about food"})
         return qs
 
     async def _classify_jev(self, text: str, context: str) -> Route:
@@ -247,9 +284,14 @@ class Router:
                           source="jev", usage=_tokens(resp.get("usage") or {}))
         except (KeyError, TypeError, ValueError) as exc:
             raise JevError(f"Malformed Jev answers: {exc!r}") from exc
-        picked = {key: (a.get(key) or {}).get("choice") for key in ("skill", "topic", "task_category", "task_status")}
+        picked = {key: (a.get(key) or {}).get("choice")
+                  for key in ("skill", "topic", "task_category", "task_status", "plan_change", "plan_sport")}
         for key, value in picked.items():
             setattr(route, key, None if value in (None, NONE) else value)
+        route.adds_load = float((a.get("adds_load") or {}).get("noul", 0.0))
+        product = (a.get("product") or {}).get("choice")
+        names = {p["name"] for p in self.products()}
+        route.product = product if product in names or product == OTHER_PRODUCT else None
         return route
 
     async def _classify_llm(self, text: str, context: str) -> Route:
@@ -338,9 +380,11 @@ class Router:
         """Capabilities the user named outright are always given, with their module, whatever Jev guessed."""
         rules = self.settings.get("router.triggers") or {}
         forced = [cid for cid, pattern in rules.items() if cid in self.map.capabilities and re.search(pattern, text, re.I)]
-        for cid in forced:
+        if route.plan_change:      # Jev heard a plan change: the plan, the tool to change it and web research
+            forced += [c for c in ("training.status", "training.plan", "research.web") if c in self.map.capabilities]
+        for cid in dict.fromkeys(forced):
             self._include(route, cid)
-        route.forced = forced
+        route.forced = list(dict.fromkeys(forced))
 
     # ---- small judgements -------------------------------------------------------------------------------------
 
@@ -399,6 +443,13 @@ class Router:
             return c if c in allowed else "?"
         return [(pick(f"c{i}", categories, none_ok=True) if categories else None, pick(f"s{i}", TASK_STATUS_CRITERIA))
                 for i in range(len(tasks))]
+
+    async def classify_meal(self, request: str, meal: str, now: str) -> str | None:
+        """Jev picks the meal type of a meal being logged (breakfast / lunch / dinner / snack); None = no answer.
+        Raises JevError if Jev is down."""
+        q = choice(f"Which type of meal is this: {meal}? The user told the assistant at {now}.", MEAL_TYPES)
+        picked = ((await self._ask(f"User said: {request}", {"meal": q}))["answers"].get("meal") or {}).get("choice")
+        return picked if picked in MEAL_TYPES else None
 
     async def check_action(self, request: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         """Security check of a tool call Claude wants to make (does it follow from what the user asked?)."""

@@ -46,6 +46,29 @@ router:
     calendar.read: '\b(kalendarz|calendar|spotkani|wydarzeni)'
     calendar.write: '\b(kalendarz|calendar|spotkani|wydarzeni)'
     knowledge.search: '\b(wiedz[aąeęy]\b|baz[aąeęy] wiedzy|notat|knowledge)'
+    training.status: '\b(trening|strav|triathlon|ironman|pływ|basen|rower|bieg|biega|przebieg|brick|tape?r)'
+    weight.log: '\b(zjadł|jadł|zjem|posiłek|posiłk|śniadani|obiad|kolacj|przekąsk|waż[eę]|waga|wagę|obw[oó]d)'
+    weight.read: '\b(kalori|kcal|białk|makro|diet|redukcj|schudn|waga|wagi)'
+    weight.goals: '\b(cel wagowy|cel wagi|celu wagowego|docelow)'
+    training.steps: '\b(krok|steps)'
+
+# Treningi (brain/fitness.py, Zadania -> Treningi): the triathlon plan; done = Strava, work load = calendar + tasks.
+training:
+  race: { name: "1/2 Ironman", date: "2027-09-02", distance: half }   # date YYYY-MM-DD; sprint | olympic | half | full
+  # A normal (build-phase) week, ~5 h; other phases scale the hours (base 85%, peak 110%, taper 50%, recovery 65%).
+  weekly:
+    swim: { sessions: 2, hours: 1.2 }    # technique + one longer continuous swim
+    bike: { sessions: 2, hours: 2.3 }    # one long ride on the weekend + one quality / brick
+    run: { sessions: 2, hours: 1.5 }     # one long easy run + one quality
+    strength: { sessions: 2, hours: 0.7 }   # 2 x ~20 min (docs/triathlon-motor-prep.md); 1 x in the peak
+  season_start: "2026-10-04"   # the first 6 weeks after it: general strength, then heavy lifting
+  easy_share: 0.8          # 80/20
+  easy_hr_max: 145         # average heart rate at or below = easy (top of Z2) - set your own
+  weight_kg: null          # for workout kcal when Nutrition MCP has no weigh-in yet
+  eat_back: 0.6            # share of the kcal burnt in training added to the day's goal (mostly carbs)
+  steps_goal: 10000        # daily steps; benefits keep growing up to ~8-10k a day (Lancet Public Health 2022)
+  work_categories: [SmartMeet, Praca]
+  busy_week: { meeting_hours: 15, work_tasks_due: 8 }    # a work week this heavy -> 20-30% less training
 
 voice:
   tts_enabled: true        # false -> Alfred answers without ElevenLabs (browser voice); listening (STT) unaffected
@@ -77,7 +100,8 @@ proactive:
 # administracyjne gdy spada, 3) scripted actions „jeśli X, to Y” dla ryzykownych zadań, 4) wyzwalacze (cues),
 # 5) regeneracja. Raz w tygodniu ~30 min planowania ustawia cały tydzień.
 productivity:
-  # slot = the time from his plan (Cele → Rutyna produktywności): peak, shallow, weekly, close; no slot = schedule as is.
+  # slot = the time from his plan (Cele → Rutyna produktywności): peak, shallow, weekly, close, training; no slot =
+  # schedule as is.
   # Each prompt gets his plan appended (brain/app.py productivity_routines).
   routines:
     - id: prod-plan-tygodnia
@@ -90,15 +114,26 @@ productivity:
         głębokie (wymaga skupienia) czy płytkie (admin). Zaproponuj plan: głębokie zadania w szczycie energii,
         płytkie po południu, w limicie godzin z mojego planu. Wskaż zadania ryzykowne (np. trening wieczorem) i dla
         każdego zaproponuj „jeśli X, to Y” oraz jeden wyzwalacz w otoczeniu, który ułatwi start; zapisz je jako notatkę
-        w zadaniu. Ustaw terminy po mojej zgodzie i powiedz krótko, jak wygląda tydzień.
+        w zadaniu. Ustaw terminy po mojej zgodzie i powiedz krótko, jak wygląda tydzień. Zaplanuj też treningi na
+        tydzień (training_status: faza i realizacja planu): poza szczytem energii, o mojej porze treningu albo w
+        weekend; przy ciężkim tygodniu w pracy zetnij objętość o 20-30%, zostaw jedną jednostkę jakościową.
     - id: prod-priorytety-dnia
       schedule: "30 7 * * 1-5"
       module: tasks
       prompt: >-
         Rutyna produktywności - priorytety dnia. Na podstawie moich celów, terminów i kalendarza zaproponuj kolejność
-        dzisiejszych zadań: 1-3 głębokie na szczyt energii, płytkie i admin na popołudnie. Dla
-        najważniejszego podaj najszybszą drogę do zrobienia go i pierwszy krok na 5 minut. Zmieniaj zadania tylko po
-        mojej zgodzie.
+        dzisiejszych zadań: 1-3 głębokie na szczyt energii, płytkie i admin na popołudnie, a dzisiejszy trening z planu
+        o mojej porze treningu. Dla najważniejszego podaj najszybszą drogę do zrobienia go i pierwszy krok na 5 minut.
+        Jeśli dziś nie zapisałem wagi, zapytaj krótko o poranną wagę na czczo. Zmieniaj zadania tylko po mojej zgodzie.
+    - id: prod-trening-dnia
+      slot: training
+      schedule: "30 17 * * 1-5"
+      module: training
+      prompt: >-
+        Rutyna produktywności - pora treningu. Sprawdź w training_status i w zadaniach, co mam dziś trenować, i
+        przypomnij jednym zdaniem: dyscyplina, czas, spokojnie czy jakościowo. Jeśli dzień w pracy był ciężki
+        (kalendarz), zaproponuj lżejszą wersję jako „jeśli X, to Y”. Jeśli dziś trening jest już w Stravie albo nic
+        nie zaplanowano, zamilcz.
     - id: prod-szczyt-energii
       slot: peak
       schedule: "0 9 * * 1-5"
@@ -119,8 +154,10 @@ productivity:
       module: tasks
       prompt: >-
         Rutyna produktywności - domknięcie dnia i regeneracja. Powiedz w jednym-dwóch zdaniach, co dziś zrobiłem,
-        co przechodzi na jutro i jaki „jeśli X, to Y” mam na wieczór. Przypomnij o przerwie od ekranu - odpoczynek
-        też przybliża mnie do celów.
+        co przechodzi na jutro i jaki „jeśli X, to Y” mam na wieczór. Sprawdź dzisiejsze posiłki (get_goal_progress)
+        i trening: jeśli brakuje posiłków, zapytaj, co jadłem; powiedz jednym zdaniem, jak wyszły kalorie i białko
+        względem celu. Jeśli nie podałem dziś kroków, zapytaj, ile ich zrobiłem, i zapisz je (steps_log) - mam cel
+        krokowy. Przypomnij o przerwie od ekranu - odpoczynek też przybliża mnie do celów.
 
 # USD, for the cost split in the UI (Claude / Jev / ElevenLabs). Public list prices, 2026-09 - adjust to your plan.
 prices:

@@ -8,13 +8,13 @@ tools: [google-calendar__get-current-time, google-calendar__get-event, google-ca
   google-calendar__list-calendars, google-calendar__list-colors, google-calendar__list-events,
   google-calendar__search-events]
 tool_patterns: [google-calendar__list-*, google-calendar__search-*, google-calendar__get-*]
-available: 7
 confirm: false
 always: false
+available: 7
 examples: ['co mam jutro?', 'kiedy mam wolne w czwartek?', what's my next meeting]
-used_by: ['skill:calendar.daily-brief']
+used_by: ['skill:calendar.daily-brief', 'module:training', 'skill:training.training-week']
 tags: [capability, calendar]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-10-04T19:05:26+02:00'
 ---
 
 # Read the calendar
@@ -34,6 +34,8 @@ Module: [calendar](../modules/calendar.md)
 
 ## Used by
 - skill:calendar.daily-brief
+- module:training
+- skill:training.training-week
 
 ## Example requests
 - co mam jutro?

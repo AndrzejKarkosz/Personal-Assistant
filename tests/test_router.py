@@ -109,7 +109,8 @@ async def test_jev_categories_come_from_the_map(settings, brain_map):
     })
     route = await Router(brain_map, jev, settings).classify("zarezerwuj stolik na piątek")
     assert set(jev.sent) == {"module", "capability", "skill", "topic", "urgency", "acts_on_world", "needs_history",
-                             "multi_step", "changes_existing", "task_category", "task_status"}
+                             "multi_step", "changes_existing", "task_category", "task_status",
+                             "plan_change", "plan_sport", "adds_load"}      # the training module is on
     assert "calendar.write" in jev.sent["capability"]["criteria"]
     assert "topic:spanish" in jev.sent["topic"]["criteria"]
     assert route.module == "bookings" and route.skill == "bookings.restaurant-table" and route.topic is None

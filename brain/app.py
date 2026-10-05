@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import llm, persona
+from . import fitness, llm, persona
 from .config import ROOT
 from .pipeline import Brain
 from .scheduler import START
@@ -74,7 +74,8 @@ async def ws(socket: WebSocket) -> None:
             elif msg.get("type") == "audio" and msg.get("b64"):
                 mime = msg.get("mime", "webm")
                 ext = "webm" if "webm" in mime else "ogg" if "ogg" in mime else "wav"
-                _in_background(brain.handle_audio(base64.b64decode(msg["b64"]), f"speech.{ext}", interruptible=True))
+                _in_background(brain.handle_audio(base64.b64decode(msg["b64"]), f"speech.{ext}", interruptible=True,
+                                                  mode="chat" if msg.get("mode") == "chat" else "voice"))
             elif msg.get("type") == "confirm":
                 brain.guard.resolve(bool(msg.get("approved")))
     except WebSocketDisconnect:
@@ -281,6 +282,25 @@ async def put_goals(body: GoalsIn) -> dict[str, str]:
     return brain.store.goals()
 
 
+class ProductIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    url: str = Field(pattern=r"^https?://\S+$", max_length=2000)
+    note: str = Field("", max_length=300)
+    grams: float | None = Field(None, gt=0, le=5000)      # his usual portion; what he says overrides it
+
+
+@app.get("/api/products")
+async def get_products() -> list[dict[str, Any]]:
+    return brain.store.products()
+
+
+@app.put("/api/products")
+async def put_products(items: list[ProductIn]) -> list[dict[str, Any]]:
+    """The Produkty tab saves the whole list; it is a memory page, so Alfred finds it with memory_search."""
+    brain.store.save_products([i.model_dump() for i in items])
+    return brain.store.products()
+
+
 class CategoryIn(BaseModel):
     name: str
     description: str = ""
@@ -313,6 +333,100 @@ async def calendar(start: str, end: str) -> dict[str, Any]:
         return {"status": "error", "error": text[:300], "events": []}
     brain.bus.emit("calendar_sync", "mcp:google-calendar", events=len(events))
     return {"status": "ready", "error": None, "events": events}
+
+
+@app.get("/api/training")
+async def training(weeks: int = 8) -> dict[str, Any]:
+    """Zadania -> Treningi: the plan and its realisation (Strava, kcal per workout) and this week's work load."""
+    weeks = max(1, min(weeks, 26))
+    out = await fitness.status(brain.hub, brain.settings, weeks, weight_kg=await fitness.weight_now(brain.hub))
+    cfg = brain.settings.get("training") or {}
+    monday = fitness.week_start(datetime.now().date())
+    sunday = monday + timedelta(days=7)
+    cal = await calendar(f"{monday:%Y-%m-%dT00:00:00}", f"{sunday:%Y-%m-%dT00:00:00}")
+    due = [t for t in brain.store.list_tasks("open") if t.category in (cfg.get("work_categories") or [])
+           and t.due and monday <= datetime.fromisoformat(t.due).date() < sunday]
+    out["work"] = fitness.work_load(cal["events"], len(due), cfg) | {"calendar": cal["status"]}
+    return out
+
+
+@app.get("/api/diet")
+async def diet() -> dict[str, Any]:
+    """Zadania -> Dieta: today's macros against the goals (raised by today's training), the last 7 days and the log
+    of what you said and how it was saved."""
+    out: dict[str, Any] = {"status": "missing", "error": None, "log": nutrition_log()}
+    server = brain.hub.servers.get("nutrition")
+    if not server or server.status != "ready":
+        return out | {"status": server.status if server else "missing", "error": server and server.error}
+    today = datetime.now().date()
+    try:
+        progress = await brain.hub.call_json("nutrition__get_goal_progress", {})
+        week = await brain.hub.call_json("nutrition__get_nutrition_summary", {
+            "start_date": f"{today - timedelta(days=6)}", "end_date": f"{today}"})
+    except Exception as exc:
+        return out | {"status": "error", "error": f"{type(exc).__name__}: {exc}"[:300]}
+    training = await fitness.status(brain.hub, brain.settings, 1, weight_kg=(progress.get("weight") or {}).get("current"))
+    try:                                      # today's training into Nutrition MCP's goals
+        base, synced = await fitness.sync_goals(brain.hub, brain.settings, progress, training["today_kcal"]), True
+    except Exception:
+        base, synced = None, False
+    return out | {"status": "ready", "week": week, "strava": training["strava"], "goals_synced": synced,
+                  "balance": fitness.day_balance(progress, training["today_kcal"],
+                                                 float(brain.settings.get("training.eat_back", 0.6)), base),
+                  "workouts": [a for a in training["activities"] if a["start_date_local"][:10] == f"{today}"]}
+
+
+def nutrition_log(days: int = 3, limit: int = 40) -> list[dict[str, Any]]:
+    """What you said -> how Jev classified it -> what went into Nutrition MCP, newest first (from the activity log)."""
+    events = [e for day in reversed(brain.bus.log.days()[:days]) for e in brain.bus.log.read(day, limit=100_000)]
+    said = {e["request_id"]: e["data"].get("text") for e in events if e["kind"] == "transcript"}
+    classified: dict[str, dict] = {}
+    out: list[dict[str, Any]] = []
+    for e in events:
+        rid, d = e["request_id"], e["data"]
+        tool = str(d.get("tool", ""))
+        if e["kind"] == "meal_classified":
+            classified[f"{rid}|{d.get('meal')}"] = d
+        elif e["kind"] == "tool_call" and tool.startswith("nutrition__log_"):
+            args = d.get("input") or {}
+            jev = classified.get(f"{rid}|{args.get('description')}") or {}
+            out.append({"ts": e["ts"], "request_id": rid, "said": said.get(rid), "tool": tool.split("__", 1)[1],
+                        "input": args, "source": jev.get("source"), "ok": None,
+                        "items": fitness.meal_items(args.get("notes"))})
+        elif e["kind"] == "tool_result" and tool.startswith("nutrition__log_"):
+            entry = next((o for o in reversed(out) if o["request_id"] == rid and o["ok"] is None), None)
+            if entry:
+                entry["ok"] = not d.get("is_error")
+        elif e["kind"] == "meal_balance":
+            entry = next((o for o in reversed(out) if o["request_id"] == rid and o["tool"] == "log_meal"), None)
+            if entry:
+                entry["balance"] = {r["key"]: [r["eaten"], r["goal"]] for r in d.get("rows", [])}
+    return out[::-1][:limit]
+
+
+class RaceIn(BaseModel):
+    name: str = ""
+    date: str = Field("", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
+    distance: str = Field("half", pattern=r"^(sprint|olympic|half|full)$")
+
+
+class SportIn(BaseModel):
+    sessions: int = Field(ge=0, le=14)
+    hours: float = Field(ge=0, le=40)
+
+
+class TrainingPlanIn(BaseModel):
+    race: RaceIn
+    weekly: dict[str, SportIn]
+    easy_hr_max: int = Field(145, ge=90, le=210)
+    steps_goal: int = Field(10000, ge=1000, le=50000)
+
+
+@app.put("/api/training/plan")
+async def put_training_plan(body: TrainingPlanIn) -> dict[str, Any]:
+    """The race and the weekly targets from the Treningi tab - Alfred plans with them too (training_status)."""
+    brain.settings.update({"training": body.model_dump()})
+    return await training()
 
 
 PERIODS = {"day": "Dzień", "month": "Miesiąc", "quarter": "Kwartał", "year": "Rok"}
@@ -417,6 +531,7 @@ class PlanIn(BaseModel):
     weekly_day: str = Field("0", pattern=r"^[0-6]$")    # cron weekday, 0 = Sunday
     weekly_time: str = Field("19:00", pattern=HHMM)
     close: str = Field("18:30", pattern=HHMM)           # closing the day, rest
+    training: str = Field("17:30", pattern=HHMM)        # his usual training time on weekdays (Treningi)
     if_then: str = ""
     triggers: str = ""
     distractions: str = ""
@@ -436,10 +551,10 @@ def productivity_routines(plan: PlanIn, preset: list[dict]) -> list[dict]:
     """The preset routines (config/brain.yaml productivity) at the times of his plan, with his notes in each prompt."""
     at = lambda hhmm, days: f"{int(hhmm[3:])} {int(hhmm[:2])} * * {days}"
     slots = {"peak": at(plan.peak_start, "1-5"), "shallow": at(plan.shallow, "1-5"), "close": at(plan.close, "1-5"),
-             "weekly": at(plan.weekly_time, plan.weekly_day)}
+             "weekly": at(plan.weekly_time, plan.weekly_day), "training": at(plan.training, "1-5")}
     lines = lambda text: "; ".join(l.strip(" -") for l in text.splitlines() if l.strip(" -"))
     notes = [f"szczyt energii {plan.peak_start}-{plan.peak_end}", f"płytkie zadania od {plan.shallow}",
-             f"najwyżej {plan.hours_limit} h pracy w tygodniu"] + [
+             f"najwyżej {plan.hours_limit} h pracy w tygodniu", f"pora treningu w dni robocze {plan.training}"] + [
         f"{label}: {lines(text)}" for label, text in (("jeśli-to", plan.if_then), ("wyzwalacze", plan.triggers),
                                                       ("rozpraszacze", plan.distractions)) if lines(text)]
     return [{**{k: v for k, v in r.items() if k != "slot"}, "schedule": slots.get(r.get("slot"), r["schedule"]),

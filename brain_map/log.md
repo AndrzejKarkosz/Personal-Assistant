@@ -232,3 +232,86 @@
 
 ## 2026-10-02T15:40:08+02:00
 - changed tools/alfred/task-update.md
+
+## 2026-10-04T19:05:26+02:00
+- added modules/training.md
+- added skills/training.training-week.md
+- added modules/weight.md
+- added skills/weight.weight-goal.md
+- changed capabilities/calendar.read.md
+- changed capabilities/calendar.write.md
+- changed capabilities/memory.recall.md
+- changed capabilities/memory.remember.md
+- changed capabilities/tasks.manage.md
+- added capabilities/training.status.md
+- added capabilities/weight.log.md
+- added capabilities/weight.read.md
+- added capabilities/weight.goals.md
+- added capabilities/weight.fix.md
+- added tools/alfred/training-status.md
+- added tools/strava/activities.md
+- changed servers/alfred.md
+- added servers/strava.md
+- added servers/nutrition.md
+
+## 2026-10-04T21:08:28+02:00
+- changed modules/training.md
+- changed modules/weight.md
+- added capabilities/training.steps.md
+- changed capabilities/weight.log.md
+- changed capabilities/weight.read.md
+- changed capabilities/weight.goals.md
+- changed capabilities/weight.fix.md
+- changed tools/alfred/training-status.md
+- added tools/alfred/steps-log.md
+- changed tools/strava/activities.md
+- added tools/nutrition/log-meal.md
+- added tools/nutrition/start-meal-import.md
+- added tools/nutrition/bulk-import-meals.md
+- added tools/nutrition/lookup-barcode.md
+- added tools/nutrition/get-meals-today.md
+- added tools/nutrition/get-meals-by-date.md
+- added tools/nutrition/get-meals-by-date-range.md
+- added tools/nutrition/search-meals.md
+- added tools/nutrition/get-nutrition-summary.md
+- added tools/nutrition/set-nutrition-goals.md
+- added tools/nutrition/get-nutrition-goals.md
+- added tools/nutrition/get-goal-progress.md
+- added tools/nutrition/delete-meal.md
+- added tools/nutrition/update-meal.md
+- added tools/nutrition/log-water.md
+- added tools/nutrition/get-water-today.md
+- added tools/nutrition/get-water-by-date.md
+- added tools/nutrition/delete-water.md
+- added tools/nutrition/log-weight.md
+- added tools/nutrition/get-weight-today.md
+- added tools/nutrition/get-weight-by-date.md
+- added tools/nutrition/get-weight-by-date-range.md
+- added tools/nutrition/get-weight-trends.md
+- added tools/nutrition/update-weight.md
+- added tools/nutrition/delete-weight.md
+- added tools/nutrition/set-weight-unit.md
+- added tools/nutrition/log-body-measurement.md
+- added tools/nutrition/get-body-measurements.md
+- added tools/nutrition/update-body-measurement.md
+- added tools/nutrition/delete-body-measurement.md
+- added tools/nutrition/set-length-unit.md
+- added tools/nutrition/set-widget-display.md
+- added tools/nutrition/set-alcohol-tracking.md
+- added tools/nutrition/get-trends.md
+- added tools/nutrition/get-meal-patterns.md
+- added tools/nutrition/export-all-data.md
+- added tools/nutrition/get-profile.md
+- added tools/nutrition/set-timezone.md
+- added tools/nutrition/set-language.md
+- added tools/nutrition/get-current-time.md
+- added tools/nutrition/delete-account.md
+- changed servers/alfred.md
+- changed servers/nutrition.md
+
+## 2026-10-05T10:16:01+02:00
+- changed modules/training.md
+- changed capabilities/research.web.md
+- added capabilities/training.plan.md
+- added tools/alfred/training-plan-update.md
+- changed servers/alfred.md

@@ -5,9 +5,10 @@ description: 'Alfred''s own tools: session memory, tasks, spoken confirmation.'
 id: alfred
 status: ready
 tools: [memory_search, memory_read, memory_remember, task_list, task_create, task_update,
-  task_category_add, confirm_action, routine_save, routine_delete]
+  task_category_add, confirm_action, routine_save, routine_delete, training_status,
+  training_plan_update, steps_log]
 tags: [server, builtin]
-timestamp: '2026-10-01T10:39:19+02:00'
+timestamp: '2026-10-05T10:16:01+02:00'
 ---
 
 # alfred
@@ -27,3 +28,6 @@ Status: **ready**
 - [confirm_action](../tools/alfred/confirm-action.md) - guard
 - [routine_save](../tools/alfred/routine-save.md) - write
 - [routine_delete](../tools/alfred/routine-delete.md) - write
+- [training_status](../tools/alfred/training-status.md) - read
+- [training_plan_update](../tools/alfred/training-plan-update.md) - write
+- [steps_log](../tools/alfred/steps-log.md) - read

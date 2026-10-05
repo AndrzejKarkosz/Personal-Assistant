@@ -1,6 +1,6 @@
 ---
 {type: Index, title: Servers, description: 'Where tools live: MCP servers, Alfred''s
-    built-ins, Claude server tools.', timestamp: '2026-09-30T13:14:24+02:00'}
+    built-ins, Claude server tools.', timestamp: '2026-10-04T19:05:26+02:00'}
 ---
 
 # Servers
@@ -11,3 +11,5 @@ Where tools live: MCP servers, Alfred's built-ins, Claude server tools.
 * [browser](browser.md) - Browser automation for bookings (restaurants, appointments).
 * [google-calendar](google-calendar.md) - Google Calendar. Needs an OAuth client JSON - see README.
 * [knowledge-base](knowledge-base.md) - Andrzej's personal library (OKF wiki). Read-only from the brain.
+* [nutrition](nutrition.md) - Nutrition MCP (nutrition-mcp.com): meals, macros, weight, body measurements, nutrition goals. The first start opens the 
+* [strava](strava.md) - Strava - your activities (swim, bike, run). Once: uv run python server/strava_server.py --login

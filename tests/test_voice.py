@@ -30,7 +30,11 @@ async def test_speech_is_cached_and_transcripts_parsed(settings, tmp_path, monke
     assert await voice.synthesize("Jasne, szefie.") == mp3
     assert await voice.synthesize("Jasne, szefie.") == mp3 and len(calls) == 1
     assert calls[0].headers["xi-api-key"] == "xi" and calls[0].url.params["output_format"] == "mp3_44100_128"
+    errors = []
+    voice.on_error = errors.append
+    before = len(calls)
     assert await voice.synthesize("zepsute") is None
+    assert len(calls) == before + 2 and errors == ["HTTP 500: "]          # tried twice, then says why
 
     transcript = await voice.transcribe(b"audio", language="pl")
     assert (transcript.text, transcript.language) == ("co słychać", "pl")

@@ -144,6 +144,9 @@ function playNext() {
   } else if ("speechSynthesis" in window) {
     const u = new SpeechSynthesisUtterance(item.text);
     u.lang = item.lang === "en" ? "en-GB" : "pl-PL";
+    // the natural (online) voices of Edge / Chrome sound far less robotic than the system default
+    const voices = speechSynthesis.getVoices().filter((v) => v.lang.replace("_", "-").startsWith(u.lang.slice(0, 2)));
+    u.voice = voices.find((v) => /natural|online|google/i.test(v.name)) || voices[0] || null;
     u.rate = 1.2;                         // same pace as the ElevenLabs voice (voice.settings.speed)
     u.onend = u.onerror = playNext;
     playing = u;
@@ -160,16 +163,18 @@ function stopSpeaking() {                 // barge-in: you start talking, Alfred
 $("#speaking").onclick = stopSpeaking;
 
 // ------------------------------------------------------------- microphone
+// Two mic buttons: the low bar (spoken answer) and the chat (written answer in the chat).
 let recorder = null, chunks = [], recognition = null;
-async function startRec() {
+const micOf = (mode) => $(mode === "chat" ? "#chat-mic" : "#mic");
+async function startRec(mode = view === "chat" ? "chat" : "voice") {
   stopSpeaking();
-  $("#mic").classList.add("rec"); mood();
+  micOf(mode).classList.add("rec"); mood();
   if (!status.keys.elevenlabs && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SR();
     recognition.lang = status.language === "en" ? "en-GB" : "pl-PL";
-    recognition.onresult = (e) => sendText(e.results[0][0].transcript);
-    recognition.onend = () => { $("#mic").classList.remove("rec"); mood(); };
+    recognition.onresult = (e) => (mode === "chat" ? sendChat : sendText)(e.results[0][0].transcript);
+    recognition.onend = () => { micOf(mode).classList.remove("rec"); mood(); };
     recognition.start();
     return;
   }
@@ -182,20 +187,21 @@ async function startRec() {
     const blob = new Blob(chunks, { type: recorder.mimeType });
     if (blob.size < 2000) return;
     const reader = new FileReader();
-    reader.onload = () => ws.send(JSON.stringify({ type: "audio", b64: reader.result.split(",")[1], mime: recorder.mimeType }));
+    reader.onload = () => ws.send(JSON.stringify({ type: "audio", b64: reader.result.split(",")[1], mime: recorder.mimeType, mode }));
     reader.readAsDataURL(blob);
   };
   recorder.start();
 }
 function stopRec() {
-  $("#mic").classList.remove("rec"); mood();
+  document.querySelectorAll(".mic.rec").forEach((b) => b.classList.remove("rec")); mood();
   if (recognition) { recognition.stop(); recognition = null; }
   if (recorder && recorder.state === "recording") recorder.stop();
 }
-function isRecording() { return $("#mic").classList.contains("rec"); }
+function isRecording() { return Boolean(document.querySelector(".mic.rec")); }
 // A letter or the space bar would type into a text field, so there it stays a letter; F-keys, Ctrl, Alt... work everywhere.
 const typing = (e) => e.target.closest?.("input, textarea, select") && e.key.length === 1;
-$("#mic").onclick = () => (isRecording() ? stopRec() : startRec());
+$("#mic").onclick = () => (isRecording() ? stopRec() : startRec("voice"));
+$("#chat-mic").onclick = () => (isRecording() ? stopRec() : startRec("chat"));
 
 // Push-to-talk key: remembered in this browser, changed in Ustawienia.
 let ptt = "Space", capturing = false;
@@ -244,11 +250,12 @@ function chatTyping(on) {
   if (on) chatMsg("alfred typing", "<span class=\"dots\"><i></i><i></i><i></i></span>").id = "chat-typing";
 }
 const chatAnswer = (text, meta) => chatMsg("alfred", `<div class="md">${renderMd(text, "")}</div>`, meta);
+function sendChat(text) {
+  if (text.trim()) ws.send(JSON.stringify({ type: "text", text, mode: "chat" }));
+}
 $("#chat-form").onsubmit = (e) => {
   e.preventDefault();
-  const text = $("#chat-text").value.trim();
-  if (!text) return;
-  ws.send(JSON.stringify({ type: "text", text, mode: "chat" }));
+  sendChat($("#chat-text").value);
   $("#chat-text").value = "";
 };
 $("#chat-text").onkeydown = (e) => {
@@ -324,10 +331,12 @@ function onEvent(ev) {
       if (d.source === "routine") showBrief(d.text, ev.ts.slice(11, 16), "rutyna");
       refreshLeft();                        // Alfred may have changed the tasks or the calendar
       if (view === "tasks") refreshDay();
+      if (view === "tasks" && $("main").dataset.sub === "diet" && d.tools?.some((t) => t.startsWith("nutrition__"))) loadDiet().catch(warn);
       break;
     }
     case "error": thinking = false; mood(); addMsg("system", `⚠ ${d.message}`);
       if (chatReq.has(ev.request_id)) { chatTyping(false); chatMsg("system", `⚠ ${esc(d.message)}`); } subtitle(`⚠ ${d.message}`, "system"); loadRoutines(); break;
+    case "voice_error": addMsg("system", `🔇 Głos ElevenLabs nie zadziałał (${d.message}) — mówi głos przeglądarki`); break;
     case "session_closed": addMsg("system", `Sesja zapisana: ${d.title || ""}`); loadBriefing(); break;
     case "proactive_gate": if (!d.fired) addMsg("system", `Pominięto przypomnienie „${d.task}” (bramka ${Math.round(d.probability * 100)}%)`); break;
   }
@@ -368,7 +377,7 @@ async function loadStatus() {
 }
 const cash = (v) => `$${(v || 0).toFixed(4)}`;
 const tokens = (u) => ["input", "output", "cache_read", "cache_write", "router", "jev"].reduce((s, k) => s + (u[k] || 0), 0);
-const num = (n) => n.toLocaleString("pl-PL");
+const num = (n) => Math.round(+n || 0).toLocaleString("pl-PL");
 // Subscription: no per-token bill, the figure is what the same call would cost on the API.
 const usd = (v) => `${status.backend === "subscription" ? "≈" : ""}$${v.toFixed(4)}`;
 
@@ -393,7 +402,240 @@ function setSub(s) {
   delete $("#calendar").dataset.scrolled;             // taller hours on the full page: scroll to "now" again
   renderCalendar();
   if (s === "goals") loadGoals().catch(warn);
+  if (s === "training") loadTraining().catch(warn);
+  if (s === "diet") loadDiet().catch(warn);
+  if (s === "products") loadProducts().catch(warn);
 }
+
+// Produkty tab: an editable list - every change saves the whole list (a memory page Alfred finds with memory_search)
+let products = [];
+const isLink = (u) => /^https?:\/\/\S+$/.test(u || "");
+async function loadProducts() { products = await api("/api/products"); renderProducts(); }
+function setLink(row, url) {
+  const a = row.querySelector(".open");
+  a.classList.toggle("hidden", !isLink(url));
+  a.href = isLink(url) ? url : "#";
+}
+function renderProducts() {
+  $("#products").innerHTML = products.map((p, i) => `<div class="product" data-i="${i}">
+    <input name="name" value="${esc(p.name)}" placeholder="Nazwa, np. Odżywka białkowa" aria-label="Nazwa">
+    <input name="url" type="url" value="${esc(p.url)}" placeholder="https://…" aria-label="Link">
+    <input name="grams" type="number" min="1" max="5000" step="any" value="${p.grams ?? ""}" placeholder="porcja g" aria-label="Zwykła porcja w gramach" title="Zwykła porcja w gramach — gdy powiesz inną gramaturę, liczy się ta powiedziana">
+    <input name="note" value="${esc(p.note)}" placeholder="Notatka: smak, rozmiar, co ile kupuję" aria-label="Notatka">
+    <a class="open" target="_blank" rel="noopener" title="Otwórz link">↗</a>
+    <button class="del" type="button" title="Usuń">✕</button></div>`).join("")
+    || '<div class="sub">Brak produktów — dodaj pierwszy przyciskiem „+ Dodaj produkt”.</div>';
+  $("#products").querySelectorAll(".product").forEach((row) => {
+    const p = products[row.dataset.i];
+    setLink(row, p.url);
+    row.querySelectorAll("input").forEach((inp) => (inp.onchange = () => {
+      p[inp.name] = inp.name === "grams" ? (+inp.value > 0 ? +inp.value : null) : inp.value.trim();
+      if (inp.name === "url") setLink(row, p.url);
+      saveProducts();
+    }));
+    row.querySelector(".del").onclick = () => { products.splice(+row.dataset.i, 1); renderProducts(); saveProducts(); };
+  });
+}
+async function saveProducts() {
+  const ready = products.filter((p) => p.name && isLink(p.url));     // half-typed rows stay on screen until complete
+  try {
+    await api("/api/products", { method: "PUT", body: JSON.stringify(ready) });
+    $("#products-saved").textContent = `zapisane ${hhmm(new Date())}` +
+      (ready.length < products.length ? " · uzupełnij nazwę i link (https://…), żeby zapisać resztę" : "");
+  } catch (e) { warn(e); }
+}
+$("#product-add").onclick = () => {
+  products.push({ name: "", url: "", note: "" });
+  renderProducts();
+  $("#products .product:last-child input").focus();
+};
+
+// Dieta tab: today's macros against the goals (raised by today's training), what you said -> how it was saved, 7 days
+const MEAL_PL = { breakfast: "śniadanie", lunch: "obiad", dinner: "kolacja", snack: "przekąska" };
+const LOG_PL = { log_meal: "posiłek", log_weight: "waga", log_body_measurement: "pomiar", log_water: "woda" };
+const MACRO_COLOR = { calories: "var(--blue)", protein_g: "var(--green)", carbs_g: "var(--cyan)", fat_g: "var(--purple)", fiber_g: "var(--violet)", water_ml: "var(--cyan)" };
+const left = (r) => (r.goal ? (r.goal >= r.eaten ? `zostało ${num(r.goal - r.eaten)} ${r.unit}` : `${num(r.eaten - r.goal)} ${r.unit} ponad cel`) : "brak celu — ustal go z Alfredem");
+async function loadDiet() {
+  $("#dt-status").textContent = "ładuję…";
+  renderDiet(await api("/api/diet"));
+}
+function renderDiet(d) {
+  $("#dt-status").textContent = `odświeżone ${hhmm(new Date())}`;
+  const note = d.status === "ready" ? (d.strava?.error ? `Strava: ${d.strava.error} — kalorie z treningów niedostępne` : "")
+    : `Nutrition MCP: ${d.error || d.status}. Zaloguj się: w terminalu „uv run alfred mcp-login nutrition”, potem zrestartuj Alfreda.`;
+  $("#dt-note").textContent = note;
+  $("#dt-note").classList.toggle("hidden", !note);
+  const b = d.balance;
+  $(".diet-top").classList.toggle("hidden", !b);
+  if (b) {
+    const kc = b.rows.find((r) => r.key === "calories"), p = kc.goal ? kc.eaten / kc.goal : 0;
+    $("#dt-ring").style.setProperty("--p", Math.min(100, p * 100));
+    $("#dt-ring").classList.toggle("over", p > 1);
+    $("#dt-ring").innerHTML = `<div><b>${num(kc.eaten)}</b><span>${kc.goal ? `z ${num(kc.goal)} kcal` : "kcal dziś"}</span><small>${esc(left(kc))}</small></div>`;
+    $("#dt-sub").textContent = b.extra_kcal ? `cel ${num(kc.base_goal)} + ${num(b.extra_kcal)} kcal za dzisiejszy trening${d.goals_synced ? " · zapisane w Nutrition MCP" : ""}`
+      : b.training_kcal ? `trening dziś ~${num(b.training_kcal)} kcal` : "";
+    $("#dt-macros").innerHTML = b.rows.filter((r) => r.key !== "calories").map((r) => {
+      const q = r.goal ? r.eaten / r.goal : 0;
+      return `<div class="macro" style="--c:${MACRO_COLOR[r.key]}"><div class="row between"><span>${esc(r.label)}</span>
+        <span><b>${num(r.eaten)}</b><span class="muted">${r.goal ? ` / ${num(r.goal)}` : ""} ${r.unit}</span></span></div>
+        <div class="bar-lg${q > 1 ? " over" : ""}${r.goal ? "" : " nogoal"}" role="progressbar" aria-label="${esc(r.label)}" aria-valuenow="${r.eaten}" aria-valuemax="${r.goal || 0}"><i style="width:${Math.min(100, q * 100)}%"></i></div>
+        <small class="muted">${esc(left(r))}</small></div>`;
+    }).join("");
+    const wt = b.weight;
+    $("#dt-stats").innerHTML = [
+      tile("purple", wt?.current != null ? `${wt.current} ${wt.unit}` : "—", "waga", wt?.target != null ? `cel ${wt.target} ${wt.unit}` : "cel wagowy: powiedz Alfredowi"),
+      tile("blue", b.meal_count, "posiłków dziś"),
+      tile("green", b.training_kcal ? `~${num(b.training_kcal)}` : "0", "kcal spalone na treningu", (d.workouts || []).map((a) => a.name).join(", ") || "dziś bez treningu w Stravie"),
+    ].join("");
+  }
+  $("#dt-log").innerHTML = d.log.map(feedCard).join("") || '<div class="sub">Powiedz Alfredowi, co zjadłeś albo ile ważysz — tu zobaczysz, jak to zrozumiał i zapisał.</div>';
+  const days = d.week?.days || [], goal = d.week?.goals?.calories || Math.max(1, ...days.map((x) => x.calories));
+  $("#dt-week").innerHTML = days.map((x) => `<div class="tr-row"><span>${esc(dm(x.date))}</span>${meter(x.calories, goal)}
+    <span class="sub">${num(x.calories)} kcal · B ${num(x.protein_g)} · W ${num(x.carbs_g)} · T ${num(x.fat_g)} g</span></div>`).join("");
+}
+// Per product: what each one gave (Claude writes it into the meal's notes; the backend reads the lines)
+function mealItems(items) {
+  if (!items?.length) return "";
+  const g = (v) => (v == null ? "—" : num(Math.round(v * 10) / 10));
+  const sum = (k) => items.reduce((s, i) => s + (i[k] || 0), 0);
+  const row = (i) => `<tr><td>${esc(i.name)}</td><td>${i.approx ? "~" : ""}${g(i.grams)} g</td><td><b>${g(i.kcal)}</b></td>
+    <td>${g(i.protein_g)}</td><td>${g(i.carbs_g)}</td><td>${g(i.fat_g)}</td></tr>`;
+  return `<details class="items"><summary>Produkty (${items.length}) — kcal i makro każdego</summary>
+    <table><thead><tr><th>Produkt</th><th>Ilość</th><th>kcal</th><th>B g</th><th>W g</th><th>T g</th></tr></thead>
+    <tbody>${items.map(row).join("")}</tbody>
+    <tfoot><tr><td>Razem</td><td>${g(sum("grams"))} g</td><td><b>${g(sum("kcal"))}</b></td><td>${g(sum("protein_g"))}</td>
+    <td>${g(sum("carbs_g"))}</td><td>${g(sum("fat_g"))}</td></tr></tfoot></table></details>`;
+}
+function feedCard(e) {
+  const a = e.input || {};
+  const what = e.tool === "log_meal" ? [a.description, a.calories != null && `${num(a.calories)} kcal`, a.protein_g != null && `B ${num(a.protein_g)} g`,
+    a.carbs_g != null && `W ${num(a.carbs_g)} g`, a.fat_g != null && `T ${num(a.fat_g)} g`]
+    : e.tool === "log_weight" ? [`${a.weight} ${a.unit || "kg"}`, a.notes]
+    : e.tool === "log_body_measurement" ? [`${a.kind} ${a.value} ${a.unit || "cm"}`, a.notes]
+    : Object.entries(a).map(([k, v]) => `${k}: ${v}`);
+  const jev = a.meal_type ? `<span class="chip ${e.source === "jev" ? "jev" : ""}" title="${e.source === "jev" ? "Typ posiłku wybrał Jev" : "Jev nie odpowiedział — wybrał Claude"}">${e.source === "jev" ? "Jev" : "Claude"}: ${esc(MEAL_PL[a.meal_type] || a.meal_type)}</span>` : "";
+  const short = { calories: "kcal", protein_g: "B", carbs_g: "W", fat_g: "T" };
+  const bal = e.balance ? `<div class="sub">po posiłku: ${Object.keys(short).filter((k) => e.balance[k]).map((k) => {
+    const [x, g] = e.balance[k]; return `${short[k]} ${num(x)}${g ? `/${num(g)}` : ""}`; }).join(" · ")}</div>` : "";
+  return `<div class="feed"><div class="row between"><span class="said">${e.said ? `„${esc(e.said)}”` : '<span class="muted">(rutyna)</span>'}</span>
+    <span class="muted">${esc(dm(e.ts))} ${esc(e.ts.slice(11, 16))}</span></div>
+    <div class="flow-line"><span class="muted">→</span>${jev}<span class="chip">${esc(LOG_PL[e.tool] || e.tool)}</span>
+    <span class="${e.ok === false ? "bad" : "ok"}">${e.ok === false ? "✗ błąd zapisu" : e.ok ? "✓ zapisane w Nutrition MCP" : "…"}</span></div>
+    <div class="what">${what.filter(Boolean).map(esc).join(" · ")}</div>${bal}${mealItems(e.items)}</div>`;
+}
+$("#dt-refresh").onclick = () => loadDiet().catch(warn);
+
+// Treningi tab: the triathlon plan and how it goes (Strava), the work week, diet and weight (Nutrition MCP)
+const SPORT_PL = { swim: ["🏊", "Pływanie"], bike: ["🚴", "Rower"], run: ["🏃", "Bieg"], strength: ["🏋️", "Siła"], other: ["⏱️", "Inne"] };
+const DIST_PL = { sprint: "sprint", olympic: "olimpijski", half: "1/2 Ironman", full: "Ironman" };
+const hrs = (x) => `${(+x || 0).toFixed(1).replace(".", ",")} h`;
+const dm = (iso) => new Date(`${iso.slice(0, 10)}T12:00`).toLocaleDateString("pl-PL", { weekday: "short", day: "numeric", month: "short" });
+const dur = (s) => `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}`;
+const sportName = (s) => `${(SPORT_PL[s] || SPORT_PL.other)[0]} ${esc((SPORT_PL[s] || [, s])[1])}`;
+const meter = (done, target) => `<div class="meter${target && done > target ? " over" : ""}"><i style="width:${target ? Math.min(100, (done / target) * 100) : 0}%"></i></div>`;
+const tile = (cls, big, label, small = "") => `<div class="tile ${cls}"><b>${esc(big)}</b><span>${esc(label)}</span><small title="${esc(small)}">${esc(small)}</small></div>`;
+let training = null;
+async function loadTraining() {
+  $("#tr-status").textContent = "ładuję…";
+  renderTraining((training = await api("/api/training")));
+}
+const SPORT_COLOR = { swim: "var(--cyan)", bike: "var(--blue)", run: "var(--green)", strength: "var(--purple)", other: "var(--violet)" };
+// vertical bars: items {h: 0-100, value, label, cls, title}; line = where the goal sits (0-100)
+const columns = (items, line, lineLabel) => `<div class="cols" style="--line:${Math.min(100, line)}">${items.map((c) => `<div class="bar-col ${c.cls || ""}" title="${esc(c.title || "")}">
+  <span class="v">${esc(c.value)}</span><div class="plot"><i style="height:${Math.max(3, Math.min(100, c.h))}%"></i></div><span class="l">${esc(c.label)}</span></div>`).join("")}
+  ${line ? `<div class="goal-line" data-label="${esc(lineLabel)}"></div>` : ""}</div>`;
+const ring = (el, p, html, over) => { el.style.setProperty("--p", Math.min(100, p * 100)); el.classList.toggle("over", !!over); el.innerHTML = `<div>${html}</div>`; };
+function renderTraining(t) {
+  const w = t.weeks[0], r = t.race;
+  $("#tr-status").textContent = `odświeżone ${hhmm(new Date())}`;
+  $("#tr-note").textContent = t.strava.error ? `Strava: ${t.strava.error}` : "";
+  $("#tr-note").classList.toggle("hidden", !t.strava.error);
+  const when = r.date ? new Date(`${r.date}T12:00`).toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" }) : "";
+  $("#tr-race").innerHTML = `<div class="race-name">🏁 ${esc(r.name || DIST_PL[r.distance] || "Zawody")}</div>
+    <div class="race-when">${r.date ? `${esc(when)} · <b>za ${r.days_to} dni</b>` : "Ustaw datę zawodów w planie na dole"}</div>
+    <span class="pill">faza: <b>${esc(w.phase_pl)}</b> · objętość ${Math.round(w.volume * 100)}% planu</span>`;
+  const total = t.timeline.reduce((s, x) => s + x.days, 0);
+  $("#tr-timeline").innerHTML = t.timeline.map((x, i) => `<span class="${x.phase}${i === 0 ? " now" : ""}" style="flex:${x.days}"
+    title="${esc(x.phase_pl)} od ${esc(x.start)} · ${Math.round(x.days / 7)} tyg.">${x.days / total > 0.08 ? `${esc(x.phase_pl)} · ${Math.round(x.days / 7)} tyg` : ""}</span>`).join("");
+  ring($("#tr-ring"), w.target_h ? w.done_h / w.target_h : 0, `<b>${w.pct ?? 0}%</b><span>${hrs(w.done_h)} z ${hrs(w.target_h)}</span>
+    <small>${w.target_h > w.done_h ? `zostało ${hrs(w.target_h - w.done_h)}` : "plan zrobiony 🎉"}</small>`, w.pct > 100);
+  const steps = t.steps.days, today = steps[steps.length - 1].steps, goal = t.steps.goal;
+  ring($("#tr-steps-ring"), today ? today / goal : 0, `<b>${today == null ? "—" : num(today)}</b><span>z ${num(goal)}</span>
+    <small>${today == null ? "powiedz Alfredowi" : today >= goal ? "cel zrobiony 🎉" : `brakuje ${num(goal - today)}`}</small>`);
+  const work = t.work;
+  $("#tr-advice").className = `advice${work.busy ? " busy" : ""}`;
+  $("#tr-advice").innerHTML = work.busy ? `🧠 <b>Ciężki tydzień w pracy</b> — ${hrs(work.meeting_h)} spotkań, ${work.work_tasks_due} zadań zawodowych z terminem. ${esc(work.advice)}`
+    : `💼 Praca w normie: ${hrs(work.meeting_h)} spotkań i ${work.work_tasks_due} zadań zawodowych z terminem w tym tygodniu — trenuj według planu.`;
+  const tw = t.roadmap[0]?.this_week, doneLeft = Object.fromEntries(Object.entries(w.sports).map(([s, v]) => [s, v.done_sessions]));
+  $("#tr-week-phase").textContent = tw ? `faza: ${tw.phase_pl}` : "";
+  $("#tr-plan-week").innerHTML = (tw?.sessions || []).map((x) => {
+    const done = doneLeft[x.sport]-- > 0;               // the first N sessions of a sport count as done (N from Strava)
+    return `<div class="session${done ? " done" : ""}" style="--c:${SPORT_COLOR[x.sport] || SPORT_COLOR.other}">
+      <span class="icon">${(SPORT_PL[x.sport] || SPORT_PL.other)[0]}</span>
+      <div><div>${esc(x.name)}</div><span class="kind ${esc(x.kind)}">${esc(x.kind)}</span></div><span class="min">${x.minutes} min</span></div>`;
+  }).join("") || '<div class="sub">Ustaw datę zawodów w planie na dole, żeby zobaczyć sesje na ten tydzień.</div>';
+  $("#tr-road").innerHTML = t.roadmap.map((p, i) => `<div class="road-step ${p.phase}${i === 0 ? " now" : ""}">
+    <div class="row between"><b>${i + 1}. ${esc(p.phase_pl)}${i === 0 ? " · teraz" : ""}</b><span class="when">${p.weeks} tyg.</span></div>
+    <span class="when">${esc(dm(p.start))} – ${esc(dm(p.end))}</span><div class="sub">${esc(p.focus)}</div>
+    <ul>${p.milestones.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>`).join("");
+  $("#tr-sports").innerHTML = Object.entries(w.sports).map(([s, v]) => {
+    const p = v.target_h ? v.done_h / v.target_h : 0, todo = v.target_sessions - v.done_sessions;
+    const rest = todo > 0 ? `zostało ${todo}× po ~${Math.max(15, Math.round(((v.target_h - v.done_h) * 60) / todo))} min` : "✓ zrobione na ten tydzień";
+    return `<div class="sport-card${todo <= 0 ? " done" : ""}" style="--c:${SPORT_COLOR[s] || SPORT_COLOR.other}">
+      <div class="row between"><span class="icon">${(SPORT_PL[s] || SPORT_PL.other)[0]}</span><span class="pct">${Math.round(p * 100)}%</span></div>
+      <b>${esc((SPORT_PL[s] || [, s])[1])}</b><div class="bar-lg${p > 1 ? " over" : ""}"><i style="width:${Math.min(100, p * 100)}%"></i></div>
+      <span class="sub">${v.done_sessions}/${v.target_sessions} jednostki · ${hrs(v.done_h)} / ${hrs(v.target_h)}</span><span class="sub">${rest}</span></div>`;
+  }).join("");
+  $("#tr-stats").innerHTML = [
+    tile("green", w.easy_share == null ? "—" : `${Math.round(w.easy_share * 100)}%`, `spokojnie (cel ${Math.round(t.easy_target * 100)}%)`, "wg średniego tętna treningów"),
+    tile("blue", w.kcal ? `~${num(w.kcal)}` : "0", "kcal spalone w tym tygodniu", t.weight_kg ? `szacunek dla ${t.weight_kg} kg` : "podaj wagę, żeby liczyć kcal"),
+    tile("purple", hrs(w.other_h), "inne aktywności", "spacery, joga… poza planem"),
+  ].join("");
+  const maxSteps = Math.max(goal * 1.2, ...steps.map((d) => d.steps || 0));
+  $("#tr-steps").innerHTML = columns(steps.map((d) => ({ h: ((d.steps || 0) / maxSteps) * 100, value: d.steps == null ? "—" : `${Math.round(d.steps / 100) / 10}k`,
+    label: dm(d.date).split(",")[0], cls: d.steps == null ? "empty" : d.steps >= goal ? "hit" : "", title: `${d.date}: ${d.steps ?? "brak"} kroków` })),
+    (goal / maxSteps) * 100, `cel ${num(goal)}`);
+  $("#tr-weeks").innerHTML = columns([...t.weeks].reverse().map((x) => ({ h: ((x.pct || 0) / 130) * 100, value: `${x.pct ?? 0}%`,
+    label: dm(x.start).split(",")[1] || x.start.slice(5), cls: (x.pct || 0) >= 100 ? "hit" : x.done_h ? "" : "empty",
+    title: `tydzień od ${x.start} · ${x.phase_pl} · ${x.done_h} z ${x.target_h} h` })), (100 / 130) * 100, "plan");
+  $("#tr-acts").innerHTML = t.activities.map((a) => `<div class="act" style="--c:${SPORT_COLOR[a.sport] || SPORT_COLOR.other}">
+    <span class="icon">${(SPORT_PL[a.sport] || SPORT_PL.other)[0]}</span>
+    <div><div class="name">${esc(a.name)}</div><div class="sub">${esc(dm(a.start_date_local))} · ${esc(a.start_date_local.slice(11, 16))}</div></div>
+    <div class="chips"><span class="chip">⏱ ${dur(a.moving_time || 0)}</span>${a.distance ? `<span class="chip">📏 ${(a.distance / 1000).toFixed(1).replace(".", ",")} km</span>` : ""}
+    ${a.average_heartrate ? `<span class="chip" title="średnie tętno">♥ ${Math.round(a.average_heartrate)}</span>` : ""}${a.kcal ? `<span class="chip" title="szacunek: ${esc(a.kcal_source)}">🔥 ~${num(a.kcal)} kcal</span>` : ""}</div></div>`).join("")
+    || '<div class="sub">Brak treningów z ostatnich 14 dni — czas ruszyć! 🏃</div>';
+  const f = $("#tr-plan");
+  if (f.contains(document.activeElement)) return;            // do not overwrite what is being typed
+  f.elements.race_name.value = r.name || "";
+  f.elements.race_date.value = r.date || "";
+  f.elements.distance.value = r.distance || "half";
+  f.elements.easy_hr_max.value = t.plan.easy_hr_max;
+  f.elements.steps_goal.value = t.plan.steps_goal;
+  $("#tr-weekly").innerHTML = Object.entries(t.plan.weekly).map(([s, v]) => `<label class="field">${sportName(s)} — jednostki i godziny w tygodniu
+    <span class="row"><input name="${esc(s)}.sessions" type="number" min="0" max="14" value="${+v.sessions}" aria-label="jednostki">
+    <input name="${esc(s)}.hours" type="number" min="0" max="40" step="0.1" value="${+v.hours}" aria-label="godziny"> h</span></label>`).join("");
+}
+$("#tr-refresh").onclick = () => loadTraining().catch(warn);
+// "I want to change something": a fixed opening so Jev reads it as a plan change; the proposals come in the Chat
+$("#tr-change").onsubmit = (e) => {
+  e.preventDefault();
+  const text = e.target.elements.text.value.trim();
+  if (!text) return;
+  setView("chat");
+  sendChat(`Chcę zmienić plan treningowy: ${text}`);
+  e.target.reset();
+};
+$("#tr-plan").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = e.target, weekly = {};
+  Object.keys(training.plan.weekly).forEach((s) => (weekly[s] = { sessions: +f.elements[`${s}.sessions`].value, hours: +f.elements[`${s}.hours`].value }));
+  const race = { name: f.elements.race_name.value.trim(), date: f.elements.race_date.value, distance: f.elements.distance.value };
+  try {
+    document.activeElement.blur();
+    renderTraining((training = await api("/api/training/plan", { method: "PUT", body: JSON.stringify({ race, weekly, easy_hr_max: +f.elements.easy_hr_max.value, steps_goal: +f.elements.steps_goal.value }) })));
+    $("#tr-saved").textContent = `zapisane ${hhmm(new Date())} — Alfred planuje już według tego`;
+  } catch (err) { warn(err); }
+};
 async function loadGoals() {
   const [g, prod] = await Promise.all([api("/api/goals"), api("/api/productivity")]);
   $("#goals-text").value = g.goals;
@@ -1078,7 +1320,7 @@ $("#settings-form").onsubmit = async (e) => {
   try { saved = localStorage.getItem("view"); } catch { /* private mode */ }
   setView(["tasks", "chat"].includes(saved) ? saved : "brain");
   try { saved = localStorage.getItem("tasksub"); } catch { saved = null; }
-  setSub(["kanban", "calendar", "goals"].includes(saved) ? saved : "overview");
+  setSub(["kanban", "calendar", "goals", "training", "diet", "products"].includes(saved) ? saved : "overview");
   renderCalModes();
   loadChat().catch(() => {});
   refreshLeft();

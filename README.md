@@ -152,8 +152,26 @@ modules/bookings/
 ```
 
 Included modules: `calendar`, `knowledge`, `tasks`, `memory`, `research` (web search), `bookings`
-(restaurant-table skill), and `smalltalk` (no acknowledgement). To add a capability, add a folder and
-press reload, or restart.
+(restaurant-table skill), `training` (triathlon plan from Strava, planned around work - training-week skill),
+`weight` (meals, weigh-ins and goals in Nutrition MCP; Jev picks each logged meal's type - weight-goal skill) and
+`smalltalk` (no acknowledgement). To add a capability, add a folder and press reload, or restart.
+
+**Treningi** (Zadania → Treningi, `GET /api/training`, `brain/fitness.py`): the plan from `config/brain.yaml →
+training` (race, weekly hours per sport, 80/20 heart-rate limit) scaled by the season phase (base / build / peak /
+taper, 3:1 recovery weeks counted back from the race), what Strava says is done, the work week (meetings + work
+tasks due: a heavy week = 20-30% less training), estimated kcal per workout (power, else ~1 kcal/kg/km running,
+else MET) and the daily steps you tell Alfred (`steps_log`, `data/memory/steps.json`, goal `training.steps_goal`).
+
+**Droga do startu** (Treningi): the season's phases with focus, milestones and this week's concrete sessions
+(minutes from your weekly hours; strength periodised per `docs/triathlon-motor-prep.md`). **Plan changes**: say
+what you want (or use "Chcę coś zmienić w planie") - Jev classifies the change type, the discipline and whether it
+adds load, each answer picks a fixed procedure block in the prompt (`executor.PLAN_CHANGE_*`): research, 3 options,
+a recommendation; `training_plan_update` changes the plan only after your yes.
+
+**Dieta** (Zadania → Dieta, `GET /api/diet`): today's kcal and macros against the Nutrition MCP goals - raised on a
+training day by 60% of the burnt kcal (`training.eat_back`) - and the log of what you said, the meal type Jev picked
+and what was saved. The meal routine: after every `log_meal` the executor recalculates the day and the week's
+training sessions left and hands it to Claude in the same answer (`Executor._after_meal`).
 
 ## MCP servers — `config/mcp.json`
 
@@ -164,6 +182,13 @@ press reload, or restart.
   same connection feeds Claude's calendar tools and the calendar in the **Dzień** view (`GET /api/calendar`).
   In test mode Google tokens expire after 7 days; run the `auth` command again.
 - **browser**: disabled. Playwright MCP for bookings. Needs Node.js; set `"enabled": true`.
+- **strava**: `server/strava_server.py`, a small stdio server of our own (standalone - it can move to its own
+  repository). Put `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` of your Strava API app in `.env` (callback domain
+  `localhost`) and log in once: `uv run python server/strava_server.py --login`. The token lives in
+  `~/.config/strava-mcp/token.json` and refreshes itself.
+- **nutrition**: the remote [Nutrition MCP](https://github.com/akutishevsky/nutrition-mcp) with `"oauth": true`:
+  the first start opens the browser to log in (same account as the claude.ai connector); tokens are kept in
+  `data/oauth/nutrition.json`. Claude.ai connectors themselves are not visible to Alfred (`strict_mcp_config`).
 
 ## Proactive
 

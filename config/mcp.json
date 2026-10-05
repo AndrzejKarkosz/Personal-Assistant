@@ -20,6 +20,21 @@
                       "guestsCanSeeOtherGuests", "guestsCanModify", "privateCopy", "locked", "backgroundColor",
                       "foregroundColor", "defaultReminders", "notificationSettings", "conferenceProperties"]
     },
+    "strava": {
+      "enabled": true,
+      "type": "stdio",
+      "command": "python",
+      "args": ["server/strava_server.py"],
+      "cwd": "C:/Users/andrz/PycharmProjects/Personal-Assistant",
+      "description": "Strava - your activities (swim, bike, run). Once: uv run python server/strava_server.py --login"
+    },
+    "nutrition": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://nutrition-mcp.com/mcp",
+      "oauth": true,
+      "description": "Nutrition MCP (nutrition-mcp.com): meals, macros, weight, body measurements, nutrition goals. The first start opens the browser to log in - use the same account as the claude.ai connector."
+    },
     "browser": {
       "enabled": false,
       "type": "stdio",

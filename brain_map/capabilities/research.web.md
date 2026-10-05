@@ -6,13 +6,13 @@ id: research.web
 module: research
 tools: [web_fetch, web_search]
 tool_patterns: [web_search, web_fetch]
-available: 2
 confirm: false
 always: false
+available: 2
 examples: ['jaka jutro pogoda?', godziny otwarcia apteki, latest news about X]
-used_by: ['module:bookings', 'skill:bookings.restaurant-table']
+used_by: ['module:bookings', 'skill:bookings.restaurant-table', 'module:training']
 tags: [capability, research]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-10-05T10:16:01+02:00'
 ---
 
 # Search and read the web
@@ -28,6 +28,7 @@ Module: [research](../modules/research.md)
 ## Used by
 - module:bookings
 - skill:bookings.restaurant-table
+- module:training
 
 ## Example requests
 - jaka jutro pogoda?

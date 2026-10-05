@@ -1,4 +1,5 @@
-"""Command line:  alfred serve  (web UI)  |  alfred chat  (talk in the terminal)  |  alfred classify "text"  (test routing)."""
+"""Command line:  alfred serve  (web UI)  |  alfred chat  (talk in the terminal)  |  alfred classify "text"  (test routing)
+|  alfred mcp-login nutrition  (log in to an OAuth MCP server)."""
 from __future__ import annotations
 
 import argparse
@@ -65,6 +66,24 @@ async def _classify(text: str) -> None:
     print(json.dumps(route.to_dict(), indent=2, ensure_ascii=False))
 
 
+async def _mcp_login(name: str) -> None:
+    """Log in to a remote "oauth": true server (nutrition) now: the browser opens, the tokens are saved in
+    data/oauth/<name>.json and Alfred uses them on his next start."""
+    from contextlib import AsyncExitStack
+
+    from .config import Settings
+    from .mcp_hub import MCPHub
+
+    hub = MCPHub(Settings.load().path("mcp_config"))
+    state = hub.servers.get(name)
+    if not state or not state.config.get("oauth"):
+        raise SystemExit(f"'{name}' is not an OAuth server in config/mcp.json")
+    print(f"Logowanie do {name} - dokończ je w przeglądarce (czekam do 5 minut)...")
+    async with AsyncExitStack() as stack:
+        await asyncio.wait_for(hub._connect(stack, state), 300)
+    print(f"Gotowe: {name} zalogowany, {len(state.tools)} narzędzi. Zrestartuj Alfreda.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="alfred")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -74,11 +93,15 @@ def main() -> None:
     sub.add_parser("chat")
     cls = sub.add_parser("classify")
     cls.add_argument("text")
+    login = sub.add_parser("mcp-login")
+    login.add_argument("server", nargs="?", default="nutrition")
     args = parser.parse_args()
     if args.cmd == "serve":
         _serve(args.host, args.port)
     elif args.cmd == "chat":
         asyncio.run(_chat())
+    elif args.cmd == "mcp-login":
+        asyncio.run(_mcp_login(args.server))
     else:
         asyncio.run(_classify(args.text))
 

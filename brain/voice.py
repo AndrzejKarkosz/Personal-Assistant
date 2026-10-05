@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+
+log = logging.getLogger("alfred.voice")
 
 API = "https://api.elevenlabs.io/v1"
 
@@ -27,6 +30,7 @@ class ElevenLabs:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.on_usage = lambda **used: None  # tts_chars / stt_s of each billed call - the brain prices them
+        self.on_error = lambda message: None  # why there is no ElevenLabs voice (the UI falls back to the browser's)
 
     async def transcribe(self, audio: bytes, filename: str = "speech.webm",
                          language: str | None = None) -> Transcript | None:
@@ -57,12 +61,19 @@ class ElevenLabs:
         if cached.exists():
             return base64.b64encode(cached.read_bytes()).decode()
         body = {"text": text, "model_id": model} | ({"voice_settings": tuning} if tuning else {})
-        try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(f"{API}/text-to-speech/{voice}", params={"output_format": fmt},
-                                         headers={"xi-api-key": key}, json=body)
-            resp.raise_for_status()
-        except httpx.HTTPError:
+        for attempt in (1, 2):              # once more after a dropped connection, a busy or a failing ElevenLabs
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(f"{API}/text-to-speech/{voice}", params={"output_format": fmt},
+                                             headers={"xi-api-key": key}, json=body)
+                error = f"HTTP {resp.status_code}: {resp.text[:300]}" if resp.is_error else None
+                if not error or (resp.status_code < 500 and resp.status_code != 429):
+                    break
+            except httpx.HTTPError as exc:
+                error = f"{type(exc).__name__}: {exc}"
+        if error:
+            log.warning("ElevenLabs TTS failed: %s", error)
+            self.on_error(error)
             return None
         self.on_usage(tts_chars=len(text))  # cached phrases above cost nothing
         if len(text) < 120:

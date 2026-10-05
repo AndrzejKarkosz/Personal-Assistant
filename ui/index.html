@@ -72,6 +72,9 @@
       <button data-sub="kanban">Kanban</button>
       <button data-sub="calendar">Kalendarz</button>
       <button data-sub="goals">Cele</button>
+      <button data-sub="training">Treningi</button>
+      <button data-sub="diet">Dieta</button>
+      <button data-sub="products">Produkty</button>
     </nav>
     <!-- Przegląd: tasks and costs of a period (‹ › = earlier / later), then the routines -->
     <section class="panel overview-panel">
@@ -121,6 +124,12 @@
       <div id="cal-note" class="cal-note hidden"></div>
       <div class="cal-wrap"><div id="calendar" class="calendar"></div><div id="event-card" class="node-info hidden"></div></div>
     </section>
+    <!-- Produkty tab: products he uses regularly, with links - an editable list; a memory page Alfred reads too -->
+    <section class="panel products-panel">
+      <div class="panel-title row between"><span>Stałe produkty <span class="muted">to, czego używasz regularnie — Alfred też to widzi</span></span>
+        <span class="row"><span id="products-saved" class="muted"></span><button id="product-add" class="primary">+ Dodaj produkt</button></span></div>
+      <div class="tab"><div id="products" class="product-list"></div></div>
+    </section>
     <!-- Cele tab: his goals and resolutions - Alfred reads them and asks how a task serves them when it is unclear -->
     <section class="panel goals-panel">
       <div class="panel-title row between"><span>Cele i postanowienia</span>
@@ -147,6 +156,7 @@
             <option value="1">poniedziałek</option><option value="2">wtorek</option><option value="3">środa</option><option value="4">czwartek</option>
             <option value="5">piątek</option><option value="6">sobota</option><option value="0">niedziela</option></select><input name="weekly_time" type="time" required></span></label>
           <label class="field">Domknięcie dnia i regeneracja<input name="close" type="time" required></label>
+          <label class="field">Pora treningu (dni robocze)<input name="training" type="time" required></label>
           <label class="field">Limit godzin pracy w tygodniu<input name="hours_limit" type="number" min="1" max="100" required></label>
           <label class="field wide">Plany „jeśli X, to Y” — dla ryzykownych zadań<textarea name="if_then" placeholder="- Jeśli wrócę po 19, to trening 20 min w domu&#10;- Jeśli rano nie mam siły, to zaczynam od 5 minut"></textarea></label>
           <label class="field wide">Wyzwalacze w otoczeniu — co ułatwia start<textarea name="triggers" placeholder="- Buty do biegania przy drzwiach&#10;- Laptop zostawiony otwarty na dokumencie"></textarea></label>
@@ -154,6 +164,69 @@
           <div class="row wide"><button class="primary">Zapisz plan</button><span id="plan-saved" class="muted"></span></div>
         </form>
         <div id="prod-routines" class="stack"></div>
+      </div>
+    </section>
+    <!-- Treningi tab: the triathlon plan and how it goes (Strava), the work week, diet and weight (Nutrition MCP) -->
+    <section class="panel training-panel">
+      <div class="panel-title row between"><span>Treningi <span class="muted">Strava · plan · praca · kroki</span></span>
+        <span class="row"><span id="tr-status" class="muted"></span><button id="tr-refresh" class="mini" aria-label="Odśwież">↻</button></span></div>
+      <div class="tab">
+        <div id="tr-note" class="cal-note hidden"></div>
+        <div class="tr-hero">
+          <div class="card race-card"><div id="tr-race"></div><div id="tr-timeline" class="timeline"></div></div>
+          <div class="card ring-card"><div id="tr-ring" class="ring"></div><span class="sub">plan tygodnia</span></div>
+          <div class="card ring-card"><div id="tr-steps-ring" class="ring steps"></div><span class="sub">kroki dziś</span></div>
+        </div>
+        <div id="tr-advice" class="advice"></div>
+        <h4>Ten tydzień — co trenować <span class="muted" id="tr-week-phase"></span></h4>
+        <div id="tr-plan-week" class="session-list"></div>
+        <h4>Realizacja tygodnia</h4>
+        <div id="tr-sports" class="sport-cards"></div>
+        <div id="tr-stats" class="stats wide"></div>
+        <div class="tr-charts">
+          <div><h4>Kroki — 7 dni</h4><div id="tr-steps"></div></div>
+          <div><h4>Realizacja planu — 8 tygodni</h4><div id="tr-weeks"></div></div>
+        </div>
+        <h4>Droga do startu <span class="muted">fazy, cele i kamienie milowe</span></h4>
+        <div id="tr-road" class="road"></div>
+        <div class="card change-box">
+          <span class="title">Chcę coś zmienić w planie</span>
+          <div class="sub">Napisz, co chciałbyś zrobić. Jev rozpozna rodzaj zmiany, a Alfred zrobi research, da 3 propozycje
+            z dowodami i zmieni plan dopiero po Twoim „tak”. Odpowiedź przyjdzie w Chacie.</div>
+          <form id="tr-change" class="row"><input name="text" class="grow" required placeholder="np. chcę dodać crossfit raz w tygodniu, w marcu jadę na narty, mam mniej czasu w listopadzie">
+            <button class="primary">Zbadaj i zaproponuj</button></form>
+        </div>
+        <h4>Ostatnie treningi <span class="muted">Strava, 14 dni</span></h4>
+        <div id="tr-acts" class="act-list"></div>
+        <details class="plan-box"><summary>Plan, zawody i cel krokowy</summary>
+        <form id="tr-plan" class="plan-grid">
+          <label class="field">Zawody<input name="race_name" placeholder="np. Gdynia 70.3"></label>
+          <label class="field">Data zawodów<input name="race_date" type="date"></label>
+          <label class="field">Dystans<select name="distance"><option value="sprint">sprint</option><option value="olympic">olimpijski</option>
+            <option value="half">1/2 Ironman</option><option value="full">Ironman</option></select></label>
+          <label class="field">„Spokojnie” do średniego tętna<input name="easy_hr_max" type="number" min="90" max="210" required></label>
+          <label class="field">Cel kroków dziennie<input name="steps_goal" type="number" min="1000" max="50000" step="500" required></label>
+          <div id="tr-weekly" class="wide plan-grid"></div>
+          <div class="row wide"><button class="primary">Zapisz plan</button><span id="tr-saved" class="muted"></span></div>
+        </form>
+        </details>
+      </div>
+    </section>
+    <!-- Dieta tab: today's macros against the goals (raised by today's training), what you said -> how it was saved -->
+    <section class="panel diet-panel">
+      <div class="panel-title row between"><span>Dieta <span class="muted" id="dt-sub"></span></span>
+        <span class="row"><span id="dt-status" class="muted"></span><button id="dt-refresh" class="mini" aria-label="Odśwież">↻</button></span></div>
+      <div class="tab">
+        <div id="dt-note" class="cal-note hidden"></div>
+        <div class="diet-top">
+          <div id="dt-ring" class="ring kcal"></div>
+          <div id="dt-macros" class="macros"></div>
+        </div>
+        <div id="dt-stats" class="stats wide"></div>
+        <h4>Co powiedziałeś → jak to zapisano</h4>
+        <div id="dt-log" class="stack"></div>
+        <h4>Ostatnie 7 dni</h4>
+        <div id="dt-week" class="tr-list"></div>
       </div>
     </section>
   </div>
@@ -248,6 +321,9 @@
     </div>
     <form id="chat-form" class="chat-form">
       <textarea id="chat-text" rows="2" placeholder="Napisz do Alfreda… (Enter — wyślij, Shift+Enter — nowa linia)"></textarea>
+      <button type="button" id="chat-mic" class="mic" title="Mów do Alfreda — kliknij, żeby zacząć, i jeszcze raz, żeby wysłać. Odpowiedź przyjdzie tu, na piśmie." aria-label="Mów do Alfreda">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+      </button>
       <button class="primary">Wyślij</button>
     </form>
   </section>

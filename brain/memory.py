@@ -258,6 +258,21 @@ class MemoryStore:
                   f"# Cele i postanowienia\n\n## Cele\n\n{goals.strip()}\n\n## Postanowienia\n\n{resolutions.strip()}")
         self.log("goals.updated", "[Cele i postanowienia](goals.md)")
 
+    def products(self) -> list[dict[str, Any]]:
+        """Products he uses regularly (the Produkty tab, products.md): [{name, url, note, grams}]."""
+        path = self.root / "products.md"
+        return (okf.read(path)[0].get("items") or []) if path.exists() else []
+
+    def save_products(self, items: list[dict[str, Any]]) -> None:
+        """The whole list at once; the body lists them too, so memory_search finds a product by name or note."""
+        lines = "\n".join(f"- [{i['name']}]({i['url']})" + (f" - porcja {i['grams']:g} g" if i.get("grams") else "")
+                          + (f" - {i['note']}" if i.get("note") else "") for i in items)
+        okf.write(self.root / "products.md", {"type": "Products", "title": "Stałe produkty", "timestamp": now_iso(),
+                                              "description": "Products he buys or uses regularly, with links to "
+                                                             "reorder them.", "items": items},
+                  f"# Stałe produkty\n\n{lines}")
+        self.log("products.updated", "[Stałe produkty](products.md)")
+
     # ---- facts and sessions -----------------------------------------------------------------------------------
 
     def remember(self, category: str, title: str, content: str, session_id: str | None = None) -> Path:

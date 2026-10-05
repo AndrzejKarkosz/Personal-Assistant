@@ -47,13 +47,15 @@ class Brain:
         self.voice = ElevenLabs(s, ROOT / "data" / "tts_cache")
         self.guard = Guard(self.bus)
         self.proactive = ProactiveEngine(self, s.path("memory.dir").parent / "proactive_state.json")
+        self.router.products = self.store.products
         self.executor = Executor(s, self.registry, self.map, self.hub, self.store, self.guard, self.bus,
                                  tts=self.voice, shield=self.router.check_action, routines=self.proactive.routines,
-                                 classify_tasks=self.router.classify_tasks)
+                                 classify_tasks=self.router.classify_tasks, classify_meal=self.router.classify_meal)
         self._carry: dict[str, float] = {}   # spent before a session existed (speech-to-text, a proactive check)
         self._live: tuple[asyncio.Task, str, str] | None = None   # the user's request in progress: task, text, id
         self.router.on_usage = lambda u: self._spend(jev_in=u["input"], jev_out=u["output"])
         self.voice.on_usage = self._spend
+        self.voice.on_error = lambda message: self.bus.emit("voice_error", "voice", message=message)
 
     def _spend(self, jev_in: int = 0, jev_out: int = 0, tts_chars: int = 0, stt_s: float = 0) -> None:
         """Bills Jev and ElevenLabs to the session, priced by `prices` in brain.yaml. Claude is billed from its own
@@ -74,6 +76,8 @@ class Brain:
         await self.hub.start()
         self.bus.emit("mcp_status", "mcp", servers=self.hub.status())
         self.rebuild_map()
+        if not self.hub.ready:      # a server is still connecting (an OAuth login in the browser): map it once it is in
+            self._late_map = asyncio.create_task(self._map_when_ready())
         if with_scheduler and self.settings.get("proactive.enabled", True):
             self.proactive.start()
 
@@ -82,6 +86,11 @@ class Brain:
         await self.sessions.close()
         await self.hub.stop()
         self.bus.emit("brain_stop", "brain")
+
+    async def _map_when_ready(self) -> None:
+        await self.hub.wait_ready()
+        self.bus.emit("mcp_status", "mcp", servers=self.hub.status())
+        self.rebuild_map()
 
     def rebuild_map(self) -> dict[str, Any]:
         self.registry.reload()
@@ -93,7 +102,8 @@ class Brain:
 
     # ---- one request ------------------------------------------------------------------------------------------
 
-    async def handle_audio(self, audio: bytes, filename: str = "speech.webm", interruptible: bool = False) -> str | None:
+    async def handle_audio(self, audio: bytes, filename: str = "speech.webm", interruptible: bool = False,
+                           mode: str = "voice") -> str | None:
         request_id = new_id("r-")
         self.bus.emit("listening", "ears", request_id, bytes=len(audio))
         try:
@@ -105,7 +115,7 @@ class Brain:
             self.bus.emit("error", "ears", request_id, message="Nothing was transcribed.")
             return None
         return await self.handle_text(heard.text, language=heard.language, request_id=request_id,
-                                      interruptible=interruptible)
+                                      interruptible=interruptible, mode=mode)
 
     async def handle_text(self, text: str, language: str | None = None, source: str = "user",
                           request_id: str | None = None, module_hint: str | None = None, mode: str = "voice",

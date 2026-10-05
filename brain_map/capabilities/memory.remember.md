@@ -6,13 +6,14 @@ id: memory.remember
 module: memory
 tools: [memory_remember]
 tool_patterns: [memory_remember]
-available: 1
 confirm: false
 always: false
+available: 1
 examples: ['zapamiętaj, że nie jem mięsa', my sister's name is Ola]
-used_by: ['module:bookings', 'skill:bookings.restaurant-table', 'module:research']
+used_by: ['module:bookings', 'skill:bookings.restaurant-table', 'module:research',
+  'module:training', 'module:weight', 'skill:weight.weight-goal']
 tags: [capability, memory]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-10-04T19:05:26+02:00'
 ---
 
 # Remember a fact about the user
@@ -28,6 +29,9 @@ Module: [memory](../modules/memory.md)
 - module:bookings
 - skill:bookings.restaurant-table
 - module:research
+- module:training
+- module:weight
+- skill:weight.weight-goal
 
 ## Example requests
 - zapamiętaj, że nie jem mięsa

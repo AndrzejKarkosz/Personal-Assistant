@@ -8,14 +8,14 @@ tools: [google-calendar__create-event, google-calendar__create-events, google-ca
   google-calendar__respond-to-event, google-calendar__update-event]
 tool_patterns: [google-calendar__create-*, google-calendar__update-*, google-calendar__delete-*,
   google-calendar__respond-*]
-available: 5
 confirm: true
 always: false
+available: 5
 examples: [dodaj spotkanie w poniedziałek o 10, przesuń spotkanie na piątek, cancel
     tomorrow's call]
-used_by: ['module:bookings', 'skill:bookings.restaurant-table']
+used_by: ['module:bookings', 'skill:bookings.restaurant-table', 'module:training']
 tags: [capability, calendar]
-timestamp: '2026-09-29T10:16:23+02:00'
+timestamp: '2026-10-04T19:05:26+02:00'
 ---
 
 # Change the calendar
@@ -34,6 +34,7 @@ Module: [calendar](../modules/calendar.md)
 ## Used by
 - module:bookings
 - skill:bookings.restaurant-table
+- module:training
 
 ## Example requests
 - dodaj spotkanie w poniedziałek o 10

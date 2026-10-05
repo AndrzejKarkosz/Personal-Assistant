@@ -1,0 +1,41 @@
+id: weight
+label: Waga i dieta
+description: Body weight, diet and food - logging meals, calories and macros, weigh-ins and body measurements, the
+  weight goal and the nutrition goals, how eating supports training.
+examples:
+  - zjadłem owsiankę z bananem i dwa jajka
+  - ważę dziś 82,4 kg
+  - ile białka dziś zjadłem?
+  - jak idzie mi redukcja?
+  - obwód w pasie 88 cm
+  - ustaw mi cel wagowy
+  - what did I eat yesterday
+capabilities:
+  log:
+    label: Log meals, weight and measurements
+    description: Log a meal with calories and macros, a weigh-in, a body measurement or water; find a product by
+      barcode, look up past meals.
+    tools: [nutrition__log_meal, nutrition__log_weight, nutrition__log_body_measurement, nutrition__log_water,
+            nutrition__lookup_barcode, nutrition__search_meals]
+    examples: ["zjadłem kanapkę z serem", "ważę 82 kg", "wypiłem pół litra wody"]
+  read:
+    label: Diet and weight progress
+    description: Meals and totals of a day or range, progress against nutrition goals, weight trend, measurements.
+    tools: [nutrition__get_meals_today, nutrition__get_meals_by_date, nutrition__get_meals_by_date_range,
+            nutrition__get_nutrition_summary, nutrition__get_goal_progress, nutrition__get_trends,
+            nutrition__get_weight_by_date_range, nutrition__get_weight_trends, nutrition__get_body_measurements]
+    examples: ["ile kalorii dziś?", "jak spada waga?", "co jadłem wczoraj?"]
+  goals:
+    label: Weight and nutrition goals
+    description: Read and set the daily calorie and macro goals and the target weight; the profile (timezone, units).
+    tools: [nutrition__get_nutrition_goals, nutrition__set_nutrition_goals, nutrition__get_profile,
+            nutrition__set_timezone]
+    examples: ["ustaw cel 2300 kcal", "jaki mam cel wagowy?"]
+  fix:
+    label: Correct or delete entries
+    description: Change or delete a logged meal or weigh-in.
+    tools: [nutrition__update_meal, nutrition__delete_meal, nutrition__update_weight, nutrition__delete_weight]
+    examples: ["popraw ostatni posiłek", "usuń dzisiejszą wagę"]
+    confirm: true
+uses: [training.status, memory.recall, memory.remember]
+enabled: true

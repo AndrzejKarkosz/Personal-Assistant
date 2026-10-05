@@ -1,6 +1,6 @@
 ---
 {type: Index, title: Modules, description: The brain's lobes. The router's first question
-    picks one., timestamp: '2026-09-30T13:14:24+02:00'}
+    picks one., timestamp: '2026-10-04T19:05:26+02:00'}
 ---
 
 # Modules
@@ -13,3 +13,5 @@ The brain's lobes. The router's first question picks one.
 * [Web research and current information](research.md) - Looking things up on the internet - news, prices, opening hours, reviews, facts that change, comparing options.
 * [Conversation and quick answers](smalltalk.md) - Greetings, thanks, jokes, opinions and quick trivia that needs no tools. Not for subjects the user is learning or keeps 
 * [Tasks, reminders and follow-ups](tasks.md) - Remember to do something, remind me later, recurring routines, what is still open, mark something done, what did we agre
+* [Treningi (triathlon)](training.md) - Triathlon training - swimming, cycling, running; the training plan and how it goes, workouts from Strava, planning the t
+* [Waga i dieta](weight.md) - Body weight, diet and food - logging meals, calories and macros, weigh-ins and body measurements, the weight goal and th

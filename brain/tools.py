@@ -15,14 +15,14 @@ from typing import Any, Awaitable, Callable
 import yaml
 from apscheduler.triggers.cron import CronTrigger
 
-from . import okf
+from . import fitness, okf
 from .memory import FACT_CATEGORIES, OPEN_STATUSES, TASK_STATUSES, MemoryStore
 
 CONFIRM_TOOL = "confirm_action"
 ADD_CATEGORY = "task_category_add"
 ASK_FIRST = {CONFIRM_TOOL, ADD_CATEGORY}            # always a spoken yes/no before they run
 MUTATING = {"memory_remember", "task_create", "task_update", "routine_save", "routine_delete",
-            ADD_CATEGORY}                          # noted in the session
+            ADD_CATEGORY, "steps_log", "training_plan_update"}                          # noted in the session
 # Web tools run inside Claude Code itself: our name -> Claude Code's name, description.
 WEB_TOOLS = {"web_search": ("WebSearch", "Search the web for current information."),
              "web_fetch": ("WebFetch", "Fetch and read a web page by URL.")}
@@ -102,6 +102,30 @@ TOOLS: dict[str, dict[str, Any]] = {t["name"]: t for t in [
          prompt={"type": "string", "description": "What Alfred should do when it runs, as the user would say it"},
          module={"type": "string", "description": "Module that should run it, e.g. calendar, tasks"})},
     {"name": "routine_delete", "description": "Remove a routine by its id.", "input_schema": _schema(["id"], id=_str)},
+    {"name": "training_status",
+     "description": "The user's triathlon plan and how it goes: the race and days to it, the season phase (base, build, "
+                    "peak, taper, recovery), per week target vs done hours and sessions for swim / bike / run from "
+                    "Strava, the easy (80/20) share and the activities of the last 14 days with estimated kcal "
+                    "(today_kcal = burnt today).",
+     "input_schema": _schema([], weeks={"type": "integer", "minimum": 1, "maximum": 12,
+                                        "description": "How many weeks back, this one included (default 4)"})},
+    {"name": "training_plan_update",
+     "description": "Change the user's training plan after he agreed to a proposal: the race, weekly sessions and hours "
+                    "per sport (swim, bike, run, strength), the easy heart-rate limit, the daily step goal. Pass only "
+                    "what changes; `why` is kept with the change.",
+     "input_schema": _schema(["why"], why={"type": "string", "description": "One sentence: what changes and why"},
+                             race={"type": "object", "properties": {"name": _str, "date": _str,
+                                   "distance": {"type": "string", "enum": ["sprint", "olympic", "half", "full"]}}},
+                             weekly={"type": "object", "description": "sport -> {sessions, hours}", "additionalProperties": {
+                                 "type": "object", "properties": {"sessions": {"type": "integer", "minimum": 0, "maximum": 14},
+                                                                  "hours": {"type": "number", "minimum": 0, "maximum": 40}}}},
+                             easy_hr_max={"type": "integer", "minimum": 90, "maximum": 210},
+                             steps_goal={"type": "integer", "minimum": 1000, "maximum": 50000})},
+    {"name": "steps_log",
+     "description": "Save how many steps the user walked on a day (he tells you; a later number for the same day "
+                    "replaces it). Returns the day against his daily step goal and the last 7 days.",
+     "input_schema": _schema(["steps"], steps={"type": "integer", "minimum": 0, "maximum": 200000},
+                             date={"type": "string", "description": "YYYY-MM-DD, default today; 'wczoraj' = yesterday"})},
 ]}
 
 
@@ -145,7 +169,7 @@ def task_category(value: str | None, allowed: dict | list | None) -> str | None:
 Handler = Callable[[dict[str, Any], str | None], Awaitable[str]]
 
 
-def make_handlers(store: MemoryStore, routines_file: Path | None = None, settings=None) -> dict[str, Handler]:
+def make_handlers(store: MemoryStore, routines_file: Path | None = None, settings=None, hub=None) -> dict[str, Handler]:
     categories = lambda: (settings.get("tasks.categories") or {}) if settings else None
     def find_task(ref: str) -> str:
         """Exact id, else the ONE open task whose id starts with / title contains `ref`. Otherwise an error that
@@ -253,5 +277,50 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None, setting
         save_routines(kept)
         return f"Deleted routine {args['id']}"
 
+    async def training_status(args, sid):
+        if hub is None or settings is None:
+            raise ValueError("training_status needs the MCP hub and settings")
+        out = await fitness.status(hub, settings, int(args.get("weeks", 4)), weight_kg=await fitness.weight_now(hub))
+        if (server := hub.servers.get("nutrition")) and server.status == "ready":
+            try:                                  # today's training into Nutrition MCP's kcal / carbs goals
+                progress = await hub.call_json("nutrition__get_goal_progress", {})
+                out["nutrition_goals"] = fitness.raised(
+                    await fitness.sync_goals(hub, settings, progress, out["today_kcal"]), out["today_kcal"],
+                    float(settings.get("training.eat_back", 0.6)))
+            except Exception as exc:
+                out["nutrition_goals"] = f"not synced: {exc}"
+        return json.dumps(out, ensure_ascii=False)
+
+    async def training_plan_update(args, sid):     # the training.plan capability asks him for a yes first
+        if settings is None:
+            raise ValueError("training_plan_update needs settings")
+        patch = {k: args[k] for k in ("race", "weekly", "easy_hr_max", "steps_goal") if args.get(k) is not None}
+        if not patch:
+            raise ValueError("nothing to change - pass race, weekly, easy_hr_max or steps_goal")
+        if (race := patch.get("race")) and race.get("date"):
+            datetime.fromisoformat(race["date"])        # ValueError for a bad date
+        changes = (settings.get("training.changes") or [])[-19:] + [
+            {"date": datetime.now().date().isoformat(), "why": args["why"], "changed": patch}]
+        settings.update({"training": patch | {"changes": changes}})
+        return f"Plan updated ({', '.join(patch)}): {args['why']}"
+
+    async def steps_log(args, sid):
+        if settings is None:
+            raise ValueError("steps_log needs settings")
+        day = datetime.fromisoformat(args.get("date") or datetime.now().date().isoformat()).date()
+        if day > datetime.now().date():
+            raise ValueError(f"{day} is in the future - steps are logged for today or earlier")
+        path = fitness.steps_file(settings)
+        saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        saved[day.isoformat()] = int(args["steps"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(saved, indent=1, sort_keys=True), encoding="utf-8")
+        goal = int(settings.get("training.steps_goal", 10000))
+        week = ", ".join(f"{d['date'][5:]}: {'-' if d['steps'] is None else d['steps']}"
+                         for d in fitness.steps_week(path, datetime.now().date()))
+        return (f"Saved {args['steps']} steps on {day} - goal {goal} ({round(100 * int(args['steps']) / goal)}%). "
+                f"Last 7 days: {week}")
+
     return {f.__name__: f for f in (memory_search, memory_read, memory_remember, task_list, task_create,
-                                    task_update, task_category_add, routine_save, routine_delete)}
+                                    task_update, task_category_add, routine_save, routine_delete, training_status,
+                                    steps_log, training_plan_update)}

@@ -7,14 +7,15 @@ id: memory.recall
 module: memory
 tools: [memory_read, memory_search]
 tool_patterns: [memory_search, memory_read]
-available: 2
 confirm: false
 always: false
+available: 2
 examples: ['o czym rozmawialiśmy wczoraj?', 'co zrobiłeś pod moją nieobecność?']
 used_by: ['module:bookings', 'skill:bookings.restaurant-table', 'module:calendar',
-  'skill:calendar.daily-brief', 'module:tasks']
+  'skill:calendar.daily-brief', 'module:tasks', 'module:training', 'skill:training.training-week',
+  'module:weight', 'skill:weight.weight-goal']
 tags: [capability, memory]
-timestamp: '2026-09-25T14:22:57+02:00'
+timestamp: '2026-10-04T19:05:26+02:00'
 ---
 
 # Recall past sessions and facts
@@ -33,6 +34,10 @@ Module: [memory](../modules/memory.md)
 - module:calendar
 - skill:calendar.daily-brief
 - module:tasks
+- module:training
+- skill:training.training-week
+- module:weight
+- skill:weight.weight-goal
 
 ## Example requests
 - o czym rozmawialiśmy wczoraj?

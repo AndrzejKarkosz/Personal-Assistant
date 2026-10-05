@@ -12,9 +12,10 @@ always: false
 available: 4
 examples: [przypomnij mi za godzinę, 'co mam otwarte?', oznacz jako zrobione]
 used_by: ['module:bookings', 'skill:bookings.restaurant-table', 'module:calendar',
-  'skill:calendar.daily-brief', 'module:memory', 'module:research']
+  'skill:calendar.daily-brief', 'module:memory', 'module:research', 'module:training',
+  'skill:training.training-week']
 tags: [capability, tasks]
-timestamp: '2026-10-01T10:39:19+02:00'
+timestamp: '2026-10-04T19:05:26+02:00'
 ---
 
 # Manage tasks and reminders
@@ -36,6 +37,8 @@ Module: [tasks](../modules/tasks.md)
 - skill:calendar.daily-brief
 - module:memory
 - module:research
+- module:training
+- skill:training.training-week
 
 ## Example requests
 - przypomnij mi za godzinę
