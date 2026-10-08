@@ -1,6 +1,6 @@
 assistant:
   name: Alfred
-  user_name: Andrzej
+  user_name: ""             # set during the first-run setup (Alfred asks)
   address: { pl: "szefie", en: "boss" }
   default_language: pl
   reply_language: pl          # Alfred always answers in this language; empty = the language you spoke
@@ -13,15 +13,13 @@ assistant:
 tasks:
   # The ONLY task categories (the text tells Jev when the user picked one). Alfred cannot invent one: a new
   # category only through task_category_add, which asks you first - or add it yourself in Ustawienia.
-  categories:
-    SmartMeet: "Zadanie dotyczy SmartMeet (projekt, klient, kod, materiały SmartMeet) albo użytkownik mówi, że to do SmartMeet"
-    Praca: "Zadanie zawodowe, ale nie SmartMeet: druga praca, faktury, rekrutacje, sprawy firmowe"
-    Reszta: "Wszystko poza pracą: sprawy prywatne, zdrowie, sport, dom, zakupy, urzędy, nauka dla siebie"
+  # Empty until the first-run setup: Alfred asks which areas your tasks fall into (name: when a task belongs there).
+  categories: {}
 
 map:
-  dir: brain_map
-  topic_sources:
-    - { server: knowledge-base, capability: knowledge.search, path: "E:/Knowledge-Base/wiki/topics" }
+  dir: data/brain_map
+  # Knowledge-library topics put on the map, e.g. { server: knowledge-base, capability: knowledge.search, path: "<folder>" }
+  topic_sources: []
 
 models:
   executor: claude-opus-5-5         # every module (a module.yaml may override with model: / effort:)
@@ -54,27 +52,29 @@ router:
 
 # Treningi (brain/fitness.py, Zadania -> Treningi): the triathlon plan; done = Strava, work load = calendar + tasks.
 training:
-  race: { name: "1/2 Ironman", date: "2027-09-02", distance: half }   # date YYYY-MM-DD; sprint | olympic | half | full
+  race: { name: "", date: "", distance: half }   # date YYYY-MM-DD; sprint | olympic | half | full
   # A normal (build-phase) week, ~5 h; other phases scale the hours (base 85%, peak 110%, taper 50%, recovery 65%).
   weekly:
     swim: { sessions: 2, hours: 1.2 }    # technique + one longer continuous swim
     bike: { sessions: 2, hours: 2.3 }    # one long ride on the weekend + one quality / brick
     run: { sessions: 2, hours: 1.5 }     # one long easy run + one quality
     strength: { sessions: 2, hours: 0.7 }   # 2 x ~20 min (docs/triathlon-motor-prep.md); 1 x in the peak
-  season_start: "2026-10-04"   # the first 6 weeks after it: general strength, then heavy lifting
+  season_start: ""         # YYYY-MM-DD; the first 6 weeks after it: general strength, then heavy lifting
   easy_share: 0.8          # 80/20
   easy_hr_max: 145         # average heart rate at or below = easy (top of Z2) - set your own
   weight_kg: null          # for workout kcal when Nutrition MCP has no weigh-in yet
   eat_back: 0.6            # share of the kcal burnt in training added to the day's goal (mostly carbs)
   steps_goal: 10000        # daily steps; benefits keep growing up to ~8-10k a day (Lancet Public Health 2022)
-  work_categories: [SmartMeet, Praca]
+  work_categories: []      # task categories that count as work load
+  mark: "Plan treningowy Alfreda"   # ends the description of every training event he puts in the calendar
   busy_week: { meeting_hours: 15, work_tasks_due: 8 }    # a work week this heavy -> 20-30% less training
 
 voice:
-  tts_enabled: true        # false -> Alfred answers without ElevenLabs (browser voice); listening (STT) unaffected
+  tts_enabled: false       # true -> ElevenLabs voice (paid per character); false -> the browser speaks (free). STT unaffected
   stt_model: scribe_v2
   tts_model: eleven_flash_v2_5     # fast; eleven_multilingual_v2 = slower but more natural
   output_format: mp3_44100_128
+  max_chars: 200           # only this much of an answer is spoken by ElevenLabs (whole sentences); the rest is on screen
   settings:
     speed: 1.2               # ElevenLabs allows 0.7-1.2
 
@@ -86,7 +86,7 @@ memory:
 proactive:
   enabled: true
   quiet_hours: ["23:00", "07:00"]
-  routines: config/routines.yaml
+  routines: data/routines.yaml
   # Przypomnienia o zadaniach z terminem: Alfred odzywa się `lead_minutes` przed terminem (0 = dopiero o czasie)
   # i - przy fastest_path - proponuje najszybszą drogę do zrobienia zadania (pierwszy krok, co pominąć).
   reminders:
@@ -94,7 +94,7 @@ proactive:
     fastest_path: true
 
 # Cele → „Rutyna produktywności” (Justin Sung, „Productivity is Hard Until You Build Systems Like This”):
-# włączenie kopiuje te rutyny do config/routines.yaml (potem edytujesz je w Przeglądzie), wyłączenie je usuwa.
+# włączenie kopiuje te rutyny do data/routines.yaml (potem edytujesz je w Przeglądzie), wyłączenie je usuwa.
 # 1) produktywność = to, co przybliża do Twoich 2-3 celów, 2) flow matching: zadania głębokie w szczycie energii,
 # administracyjne gdy spada, 3) scripted actions „jeśli X, to Y” dla ryzykownych zadań, 4) wyzwalacze (cues),
 # 5) regeneracja. Raz w tygodniu ~30 min planowania ustawia cały tydzień.
@@ -161,10 +161,17 @@ productivity:
 # USD, for the cost split in the UI (Claude / Jev / ElevenLabs). Public list prices, 2026-09 - adjust to your plan.
 prices:
   jev_input_per_mtok: 0.042            # typesafe.ai Jev: input tokens only, output is free (early access)
-  elevenlabs_tts_per_1k_chars: 0.10    # Multilingual v2/v3 (Flash/Turbo: 0.05)
+  elevenlabs_tts_per_1k_chars: 0.05    # Flash/Turbo (voice.tts_model); Multilingual v2/v3: 0.10
   elevenlabs_stt_per_hour: 0.22        # Scribe v2
 
 logging:
   dir: data/logs
 
-mcp_config: config/mcp.json
+mcp_config: data/mcp.json     # copied from config/mcp.json on the first start
+
+# Which modules are on (module id -> true/false) beyond what each module.yaml says; the setup and the Moduły tab
+# write here (data/settings.json).
+modules: {}
+
+setup:
+  done: false              # true once Alfred has walked you through the first-run setup

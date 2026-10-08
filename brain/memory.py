@@ -72,7 +72,7 @@ class MemoryStore:
         for sub in ("tasks", "sessions", *(f"facts/{c}" for c in FACT_CATEGORIES)):
             (root / sub).mkdir(parents=True, exist_ok=True)
         if not (root / "profile.md").exists():
-            okf.write(root / "profile.md", {"type": "Profile", "title": "Andrzej", "timestamp": now_iso(),
+            okf.write(root / "profile.md", {"type": "Profile", "title": "Profile", "timestamp": now_iso(),
                                             "description": "Who I serve and how he likes things done."},
                       "# Profile\n\n## Preferences\n\n## Facts\n")
         if not (root / "log.md").exists():
@@ -159,8 +159,9 @@ class MemoryStore:
 
     def update_task(self, task_id: str, status: str | None = None, note: str | None = None, due: str | None = None,
                     title: str | None = None, schedule: str | None = None, session_id: str | None = None,
-                    category: str | None = None, goal: str | None = None, alfred: bool | None = None) -> Task:
-        """Only the given fields change. An empty string clears due / schedule / category / goal."""
+                    category: str | None = None, goal: str | None = None, alfred: bool | None = None,
+                    description: str | None = None) -> Task:
+        """Only the given fields change. An empty string clears due / schedule / category / goal / description."""
         with self._lock:
             task = self.get_task(task_id)
             if task is None:
@@ -178,6 +179,9 @@ class MemoryStore:
             if alfred is not None and alfred != task.alfred:
                 changes.append("moved to Alfred's board" if alfred else "moved to the user's board")
                 task.alfred = alfred
+            if description is not None and description.strip() != task.description:
+                changes.append("description updated")
+                task.description = description.strip()
             if title and title != task.title:
                 changes.append(f"renamed to {title}")
                 task.title = title
@@ -257,13 +261,15 @@ class MemoryStore:
         self.log("goals.updated", "[Cele i postanowienia](goals.md)")
 
     def products(self) -> list[dict[str, Any]]:
-        """Products he uses regularly (the Produkty tab, products.md): [{name, url, note, grams}]."""
+        """Products he uses regularly (the Produkty tab, products.md): [{name, url, note, grams, kcal, protein_g,
+        carbs_g, fat_g, fiber_g, sugar_g}] - the nutrition per 100 g from the product's label."""
         path = self.root / "products.md"
         return (okf.read(path)[0].get("items") or []) if path.exists() else []
 
     def save_products(self, items: list[dict[str, Any]]) -> None:
         """The whole list at once; the body lists them too, so memory_search finds a product by name or note."""
         lines = "\n".join(f"- [{i['name']}]({i['url']})" + (f" - porcja {i['grams']:g} g" if i.get("grams") else "")
+                          + (f" - {i['kcal']:g} kcal / 100 g" if i.get("kcal") is not None else "")
                           + (f" - {i['note']}" if i.get("note") else "") for i in items)
         okf.write(self.root / "products.md", {"type": "Products", "title": "Stałe produkty", "timestamp": now_iso(),
                                               "description": "Products he buys or uses regularly, with links to "

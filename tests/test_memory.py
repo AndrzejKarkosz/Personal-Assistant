@@ -143,8 +143,8 @@ def test_undone_tasks_move_to_the_next_day_same_hour(tmp_path):
 def test_goals_and_resolutions_are_saved_and_briefed(tmp_path):
     store = MemoryStore(tmp_path)
     assert store.goals() == {"goals": "", "resolutions": ""} and store.goals_text() == ""
-    store.save_goals("- Wrócić do biegania\n- Skończyć SmartMeet MVP", "- Bez telefonu po 22")
-    assert store.goals() == {"goals": "- Wrócić do biegania\n- Skończyć SmartMeet MVP", "resolutions": "- Bez telefonu po 22"}
+    store.save_goals("- Wrócić do biegania\n- Skończyć MVP", "- Bez telefonu po 22")
+    assert store.goals() == {"goals": "- Wrócić do biegania\n- Skończyć MVP", "resolutions": "- Bez telefonu po 22"}
     assert "His goals:\n- Wrócić do biegania" in store.briefing() and "His resolutions:" in store.briefing()
     task = store.create_task("Fizjo", goal="żeby wrócić do biegania")
     assert store.get_task(task.id).goal == "żeby wrócić do biegania"

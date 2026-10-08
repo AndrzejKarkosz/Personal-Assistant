@@ -235,26 +235,37 @@ def _hours(activities: list[dict]) -> float:
     return round(sum(a.get("moving_time", 0) for a in activities) / 3600, 1)
 
 
-def week(activities: list[dict], cfg: dict, monday: date, race: date | None) -> dict[str, Any]:
-    """Target vs done for the week starting `monday`: hours and sessions per sport, and the easy (80/20) share."""
+def week(activities: list[dict], cfg: dict, monday: date, race: date | None,
+         planned: list[dict] | None = None) -> dict[str, Any]:
+    """Target vs done for the week starting `monday`: hours and sessions per sport, and the easy (80/20) share.
+    The target is the sessions planned in the calendar (calendar_sessions) when there are any, else the plan's weekly
+    hours x the phase volume."""
     ph = phase(monday, race, (cfg.get("race") or {}).get("distance", "half"))
     factor = VOLUME[ph]
     done = [a for a in activities if monday <= _day(a) < monday + timedelta(days=7)]
+    targets: dict[str, list[float]] = {}
+    for s in planned or []:
+        targets.setdefault(s["sport"], [0, 0])
+        targets[s["sport"]][0] += s["minutes"] / 60
+        targets[s["sport"]][1] += 1
+    if not targets:
+        targets = {sport: [t["hours"] * factor, t["sessions"]] for sport, t in (cfg.get("weekly") or {}).items()}
     sports = {}
-    for sport, t in (cfg.get("weekly") or {}).items():
+    for sport, (hours, sessions) in targets.items():
         mine = [a for a in done if a.get("sport") == sport]
-        sports[sport] = {"target_h": round(t["hours"] * factor, 1), "target_sessions": t["sessions"],
+        sports[sport] = {"target_h": round(hours, 1), "target_sessions": int(sessions),
                          "done_h": _hours(mine), "done_sessions": len(mine)}
     target = round(sum(s["target_h"] for s in sports.values()), 1)
-    planned = _hours([a for a in done if a.get("sport") in sports])
+    in_plan = _hours([a for a in done if a.get("sport") in sports])
     # ponytail: the activity's average HR stands for its intensity; per-zone time needs the HR streams
     with_hr = [a for a in done if a.get("average_heartrate")]
     hr_time = sum(a.get("moving_time", 0) for a in with_hr)
     easy = sum(a.get("moving_time", 0) for a in with_hr if a["average_heartrate"] <= cfg.get("easy_hr_max", 145))
     return {"start": monday.isoformat(), "phase": ph, "phase_pl": PHASE_PL[ph], "volume": factor, "sports": sports,
-            "target_h": target, "done_h": planned, "other_h": round(_hours(done) - planned, 1),
+            "source": "calendar" if planned else "plan",
+            "target_h": target, "done_h": in_plan, "other_h": round(_hours(done) - in_plan, 1),
             "kcal": sum(a.get("kcal") or 0 for a in done),
-            "pct": round(100 * planned / target) if target else None,
+            "pct": round(100 * in_plan / target) if target else None,
             "easy_share": round(easy / hr_time, 2) if hr_time else None}
 
 
@@ -274,7 +285,7 @@ def timeline(race: date | None, distance: str, today: date) -> list[dict[str, An
     return out
 
 
-# The road to a half Ironman, phase by phase: focus, the two weekly sessions per sport (short / long - the long one
+# The road to the race, phase by phase: focus, the two weekly sessions per sport (short / long - the long one
 # gets 60% of the sport's time; strength splits evenly) and the milestones to reach by the end of the phase.
 # Strength follows docs/triathlon-motor-prep.md: general -> maximal strength (+ plyometrics) -> maintenance -> taper.
 ROAD = {
@@ -395,7 +406,7 @@ PLAN_SPORT_RULES = {
                 "before the long run.",
     "all": "It touches the whole plan: keep the 80/20 split and the 3:1 cycle.",
 }
-ADDS_LOAD = ("It adds load: show the new weekly total in hours against now and against his 4-6 h budget, and the work "
+ADDS_LOAD = ("It adds load: show the new weekly total in hours against now and against his weekly hours in the plan, and the work "
              "load of those weeks; at least one option must keep the total unchanged.")
 PLAN_CHANGE_STEPS = (
     "1. training_status (weeks 4): phase, this week's sessions, what was done, work load; the calendar for the weeks "
@@ -418,6 +429,69 @@ def plan_change_procedure(change: str, sport: str | None, adds_load: float, cfg:
             + "\n".join(f"- {r}" for r in rules if r))
 
 
+# Alfred ends the description of every training event he puts in the calendar with training.mark (modules/training).
+DEFAULT_MARK = "Plan treningowy Alfreda"
+
+
+def mark_of(cfg: dict) -> str:
+    return (cfg.get("mark") or DEFAULT_MARK).strip().rstrip(".").lower()
+SPORT_WORDS = {"swim": ("basen", "pływ", "swim"), "bike": ("rower", "jazda", "bike", "trenażer"),
+               "run": ("bieg", "trucht", "run"), "strength": ("sił", "gum", "mobiln", "stabiliz")}
+KIND_WORDS = {"technika": ("technik",), "jakość": ("interwał", "próg", "progow"), "brick": ("brick",),
+              "mobilność": ("mobiln",)}
+
+
+def _guess(words: dict[str, tuple], text: str, default: str) -> str:
+    return next((key for key, ws in words.items() if any(w in text for w in ws)), default)
+
+
+def calendar_sessions(events: list[dict], activities: list[dict], today: date,
+                      mark: str = DEFAULT_MARK.lower()) -> list[dict[str, Any]]:
+    """The training sessions in the calendar (events whose description has the `mark`), the sport and kind guessed
+    from the title. A session is "done" when Strava has a workout of that sport that day (it comes along as
+    `activity`), "missed" when its day is over without one, else "planned". `note` = the description without the mark."""
+    left: dict[tuple[str, str], list[dict]] = {}            # Strava workouts per (day, sport) not matched yet
+    for a in sorted(activities, key=lambda a: a["start_date_local"]):
+        left.setdefault((_day(a).isoformat(), a.get("sport")), []).append(a)
+    out = []
+    for e in sorted(events, key=lambda e: (e.get("start") or {}).get("dateTime") or (e.get("start") or {}).get("date") or ""):
+        if mark not in (e.get("description") or "").lower():
+            continue
+        start, end = (e.get("start") or {}).get("dateTime"), (e.get("end") or {}).get("dateTime")
+        day = (start or (e.get("start") or {}).get("date") or "")[:10]
+        if not day:
+            continue
+        title = (e.get("summary") or "").lower()
+        sport = _guess(SPORT_WORDS, title, "other")
+        minutes = round((datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() / 60) if start and end else 0
+        mine = left.get((day, sport))
+        activity = mine.pop(0) if mine else None
+        out.append({"sport": sport, "name": e.get("summary") or "", "minutes": minutes, "date": day,
+                    "time": start[11:16] if start else None, "end": end[11:16] if end else None,
+                    "kind": _guess(KIND_WORDS, title, "siła" if sport == "strength" else "spokojnie"),
+                    "note": re.sub(rf"{re.escape(mark)}\.?", "", e.get("description") or "", flags=re.I).strip(),
+                    "link": e.get("htmlLink"), "activity": activity,
+                    "status": "done" if activity else "missed" if date.fromisoformat(day) < today else "planned"})
+    return out
+
+
+async def calendar_events(hub, start: str, end: str, tz: str) -> dict[str, Any]:
+    """Google Calendar events between start and end through the google-calendar MCP server - in full, not cut to
+    Claude's size."""
+    server = hub.servers.get("google-calendar")
+    if not server or server.status != "ready":
+        return {"status": server.status if server else "missing", "error": server and server.error, "events": []}
+    try:
+        text, is_error = await hub.call("google-calendar__list-events", {
+            "calendarId": "primary", "timeMin": start, "timeMax": end, "timeZone": tz}, limit=None)
+        events = None if is_error else json.loads(text)["events"]
+    except Exception as exc:
+        text, events = f"{type(exc).__name__}: {exc}", None
+    if events is None:
+        return {"status": "error", "error": text[:300], "events": []}
+    return {"status": "ready", "error": None, "events": events}
+
+
 def steps_week(path: Path, today: date, days: int = 7) -> list[dict[str, Any]]:
     """The steps he told Alfred (steps_log), one row per day, oldest first."""
     saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -426,9 +500,10 @@ def steps_week(path: Path, today: date, days: int = 7) -> list[dict[str, Any]]:
 
 
 def report(activities: list[dict], cfg: dict, today: date, weeks: int = 8,
-           weight_kg: float | None = None) -> dict[str, Any]:
+           weight_kg: float | None = None, events: list[dict] | None = None) -> dict[str, Any]:
     """The plan and its realisation: this week first, then the `weeks - 1` before it; activities of the last 14 days,
-    each with its estimated kcal (weight from Nutrition MCP, else training.weight_kg)."""
+    each with its estimated kcal (weight from Nutrition MCP, else training.weight_kg). `planned` = this week's
+    training from the calendar `events`; when there is any, it is this week's target."""
     race_cfg = cfg.get("race") or {}
     race = date.fromisoformat(race_cfg["date"]) if race_cfg.get("date") else None
     this = week_start(today)
@@ -437,12 +512,15 @@ def report(activities: list[dict], cfg: dict, today: date, weeks: int = 8,
                   for a in activities]
     recent = sorted((a for a in activities if _day(a) > today - timedelta(days=14)), key=lambda a: a["start_date_local"],
                     reverse=True)
+    planned = calendar_sessions(events or [], [a for a in activities if _day(a) >= this], today, mark_of(cfg))
     return {"today": today.isoformat(), "race": race_cfg | {"days_to": (race - today).days if race else None},
             "phase": phase(today, race, race_cfg.get("distance", "half")), "easy_target": cfg.get("easy_share", 0.8),
             "plan": {"weekly": cfg.get("weekly") or {}, "easy_hr_max": cfg.get("easy_hr_max", 145),
-                     "steps_goal": cfg.get("steps_goal", 10000)},
-            "weeks": [week(activities, cfg, this - timedelta(weeks=i), race) for i in range(weeks)],
-            "activities": recent, "weight_kg": weight_kg,
+                     "steps_goal": cfg.get("steps_goal", 10000), "mark": cfg.get("mark") or DEFAULT_MARK,
+                     "work_categories": cfg.get("work_categories") or []},
+            "weeks": [week(activities, cfg, this - timedelta(weeks=i), race, planned if i == 0 else None)
+                      for i in range(weeks)],
+            "planned": planned, "activities": recent, "weight_kg": weight_kg,
             "timeline": timeline(race, race_cfg.get("distance", "half"), today),
             "roadmap": roadmap(cfg, today, race),
             "today_kcal": sum(a.get("kcal") or 0 for a in recent if _day(a) == today)}
@@ -453,7 +531,7 @@ def work_load(events: list[dict], work_tasks_due: int, cfg: dict) -> dict[str, A
     hours = 0.0
     for e in events:
         start, end = (e.get("start") or {}).get("dateTime"), (e.get("end") or {}).get("dateTime")
-        if start and end:                       # all-day events are not meetings
+        if start and end and mark_of(cfg) not in (e.get("description") or "").lower():   # nor all-day ones, nor training
             hours += (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() / 3600
     limits = cfg.get("busy_week") or {}
     busy = hours >= limits.get("meeting_hours", 15) or work_tasks_due >= limits.get("work_tasks_due", 8)
@@ -490,13 +568,18 @@ async def weight_now(hub) -> float | None:
 
 
 async def status(hub, settings, weeks: int = 8, today: date | None = None,
-                 weight_kg: float | None = None) -> dict[str, Any]:
-    """report() over the Strava activities of those weeks; without Strava the plan still shows, with the reason."""
+                 weight_kg: float | None = None, events: list[dict] | None = None) -> dict[str, Any]:
+    """report() over the Strava activities of those weeks and this week's calendar (`events`, read here when not
+    given); without Strava the plan still shows, with the reason."""
     today = today or date.today()
+    if events is None:
+        monday = week_start(today)
+        events = (await calendar_events(hub, f"{monday:%Y-%m-%dT00:00:00}", f"{monday + timedelta(days=7):%Y-%m-%dT00:00:00}",
+                                        settings.get("assistant.timezone", "Europe/Warsaw")))["events"]
     server = hub.servers.get("strava")
     activities, error = [], None
     if not server or server.status != "ready":
-        error = (server and server.error) or f"serwer strava: {server.status if server else 'brak w config/mcp.json'}"
+        error = (server and server.error) or f"serwer strava: {server.status if server else 'brak w data/mcp.json'}"
     else:
         try:
             activities = await hub.call_json("strava__activities", {
@@ -505,7 +588,7 @@ async def status(hub, settings, weeks: int = 8, today: date | None = None,
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"[:300]
     cfg = settings.get("training") or {}
-    return report(activities, cfg, today, weeks, weight_kg) | {
+    return report(activities, cfg, today, weeks, weight_kg, events) | {
         "strava": {"status": "error" if error else "ready", "error": error},
         "steps": {"goal": cfg.get("steps_goal", 10000), "days": steps_week(steps_file(settings), today)}}
 

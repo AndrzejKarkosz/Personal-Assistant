@@ -75,24 +75,24 @@ def jev_heard(brain, category=None, status=None):
 async def test_jev_asks_for_the_fixed_task_categories_and_the_four_statuses(make_brain):
     brain, _ = make_brain()
     qs = brain.router.questions()
-    assert list(qs["task_category"]["criteria"]) == ["SmartMeet", "Praca", "Reszta", "none"]
+    assert list(qs["task_category"]["criteria"]) == ["MojaFirma", "Praca", "Reszta", "none"]
     assert list(qs["task_status"]["criteria"]) == ["todo", "in_progress", "done", "cancelled", "none"]
 
 
 async def test_the_category_and_status_jev_heard_go_on_the_new_task(make_brain):
     brain, claude = make_brain(("tool", "task_create", {"tasks": [{"title": "Demo dla klienta"}]}), "Dodane.")
-    jev_heard(brain, "SmartMeet", "in_progress")
-    await brain.handle_text("dodaj do SmartMeet demo dla klienta, już nad tym siedzę")
+    jev_heard(brain, "MojaFirma", "in_progress")
+    await brain.handle_text("dodaj do MojaFirma demo dla klienta, już nad tym siedzę")
     task = brain.store.list_tasks()[0]
-    assert (task.title, task.category, task.status) == ("Demo dla klienta", "SmartMeet", "in_progress")
-    assert "task category=SmartMeet" in claude.calls[0][0] and "SmartMeet, Praca, Reszta" in claude.calls[0][0]
+    assert (task.title, task.category, task.status) == ("Demo dla klienta", "MojaFirma", "in_progress")
+    assert "task category=MojaFirma" in claude.calls[0][0] and "MojaFirma, Praca, Reszta" in claude.calls[0][0]
 
 
 async def test_jev_classifies_each_task_and_claude_only_executes(make_brain):
     brain, _ = make_brain(("tool", "task_create", {"tasks": [{"title": "Faktura", "category": "Reszta"},
-                                                             {"title": "Siłownia", "category": "SmartMeet",
+                                                             {"title": "Siłownia", "category": "MojaFirma",
                                                               "status": "done"}]}), "Dodane.")
-    jev_heard(brain, "SmartMeet")                       # the request-level guess - each task gets its own question
+    jev_heard(brain, "MojaFirma")                       # the request-level guess - each task gets its own question
     brain.router.jev.routing |= {"c0": {"choice": "Praca"}, "s0": {"choice": "todo"},
                                  "c1": {"choice": "Reszta"}, "s1": {"choice": "in_progress"}}
     drain = brain.bus.subscribe()

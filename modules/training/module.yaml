@@ -31,4 +31,4 @@ capabilities:
     tools: [steps_log]
     examples: ["zrobiłem dziś 8500 kroków", "wczoraj 12 tysięcy kroków", "ile kroków w tym tygodniu?"]
 uses: [calendar.read, calendar.write, tasks.manage, weight.read, research.web, memory.recall, memory.remember]
-enabled: true
+enabled: false      # on once its MCP server is set up (first-run setup or the Moduły tab)

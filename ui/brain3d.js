@@ -51,43 +51,33 @@ const KIND_INFO = {
   tool: "Narzędzie, które Claude może wywołać.",
   mcp: "Serwer — miejsce, gdzie żyją narzędzia (serwer MCP, wbudowane narzędzia Alfreda albo narzędzia serwerowe Claude).",
   topic: "Temat z Twojej bazy wiedzy. Jev może rozpoznać temat i skierować pytanie prosto do biblioteki.",
-  routine: "Rutyna — Alfred robi to sam o ustalonej porze albo przy starcie (config/routines.yaml).",
+  routine: "Rutyna — Alfred robi to sam o ustalonej porze albo przy starcie (data/routines.yaml).",
   persona: "Część osobowości Alfreda (config/persona.md, zakładka „Osobowość”).",
   memory: "Wpis w pamięci Alfreda (data/memory).",
   folder: "Folder w tej części mózgu.",
 };
 
-const RX = 250, RY = 185, RZ = 105, HZ = 95, BAND = (2 * RY) / (REGIONS.length - 1);
-const bandY = (i) => -RY + (i - 0.5) * BAND;
-const levelAt = (y) => Math.max(1, Math.min(REGIONS.length - 1, 1 + Math.floor((y + RY) / BAND)));
-const widthAt = (y) => { const t = Math.min(1, Math.abs(y) / RY); return y < 0 ? Math.cbrt(1 - t ** 3) : Math.sqrt(1 - t * t); };
-const STEM_TOP = new THREE.Vector3(-45, -RY * 0.55, 0), STEM_BOTTOM = new THREE.Vector3(-85, -RY * 1.95, 0);
+// A network of neurons, not a brain: the core sits in the middle, every part of Alfred is a cluster around it, and a
+// loose field of small neurons with their synapses fills the space and lights up with the part it is nearest to.
+const R_HUB = 250, R_FIELD = 470;
+const fib = (j, m) => { const y = 1 - (2 * (j + 0.5)) / m, r = Math.sqrt(1 - y * y), a = j * 2.39996; return new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r); };
+const HUB_AT = Object.fromEntries(REGIONS.map((r, i) => [r.id, i ? fib(i - 1, REGIONS.length - 1).multiplyScalar(R_HUB) : new THREE.Vector3()]));
 
-function shell() {
-  const pos = [], lvl = [];
-  const fold = (x, y, z) => Math.sin(0.055 * x + 2.1 * Math.sin(0.042 * y)) + Math.sin(0.06 * y + 1.9 * Math.sin(0.037 * z))
-    + Math.sin(0.05 * z + 2 * Math.sin(0.04 * x));
-  for (let k = 0; lvl.length < 9000 && k < 4e5; k++) {
-    const h = k % 2 ? 1 : -1, y = RY * (2 * Math.random() - 1), a = 2 * Math.PI * Math.random(), w = widthAt(y);
-    const x = RX * w * Math.cos(a), z = h * HZ + RZ * w * Math.sin(a);
-    if (h * z < 6 || Math.abs(fold(x, y, z)) > 0.55) continue;
-    pos.push(x, y, z); lvl.push(levelAt(y));
+function field() {
+  const pts = [], lvl = [], near = (p) => REGIONS.reduce((best, r, i) => (p.distanceTo(HUB_AT[r.id]) < p.distanceTo(HUB_AT[REGIONS[best].id]) ? i : best), 0);
+  for (let k = 0; k < 650; k++) {          // most neurons gather around a part, every fifth floats free
+    const c = k % 5 ? HUB_AT[REGIONS[k % REGIONS.length].id] : new THREE.Vector3();
+    const p = new THREE.Vector3().randomDirection().multiplyScalar((k % 5 ? 150 : R_FIELD) * Math.cbrt(Math.random())).add(c);
+    pts.push(p); lvl.push(near(p));
   }
-  for (let k = 0, n = 0; n < 1600 && k < 1e5; k++) {
-    const u = 2 * Math.random() - 1, a = 2 * Math.PI * Math.random(), r = Math.sqrt(1 - u * u);
-    const x = -RX * 0.7 + 80 * r * Math.cos(a), y = -RY * 0.95 + 52 * u, z = 150 * r * Math.sin(a);
-    if (Math.abs(Math.sin(0.32 * y + 0.04 * x)) > 0.3) continue;
-    pos.push(x, y, z); lvl.push(1); n++;
-  }
-  for (let k = 0; k < 1100; k++) {
-    const s = Math.random(), a = 2 * Math.PI * Math.random(), p = STEM_BOTTOM.clone().lerp(STEM_TOP, s), r = 22 + 12 * s;
-    pos.push(p.x + r * Math.cos(a), p.y, p.z + r * Math.sin(a)); lvl.push(0);
-  }
-  return { pos: new Float32Array(pos), lvl };
+  const seg = [], segLvl = [];
+  pts.forEach((p, i) => pts.map((q, j) => [p.distanceToSquared(q), j]).sort((a, b) => a[0] - b[0]).slice(1, 3)
+    .forEach(([d, j]) => { if (d < 80 ** 2) { seg.push(p.x, p.y, p.z, pts[j].x, pts[j].y, pts[j].z); segLvl.push(lvl[i]); } }));
+  return { pos: new Float32Array(pts.flatMap((p) => p.toArray())), lvl, seg: new Float32Array(seg), segLvl };
 }
 
 let el, scene, camera, renderer, composer, labels, controls, root, sphere, framed = false;
-let nodes = [], nodesById = {}, links = [], linkIndex = new Map(), adjacency = {}, linkGeo, shellGeo, shellLvl, rings = [];
+let nodes = [], nodesById = {}, links = [], linkIndex = new Map(), adjacency = {}, linkGeo, shellGeo, shellLvl, synGeo, synLvl;
 let sparkGeo, sparks = [], packets = [], hover = null, focus = null, peek = null, hooks = {}, frameNo = 0, talking = false;
 const act = Object.fromEntries(REGIONS.map((r) => [r.id, 0])), busy = new Set();
 const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -100,7 +90,7 @@ function setup() {
   labels.domElement.className = "labels";
   el.appendChild(labels.domElement);
   scene = new THREE.Scene();
-  scene.background = new THREE.Color("#03050b");
+  scene.background = new THREE.Color("#0b0b14");
   camera = new THREE.PerspectiveCamera(45, 1, 1, 8000);
   controls = new OrbitControls(camera, renderer.domElement);
   Object.assign(controls, { enableDamping: true, autoRotate: true, autoRotateSpeed: 0.35, minDistance: 150, maxDistance: 3000 });
@@ -112,21 +102,17 @@ function setup() {
   sphere = new THREE.SphereGeometry(1, 16, 12);
   const additive = { vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending };
 
-  const { pos, lvl } = shell();
-  shellLvl = lvl;
+  const f = field();
+  shellLvl = f.lvl;
   shellGeo = new THREE.BufferGeometry();
-  shellGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  shellGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(pos.length), 3));
-  scene.add(new THREE.Points(shellGeo, new THREE.PointsMaterial({ size: 3.2, ...additive })));
-  rings = REGIONS.slice(1).map((r, i) => {
-    const y = bandY(i + 1), w = widthAt(y) * 0.97, pts = [];
-    for (let k = 0; k < 128; k++) { const a = (k / 128) * 2 * Math.PI; pts.push(new THREE.Vector3(RX * w * Math.cos(a), y, (HZ + RZ * w) * Math.sin(a))); }
-    const ring = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts),
-      new THREE.LineBasicMaterial({ color: r.rgb.clone(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
-    ring.userData.region = r;
-    scene.add(ring);
-    return ring;
-  });
+  shellGeo.setAttribute("position", new THREE.BufferAttribute(f.pos, 3));
+  shellGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(f.pos.length), 3));
+  scene.add(new THREE.Points(shellGeo, new THREE.PointsMaterial({ size: 3.6, ...additive })));
+  synLvl = f.segLvl;
+  synGeo = new THREE.BufferGeometry();
+  synGeo.setAttribute("position", new THREE.BufferAttribute(f.seg, 3));
+  synGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(f.seg.length), 3));
+  scene.add(new THREE.LineSegments(synGeo, new THREE.LineBasicMaterial({ ...additive })));
   sparkGeo = new THREE.BufferGeometry();
   sparkGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3 * 500), 3));
   sparkGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(3 * 500), 3));
@@ -173,7 +159,7 @@ function pick(ev) {
 }
 
 function frame() {
-  const center = new THREE.Vector3(0, -150, 0), radius = 400;
+  const center = new THREE.Vector3(0, -40, 0), radius = 440;
   const half = Math.min((camera.fov * Math.PI) / 360, Math.atan(Math.tan((camera.fov * Math.PI) / 360) * camera.aspect));
   camera.position.copy(center).add(new THREE.Vector3(0.62, 0.18, 0.76).multiplyScalar(radius / Math.sin(half)));
   controls.target.copy(center);
@@ -257,26 +243,19 @@ function build(g) {
 }
 
 function layout() {
-  const fib = (j, m) => { const y = 1 - (2 * (j + 0.5)) / m, r = Math.sqrt(1 - y * y), a = j * 2.39996; return [Math.cos(a) * r, y, Math.sin(a) * r]; };
-  const set = (n, x, y, z) => (n.p = new THREE.Vector3(x, y, z));
+  const set = (n, p) => (n.p = p);
   const order = ["ears", "shield", "router", "proactive", "guard", "executor", "voice", "memory"];
   const rank = (n) => (order.indexOf(n.id) + 1) || 99;
   const core = nodes.filter((n) => n.kind === "core").sort((a, b) => rank(a) - rank(b));
-  core.forEach((n, k) => {
-    const p = STEM_BOTTOM.clone().lerp(STEM_TOP, 0.1 + (0.52 * k) / Math.max(1, core.length - 1)), a = k * 2.3;
-    set(n, p.x + 38 * Math.cos(a), p.y, p.z + 38 * Math.sin(a));
-  });
-  set(nodesById.user, STEM_BOTTOM.x, STEM_BOTTOM.y - 70, 0);
-  REGIONS.forEach((r, i) => {
-    if (!i) return;
-    const y = bandY(i), w = widthAt(y);
-    set(nodesById[`hub:${r.id}`], 0, y, 0);
+  core.forEach((n, k) => set(n, fib(k, core.length).multiplyScalar(55)));
+  set(nodesById.user, new THREE.Vector3(0, -R_HUB - 130, 0));
+  REGIONS.slice(1).forEach((r) => {
+    set(nodesById[`hub:${r.id}`], HUB_AT[r.id].clone());
     const folders = nodes.filter((n) => n.region === r.id && ["folder", "module", "mcp"].includes(n.kind));
     folders.forEach((f, k) => {
-      const a = i * 2.39996 + (2 * Math.PI * k) / folders.length;
-      set(f, RX * w * 0.58 * Math.cos(a), y + (k % 2 ? 6 : -6), (HZ + RZ) * w * 0.58 * Math.sin(a));
+      set(f, fib(k, folders.length).multiplyScalar(60 + 6 * folders.length).add(HUB_AT[r.id]));
       const kids = nodes.filter((n) => n.folder === f.id), rr = 10 + 5 * Math.sqrt(kids.length);
-      kids.forEach((n, j) => { const [dx, dy, dz] = fib(j, kids.length); set(n, f.p.x + dx * rr, f.p.y + dy * rr * 0.4, f.p.z + dz * rr); });
+      kids.forEach((n, j) => set(n, fib(j, kids.length).multiplyScalar(rr).add(f.p)));
     });
   });
   nodes.forEach((n) => (n.p ||= new THREE.Vector3()));
@@ -348,7 +327,12 @@ function loop(now) {
     col[i * 3] = r.rgb.r * k; col[i * 3 + 1] = r.rgb.g * k; col[i * 3 + 2] = r.rgb.b * k;
   }
   shellGeo.attributes.color.needsUpdate = true;
-  rings.forEach((ring) => ring.material.color.copy(ring.userData.region.rgb).multiplyScalar((0.18 + 0.9 * act[ring.userData.region.id]) * dimOf(ring.userData.region.id)));
+  const syn = synGeo.attributes.color.array;
+  for (let i = 0; i < synLvl.length; i++) {
+    const r = REGIONS[synLvl[i]], k = (0.05 + 0.45 * act[r.id]) * dimOf(r.id);
+    for (let v = 0; v < 2; v++) { syn[i * 6 + v * 3] = r.rgb.r * k; syn[i * 6 + v * 3 + 1] = r.rgb.g * k; syn[i * 6 + v * 3 + 2] = r.rgb.b * k; }
+  }
+  synGeo.attributes.color.needsUpdate = true;
   if (frameNo++ % 6 === 0) document.querySelectorAll("#levels li").forEach((li) => {
     li.style.setProperty("--a", act[li.dataset.r].toFixed(2));
     li.classList.toggle("on", act[li.dataset.r] > 0.25);

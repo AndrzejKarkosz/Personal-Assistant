@@ -51,14 +51,14 @@ async def test_each_tool_is_scored_in_parallel_and_a_sure_tool_brings_its_capabi
 
 
 @pytest.fixture
-def brain_map(tmp_path) -> BrainMap:
+def brain_map(tmp_path, settings) -> BrainMap:
     empty = tmp_path / "mcp.json"
     empty.write_text('{"mcpServers": {}}')
     topics = tmp_path / "topics"
     topics.mkdir()
     (topics / "spanish.md").write_text("---\ntype: Topic\ntitle: Spanish\ndescription: Learning Spanish\n---\n# Spanish\n",
                                        encoding="utf-8")
-    build_map(tmp_path / "map", ModuleRegistry(ROOT / "modules"), MCPHub(empty),
+    build_map(tmp_path / "map", ModuleRegistry(ROOT / "modules", settings), MCPHub(empty),
               [{"server": "knowledge-base", "capability": "knowledge.search", "path": str(topics)}])
     return BrainMap(tmp_path / "map")
 
@@ -226,7 +226,7 @@ def test_module_yaml_decides_what_needs_a_yes(tmp_path):
     cfg.write_text(json.dumps({"mcpServers": {"google-calendar": {"command": "calendar-server"}}}))
     hub = MCPHub(cfg)
     calendar = hub.servers["google-calendar"]
-    names = ["google-calendar__delete-event", "google-calendar__manage-accounts"]
+    names = ["google-calendar__delete-event", "google-calendar__manage-accounts", "google-calendar__search-events"]
     calendar.status, calendar.tools = "ready", [{"name": n, "description": n, "input_schema": {}} for n in names]
     calendar.hints = {n: {"destructive": True} for n in names}
     build_map(tmp_path / "map", ModuleRegistry(ROOT / "modules"), hub)
@@ -235,6 +235,8 @@ def test_module_yaml_decides_what_needs_a_yes(tmp_path):
     assert not m.needs_confirmation("google-calendar__delete-event")    # calendar.write says confirm: false
     assert m.needs_confirmation("google-calendar__manage-accounts")     # no capability says anything: destructive
     assert m.needs_confirmation("training_plan_update")                 # training.plan says confirm: true
+    # write alone can find the event it deletes (a delete without a search had no event id)
+    assert {"google-calendar__delete-event", "google-calendar__search-events"} <= set(m.tools_of(["calendar.write"]))
 
 
 def test_tools_of_an_offline_server_stay_on_the_map(tmp_path):

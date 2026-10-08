@@ -1,4 +1,4 @@
-"""Connections to the MCP servers from config/mcp.json (knowledge base, Google Calendar, browser ...).
+"""Connections to the MCP servers from data/mcp.json (your copy of config/mcp.json) (knowledge base, Google Calendar, browser ...).
 
 All servers are connected once at start-up and stay connected. Their tools get names like
 "google-calendar__list-events" (server + "__" + tool), which is how the rest of the brain refers to them.
@@ -160,7 +160,7 @@ class MCPHub:
         cfg = state.config
         if cfg.get("type", "stdio") == "stdio":
             params = StdioServerParameters(command=shutil.which(cfg["command"]) or cfg["command"],
-                                           args=cfg.get("args", []), cwd=cfg.get("cwd"),
+                                           args=cfg.get("args", []), cwd=cfg.get("cwd") and str(ROOT / cfg["cwd"]),
                                            env={**os.environ, **cfg["env"]} if cfg.get("env") else None)
             read, write = await stack.enter_async_context(stdio_client(params))
         else:

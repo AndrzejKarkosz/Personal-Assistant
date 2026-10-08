@@ -77,13 +77,17 @@ def load_module(folder: Path) -> Module:
 
 
 class ModuleRegistry:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, settings=None):
         self.root = root
+        self.settings = settings          # its `modules` (id -> on/off) win over module.yaml's `enabled`
         self.modules: dict[str, Module] = {}
         self.reload()
 
     def reload(self) -> None:
         self.modules = {m.id: m for m in (load_module(f.parent) for f in sorted(self.root.glob("*/module.yaml")))}
+        for mid, on in ((self.settings and self.settings.get("modules")) or {}).items():
+            if mid in self.modules:
+                self.modules[mid].enabled = bool(on)
 
     def get(self, module_id: str) -> Module | None:
         return self.modules.get(module_id)
@@ -93,9 +97,6 @@ class ModuleRegistry:
         return next((s for s in module.skills if s.id == skill_id), None) if module else None
 
     def set_enabled(self, module_id: str, enabled: bool) -> None:
-        """Switch a module on/off - saved in its module.yaml."""
-        module = self.modules[module_id]
-        manifest = module.path / "module.yaml"
-        data = (yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}) | {"enabled": enabled}
-        manifest.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
-        module.enabled = enabled
+        """Switch a module on/off - saved in your settings (data/settings.json), module.yaml stays as shipped."""
+        self.settings.update({"modules": {module_id: enabled}})
+        self.modules[module_id].enabled = enabled

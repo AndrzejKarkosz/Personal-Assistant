@@ -1,0 +1,19 @@
+id: setup
+label: Alfred's setup
+description: The first-run setup and later changes to it - who the user is, how Alfred addresses him, language,
+  timezone, task categories, goals, which modules and integrations are on, Alfred's routines.
+examples:
+  - skonfigurujmy cię
+  - zmień moje imię
+  - mów do mnie po imieniu
+  - włącz moduł treningów
+  - jakie integracje mam włączone?
+capabilities:
+  configure:
+    label: Configure Alfred
+    description: Read and change Alfred's setup.
+    tools: [setup_status, setup_save]
+    examples: ["skonfiguruj mnie od nowa", "zmień strefę czasową", "wyłącz dietę"]
+    always: true
+uses: [tasks.routines]
+enabled: true

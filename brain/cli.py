@@ -1,4 +1,4 @@
-"""Command line:  alfred serve  (web UI)  |  alfred chat  (talk in the terminal)  |  alfred classify "text"  (test routing)
+"""Command line:  alfred  (= alfred serve: web UI; before the setup is done it opens the browser)  |  alfred chat  (talk in the terminal)  |  alfred classify "text"  (test routing)
 |  alfred mcp-login nutrition  (log in to an OAuth MCP server)."""
 from __future__ import annotations
 
@@ -7,8 +7,14 @@ import asyncio
 import json
 
 
-def _serve(host: str, port: int) -> None:
+def _serve(host: str, port: int, browser: bool = True) -> None:
+    import threading
+    import webbrowser
+
     import uvicorn
+    from .config import Settings
+    if browser and not Settings.load().get("setup.done"):     # the first start walks you through the setup there
+        threading.Timer(2.0, webbrowser.open, [f"http://{host}:{port}"]).start()
     uvicorn.run("brain.app:app", host=host, port=port, reload=False)
 
 
@@ -77,7 +83,7 @@ async def _mcp_login(name: str) -> None:
     hub = MCPHub(Settings.load().path("mcp_config"))
     state = hub.servers.get(name)
     if not state or not state.config.get("oauth"):
-        raise SystemExit(f"'{name}' is not an OAuth server in config/mcp.json")
+        raise SystemExit(f"'{name}' is not an OAuth server in data/mcp.json")
     print(f"Logowanie do {name} - dokończ je w przeglądarce (czekam do 5 minut)...")
     async with AsyncExitStack() as stack:
         await asyncio.wait_for(hub._connect(stack, state), 300)
@@ -86,18 +92,19 @@ async def _mcp_login(name: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="alfred")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd")
     serve = sub.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--no-browser", action="store_true")
     sub.add_parser("chat")
     cls = sub.add_parser("classify")
     cls.add_argument("text")
     login = sub.add_parser("mcp-login")
     login.add_argument("server", nargs="?", default="nutrition")
     args = parser.parse_args()
-    if args.cmd == "serve":
-        _serve(args.host, args.port)
+    if args.cmd in (None, "serve"):
+        _serve(getattr(args, "host", "127.0.0.1"), getattr(args, "port", 8765), not getattr(args, "no_browser", False))
     elif args.cmd == "chat":
         asyncio.run(_chat())
     elif args.cmd == "mcp-login":

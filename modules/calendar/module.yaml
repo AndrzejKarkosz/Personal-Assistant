@@ -16,8 +16,10 @@ capabilities:
   write:
     label: Change the calendar
     description: Create, move, update, cancel events and answer invitations.
-    tools: ["google-calendar__create-*", "google-calendar__update-*", "google-calendar__delete-*", "google-calendar__respond-*"]
+    # + the lookups: moving or deleting an event needs its id, so write is never given without a way to find it
+    tools: ["google-calendar__create-*", "google-calendar__update-*", "google-calendar__delete-*", "google-calendar__respond-*",
+            "google-calendar__list-events", "google-calendar__search-*", "google-calendar__get-event", "google-calendar__get-current-time"]
     examples: ["dodaj spotkanie w poniedziałek o 10", "przesuń spotkanie na piątek", "cancel tomorrow's call"]
     confirm: false     # he does not want a yes/no for calendar changes - Alfred makes them right away
 uses: [tasks.manage, memory.recall, bookings.confirm]
-enabled: true
+enabled: false      # on once its MCP server is set up (first-run setup or the Moduły tab)

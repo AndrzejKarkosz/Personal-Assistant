@@ -1,4 +1,4 @@
-"""Alfred's own tools (memory, tasks, routines, "ask before doing it"), handed to Claude next to the MCP servers'.
+"""Alfred's own tools (memory, tasks, routines, his own setup, "ask before doing it"), handed to Claude next to the MCP servers'.
 
 TOOLS describes each tool to Claude; make_handlers() returns the Python code that runs when Claude calls one.
 A handler gets (arguments, session id) and returns text for Claude. Raising an error sends the message back to
@@ -11,16 +11,19 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from zoneinfo import ZoneInfo
 
 from . import fitness
+from .config import ROOT
+from .modules import ModuleRegistry
 from .memory import FACT_CATEGORIES, OPEN_STATUSES, TASK_STATUSES, MemoryStore
-from .scheduler import check_cron, delete_routine, save_routine
+from .scheduler import check_cron, delete_routine, save_routine, valid_routines
 
 CONFIRM_TOOL = "confirm_action"
 ADD_CATEGORY = "task_category_add"
 ASK_FIRST = {CONFIRM_TOOL, ADD_CATEGORY}            # always a spoken yes/no before they run
 MUTATING = {"memory_remember", "task_create", "task_update", "routine_save", "routine_delete",
-            ADD_CATEGORY, "steps_log", "training_plan_update"}                          # noted in the session
+            ADD_CATEGORY, "steps_log", "training_plan_update", "setup_save"}                          # noted in the session
 # Web tools run inside Claude Code itself: our name -> Claude Code's name, description.
 WEB_TOOLS = {"web_search": ("WebSearch", "Search the web for current information."),
              "web_fetch": ("WebFetch", "Fetch and read a web page by URL.")}
@@ -103,8 +106,9 @@ TOOLS: dict[str, dict[str, Any]] = {t["name"]: t for t in [
     {"name": "training_status",
      "description": "The user's triathlon plan and how it goes: the race and days to it, the season phase (base, build, "
                     "peak, taper, recovery), per week target vs done hours and sessions for swim / bike / run from "
-                    "Strava, the easy (80/20) share and the activities of the last 14 days with estimated kcal "
-                    "(today_kcal = burnt today).",
+                    "Strava, the easy (80/20) share, this week's sessions from the calendar (planned: done / missed / "
+                    "planned - the week's target when there are any) and the activities of the last 14 days with "
+                    "estimated kcal (today_kcal = burnt today).",
      "input_schema": _schema([], weeks={"type": "integer", "minimum": 1, "maximum": 12,
                                         "description": "How many weeks back, this one included (default 4)"})},
     {"name": "training_plan_update",
@@ -119,6 +123,31 @@ TOOLS: dict[str, dict[str, Any]] = {t["name"]: t for t in [
                                                                   "hours": {"type": "number", "minimum": 0, "maximum": 40}}}},
                              easy_hr_max={"type": "integer", "minimum": 90, "maximum": 210},
                              steps_goal={"type": "integer", "minimum": 1000, "maximum": 50000})},
+    {"name": "setup_status",
+     "description": "Alfred's current setup: the user's name, how you address him, language, timezone, task "
+                    "categories, goals, which modules and integrations (MCP servers) are on, routines, API keys present "
+                    "and whether the first-run setup is done. Read it before asking - never ask what is already set.",
+     "input_schema": _schema([])},
+    {"name": "setup_save",
+     "description": "Save what the user told you during setup. Pass only what changes; it is saved at once.",
+     "input_schema": _schema(
+         [], user_name={"type": "string", "description": "How the user is called"},
+         assistant_name={"type": "string", "description": "Your name, if he wants another one than Alfred"},
+         address={"type": "object", "description": "How you address him: {pl: 'szefie', en: 'boss'}",
+                  "properties": {"pl": _str, "en": _str}},
+         language={"type": "string", "enum": ["pl", "en"], "description": "The language you answer in"},
+         timezone={"type": "string", "description": "IANA name, e.g. Europe/Warsaw"},
+         task_categories={"type": "object", "additionalProperties": _str,
+                          "description": "REPLACES all task categories: name -> when a task belongs there (Polish). "
+                                         "The last one is the catch-all."},
+         work_categories={"type": "array", "items": _str, "description": "Which task categories are his work"},
+         goals={"type": "string", "description": "His 2-3 main goals, one per line ('- ...')"},
+         resolutions={"type": "string", "description": "His resolutions, one per line"},
+         modules={"type": "object", "additionalProperties": {"type": "boolean"},
+                  "description": "module id -> on/off (ids from setup_status)"},
+         integrations={"type": "object", "additionalProperties": {"type": "boolean"},
+                       "description": "MCP server name -> on/off; takes effect after Alfred restarts"},
+         done={"type": "boolean", "description": "true when the setup interview is finished"})},
     {"name": "steps_log",
      "description": "Save how many steps the user walked on a day (he tells you; a later number for the same day "
                     "replaces it). Returns the day against his daily step goal and the last 7 days.",
@@ -137,14 +166,14 @@ def check_due(due: str | None) -> None:
         raise ValueError(f"due '{due}' is not ISO 8601 (e.g. 2026-09-30T10:00:00+02:00)") from None
     now = datetime.now().astimezone()
     if when.tzinfo is None:
-        raise ValueError(f"due '{due}' has no timezone offset - add {now:%z} (Europe/Warsaw)")
+        raise ValueError(f"due '{due}' has no timezone offset - add {now:%z}")
     if when < now - timedelta(minutes=1):
         raise ValueError(f"due {due} is in the past (now is {now:%A %Y-%m-%d %H:%M%z}). "
                          "An hour that has already gone today means tomorrow.")
 
 
 def task_category(value: str | None, allowed: dict | list | None) -> str | None:
-    """The fixed category `value` means ("smart meet" -> "SmartMeet"); None / "" pass through (no category).
+    """The fixed category `value` means ("do domu" -> "Dom"); None / "" pass through (no category).
     Anything else is an error that lists the categories - Claude then picks one or asks to add a new one.
     allowed=None (no settings at all) checks nothing."""
     if not value or allowed is None:
@@ -157,6 +186,18 @@ def task_category(value: str | None, allowed: dict | list | None) -> str | None:
 
 
 Handler = Callable[[dict[str, Any], str | None], Awaitable[str]]
+
+
+def set_integrations(path: Path, switches: dict[str, bool]) -> list[str]:
+    """Switch MCP servers on/off in data/mcp.json; returns the names it changed."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    servers = data.get("mcpServers") or {}
+    if unknown := [n for n in switches if n not in servers]:
+        raise KeyError(f"No MCP server {', '.join(unknown)}. Servers: {', '.join(servers)}")
+    for name, on in switches.items():
+        servers[name]["enabled"] = bool(on)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return list(switches)
 
 
 def make_handlers(store: MemoryStore, routines_file: Path | None = None, settings=None, hub=None) -> dict[str, Handler]:
@@ -279,6 +320,68 @@ def make_handlers(store: MemoryStore, routines_file: Path | None = None, setting
         return (f"Saved {args['steps']} steps on {day} - goal {goal} ({round(100 * int(args['steps']) / goal)}%). "
                 f"Last 7 days: {week}")
 
+    async def setup_status(args, sid):
+        if settings is None:
+            raise ValueError("setup_status needs settings")
+        s = settings.get
+        mcp = settings.path("mcp_config")
+        servers = (json.loads(mcp.read_text(encoding="utf-8")) if mcp.exists() else {}).get("mcpServers") or {}
+        live = {x["name"]: x["status"] for x in hub.status()} if hub else {}
+        return json.dumps({
+            "done": bool(s("setup.done")), "user_name": s("assistant.user_name"), "assistant_name": s("assistant.name"),
+            "address": s("assistant.address"),
+            "language": s("assistant.reply_language") or s("assistant.default_language"),
+            "timezone": s("assistant.timezone"), "task_categories": s("tasks.categories") or {},
+            "work_categories": s("training.work_categories") or [], "goals": store.goals(),
+            "modules": [{"id": m.id, "label": m.label, "on": m.enabled, "description": m.description}
+                        for m in ModuleRegistry(ROOT / "modules", settings).modules.values() if m.id != "setup"],
+            "integrations": [{"name": n, "on": c.get("enabled", True), "status": live.get(n),
+                              "description": c.get("description", "")} for n, c in servers.items()],
+            "routines": [{"id": r["id"], "schedule": r["schedule"]} for r in valid_routines(routines_file)],
+            "keys": settings.keys()}, ensure_ascii=False)
+
+    async def setup_save(args, sid):
+        if settings is None:
+            raise ValueError("setup_save needs settings")
+        saved = []
+        assistant = {k: v for k, v in (("user_name", args.get("user_name")), ("name", args.get("assistant_name")),
+                                       ("address", args.get("address")), ("timezone", args.get("timezone"))) if v}
+        if tz := assistant.get("timezone"):
+            try:
+                ZoneInfo(tz)
+            except Exception:
+                raise ValueError(f"'{tz}' is not a timezone - use an IANA name like Europe/Warsaw") from None
+        if lang := args.get("language"):
+            assistant |= {"default_language": lang, "reply_language": lang}
+        if assistant:
+            settings.update({"assistant": assistant})
+            saved += list(assistant)
+        if (cats := args.get("task_categories")) is not None:
+            settings.replace("tasks.categories", {" ".join(k.split()): v for k, v in cats.items() if k.strip()})
+            saved.append("task_categories")
+        if (work := args.get("work_categories")) is not None:
+            settings.replace("training.work_categories", [task_category(c, categories()) for c in work])
+            saved.append("work_categories")
+        if args.get("goals") is not None or args.get("resolutions") is not None:
+            old = store.goals()
+            store.save_goals(args.get("goals", old["goals"]), args.get("resolutions", old["resolutions"]))
+            saved.append("goals")
+        if mods := args.get("modules"):
+            known = ModuleRegistry(ROOT / "modules").modules
+            if unknown := [m for m in mods if m not in known]:
+                raise KeyError(f"No module {', '.join(unknown)}. Modules: {', '.join(known)}")
+            settings.update({"modules": {m: bool(on) for m, on in mods.items()}})
+            saved.append("modules")
+        switched = set_integrations(settings.path("mcp_config"), args["integrations"]) if args.get("integrations") else []
+        if args.get("done") is not None:
+            settings.update({"setup": {"done": bool(args["done"])}})
+            saved.append("done" if args["done"] else "setup reopened")
+        if not saved and not switched:
+            raise ValueError("nothing to save - pass at least one field")
+        return (f"Saved: {', '.join(saved)}." if saved else "") + (
+            f" Integrations {', '.join(switched)} switched - they connect after Alfred restarts (Ctrl+C, then "
+            "uv run alfred)." if switched else "")
+
     return {f.__name__: f for f in (memory_search, memory_read, memory_remember, task_list, task_create,
                                     task_update, task_category_add, routine_save, routine_delete, training_status,
-                                    steps_log, training_plan_update)}
+                                    steps_log, training_plan_update, setup_status, setup_save)}

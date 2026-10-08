@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -16,6 +16,7 @@ from typing import Any, Callable
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from dotenv import set_key
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -99,7 +100,35 @@ async def status() -> dict[str, Any]:
                                 "language": session.language},
         "pending_confirmation": brain.guard.pending and brain.guard.pending["question"],
         "task_categories": list(brain.settings.get("tasks.categories") or {}),
+        "setup": {"done": bool(brain.settings.get("setup.done"))},
     }
+
+
+# ---- first run: the keys Alfred needs before he can talk; the rest he asks himself (modules/setup) ----------------
+
+class KeysIn(BaseModel):
+    jev: str = Field("", max_length=500)
+    elevenlabs: str = Field("", max_length=500)
+
+
+@app.post("/api/setup/keys")
+async def setup_keys(body: KeysIn) -> dict[str, Any]:
+    """The start screen saves the keys into .env (and uses them at once, no restart)."""
+    env = ROOT / ".env"
+    env.touch()
+    for name, value in (("JEV_API_KEY", body.jev), ("ELEVENLABS_API_KEY", body.elevenlabs)):
+        if value.strip():
+            set_key(env, name, value.strip())
+            os.environ[name] = value.strip()
+    brain.router.jev.api_key = brain.settings.jev_key
+    return await status()
+
+
+@app.post("/api/setup/check")
+async def setup_check() -> dict[str, Any]:
+    """Check Claude Code again (after you logged in with `claude`)."""
+    claude_status.update(await asyncio.to_thread(llm.subscription_status))
+    return await status()
 
 
 @app.get("/api/graph")
@@ -165,13 +194,14 @@ class PersonaIn(BaseModel):
 @app.get("/api/persona")
 async def get_persona() -> dict[str, Any]:
     meta, body = persona.load()
-    return {"meta": meta, "body": body, "preview": persona.system_prompt(brain.settings)}
+    return {"meta": meta | persona.identity(brain.settings), "body": body, "preview": persona.system_prompt(brain.settings)}
 
 
 @app.put("/api/persona")
 async def put_persona(data: PersonaIn) -> dict[str, Any]:
-    persona.save(data.meta, data.body)
-    brain.bus.emit("persona_updated", "voice", name=data.meta.get("name"))
+    brain.settings.update({"assistant": {k: data.meta[k] for k in persona.IDENTITY if data.meta.get(k)}})
+    persona.save({k: v for k, v in data.meta.items() if k not in persona.IDENTITY}, data.body)
+    brain.bus.emit("persona_updated", "voice", name=brain.settings.get("assistant.name"))
     return await get_persona()
 
 
@@ -223,6 +253,8 @@ class TaskIn(BaseModel):
 
 class TaskPatch(BaseModel):
     status: str | None = None
+    title: str | None = None
+    description: str | None = None
     note: str | None = None
     due: str | None = None
     schedule: str | None = None
@@ -250,13 +282,13 @@ async def patch_task(task_id: str, body: TaskPatch) -> dict[str, Any]:
     try:
         return brain.store.update_task(task_id, body.status, body.note, body.due, schedule=body.schedule,
                                        category=_category(body.category), goal=body.goal,
-                                       alfred=body.alfred).to_dict()
+                                       alfred=body.alfred, title=body.title, description=body.description).to_dict()
     except KeyError:
         raise _not_found("task") from None
 
 
 def _category(value: str | None) -> str | None:
-    """Only the fixed categories (tasks.categories); "smart meet" -> "SmartMeet"."""
+    """Only the fixed categories (tasks.categories); "dom" -> "Dom"."""
     try:
         return task_category(value, brain.settings.get("tasks.categories") or {})
     except ValueError:
@@ -286,6 +318,12 @@ class ProductIn(BaseModel):
     url: str = Field(pattern=r"^https?://\S+$", max_length=2000)
     note: str = Field("", max_length=300)
     grams: float | None = Field(None, gt=0, le=5000)      # his usual portion; what he says overrides it
+    kcal: float | None = Field(None, ge=0, le=1000)       # the label per 100 g, from the link (brain/meals.py)
+    protein_g: float | None = Field(None, ge=0, le=100)
+    carbs_g: float | None = Field(None, ge=0, le=100)
+    fat_g: float | None = Field(None, ge=0, le=100)
+    fiber_g: float | None = Field(None, ge=0, le=100)
+    sugar_g: float | None = Field(None, ge=0, le=100)
 
 
 @app.get("/api/products")
@@ -317,31 +355,21 @@ async def add_task_category(body: CategoryIn) -> list[str]:
 @app.get("/api/calendar")
 async def calendar(start: str, end: str) -> dict[str, Any]:
     """Google Calendar events between start and end (a day up to a year), read through the google-calendar MCP
-    server - in full, not cut to Claude's size."""
-    server = brain.hub.servers.get("google-calendar")
-    if not server or server.status != "ready":
-        return {"status": server.status if server else "missing", "error": server and server.error, "events": []}
-    try:
-        text, is_error = await brain.hub.call("google-calendar__list-events", {
-            "calendarId": "primary", "timeMin": start, "timeMax": end,
-            "timeZone": brain.settings.get("assistant.timezone", "Europe/Warsaw")}, limit=None)
-        events = None if is_error else json.loads(text)["events"]
-    except Exception as exc:
-        text, events = f"{type(exc).__name__}: {exc}", None
-    if events is None:
-        return {"status": "error", "error": text[:300], "events": []}
-    return {"status": "ready", "error": None, "events": events}
+    server."""
+    return await fitness.calendar_events(brain.hub, start, end, brain.settings.get("assistant.timezone", "Europe/Warsaw"))
 
 
 @app.get("/api/training")
 async def training(weeks: int = 8) -> dict[str, Any]:
-    """Zadania -> Treningi: the plan and its realisation (Strava, kcal per workout) and this week's work load."""
+    """Zadania -> Treningi: this week's sessions from the calendar, the plan and its realisation (Strava, kcal per
+    workout) and this week's work load."""
     weeks = max(1, min(weeks, 26))
-    out = await fitness.status(brain.hub, brain.settings, weeks, weight_kg=await fitness.weight_now(brain.hub))
     cfg = brain.settings.get("training") or {}
     monday = fitness.week_start(datetime.now().date())
     sunday = monday + timedelta(days=7)
     cal = await calendar(f"{monday:%Y-%m-%dT00:00:00}", f"{sunday:%Y-%m-%dT00:00:00}")
+    out = await fitness.status(brain.hub, brain.settings, weeks, weight_kg=await fitness.weight_now(brain.hub),
+                               events=cal["events"])
     due = [t for t in brain.store.list_tasks("open") if t.category in (cfg.get("work_categories") or [])
            and t.due and monday <= datetime.fromisoformat(t.due).date() < sunday]
     out["work"] = fitness.work_load(cal["events"], len(due), cfg) | {"calendar": cal["status"]}

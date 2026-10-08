@@ -58,6 +58,17 @@ class Settings:
                                   encoding="utf-8")
         self.data = merge(self.data, patch)
 
+    def replace(self, dotted: str, value: Any) -> None:
+        """Set one key to exactly `value` (update() merges dicts, so it can never drop a key - e.g. a category)."""
+        saved = _saved_overrides()
+        for target in (saved, self.data):
+            *parents, last = dotted.split(".")
+            for part in parents:
+                target = target.setdefault(part, {})
+            target[last] = value
+        OVERRIDES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        OVERRIDES_FILE.write_text(json.dumps(saved, indent=2, ensure_ascii=False), encoding="utf-8")
+
     @property
     def jev_key(self) -> str | None:
         return os.getenv("JEV_API_KEY") or None

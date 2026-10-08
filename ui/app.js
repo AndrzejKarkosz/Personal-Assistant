@@ -1,6 +1,7 @@
-// Alfred UI. Brain view: the 3D brain, Alfred's universe (bottom left), the path to the answer (right).
-// Tasks view: to-do by category, routines, Google calendar and tabs for summary / conversation / memory / map /
-// persona / modules / log / settings. Both: subtitles with what Alfred says and a low bar (composer, Jev, session cost).
+// Alfred UI. A left nav of pages: Chat; Przegląd; Planowanie (tasks, calendar, goals); Zdrowie (training, diet);
+// Moje rzeczy (products, memory); Alfred's own pages (voice conversation, persona, modules, map, log, settings).
+// Every page: subtitles with what Alfred says and a low bar (Alfred's universe - a click opens his 3D network -,
+// composer, Jev, session cost).
 const $ = (s) => document.querySelector(s);
 const api = async (path, opts = {}) => {
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
@@ -14,10 +15,11 @@ let status = { keys: {}, mcp: [] };
 let ws;
 
 // ---------------------------------------------------------------- messages
-function addMsg(kind, text, meta = "") {
+const metaHtml = (meta, detail) => (meta ? `<span class="meta" title="${esc(detail)}">${esc(meta)}</span>` : "");
+function addMsg(kind, text, meta = "", detail = "") {
   const el = document.createElement("div");
   el.className = `msg ${kind}`;
-  el.innerHTML = esc(text) + (meta ? `<span class="meta">${esc(meta)}</span>` : "");
+  el.innerHTML = esc(text) + metaHtml(meta, detail);
   $("#messages").appendChild(el);
   $("#tab-chat").scrollTop = 1e9;
 }
@@ -57,9 +59,9 @@ function setSpeaking(on) {                // the speaker icon (and the brain's v
 (() => {
   const cv = $("#universe"), g = cv.getContext("2d"), S = cv.width, R = S / 2, TAU = Math.PI * 2;
   const rnd = (a, b) => a + Math.random() * (b - a);
-  const stars = Array.from({ length: 320 }, (_, i) => {
+  const stars = Array.from({ length: 140 }, (_, i) => {
     const r = Math.pow(Math.random(), 0.75) * R * 0.8;
-    return { r, a: (i % 3) * TAU / 3 + r / 24 + rnd(-0.4, 0.4), size: rnd(1.4, 3.6), hue: rnd(185, 290), tw: rnd(0, TAU) };
+    return { r, a: (i % 3) * TAU / 3 + r / 8 + rnd(-0.4, 0.4), size: rnd(1, 2.4), hue: rnd(225, 290), tw: rnd(0, TAU) };
   });
   const worlds = [{ r: 0.5, size: 4, v: 1, c: "#22d3ee", a: 0 }, { r: 0.7, size: 3, v: -0.6, c: "#a78bfa", a: 2 }, { r: 0.9, size: 5, v: 0.4, c: "#4ade80", a: 4 }];
   const SPIN = { idle: 0.1, listening: 0.3, thinking: 1.2, speaking: 0.45 };
@@ -70,7 +72,6 @@ function setSpeaking(on) {                // the speaker icon (and the brain's v
     requestAnimationFrame(frame);
     const dt = Math.min(0.1, (now - last) / 1000), t = now / 1000;
     last = now;
-    if (!cv.offsetParent) return;                        // brain view not shown
     const state = $("#alfred").dataset.state;
     // the real loudness of Alfred's voice; the browser's own voice cannot be measured, so there it is made up from sines
     const voice = state === "speaking" ? voiceLevel() ?? 0.5 + 0.5 * Math.abs(Math.sin(t * 9) * Math.sin(t * 3.7 + 1)) : 0;
@@ -127,6 +128,7 @@ function voiceLevel() {                   // 0..1, or null when it cannot be mea
   analyser.getByteFrequencyData(levels);
   return Math.min(1, levels.reduce((s, v) => s + v, 0) / levels.length / 80);
 }
+if ("speechSynthesis" in window) speechSynthesis.getVoices();   // Edge/Chrome load their voices lazily - start now
 function speak(text, b64, lang) {
   audioQueue.push({ text, b64, lang });
   if (!playing) playNext();
@@ -146,7 +148,8 @@ function playNext() {
     u.lang = item.lang === "en" ? "en-GB" : "pl-PL";
     // the natural (online) voices of Edge / Chrome sound far less robotic than the system default
     const voices = speechSynthesis.getVoices().filter((v) => v.lang.replace("_", "-").startsWith(u.lang.slice(0, 2)));
-    u.voice = voices.find((v) => /natural|online|google/i.test(v.name)) || voices[0] || null;
+    const natural = voices.filter((v) => /natural|online|google/i.test(v.name));
+    u.voice = natural.find((v) => /marek|ryan|thomas/i.test(v.name)) || natural[0] || voices[0] || null;  // Alfred is a man
     u.rate = 1.2;                         // same pace as the ElevenLabs voice (voice.settings.speed)
     u.onend = u.onerror = playNext;
     playing = u;
@@ -236,11 +239,11 @@ $("#text-form").onsubmit = (e) => { e.preventDefault(); sendText($("#text").valu
 // ------------------------------------------------------------------- chat
 // Written conversation: the server answers in full Markdown and skips the voice for these requests.
 const chatReq = new Set();                        // request_ids that came from the chat
-function chatMsg(kind, html, meta = "") {
+function chatMsg(kind, html, meta = "", detail = "") {
   $(".chat-empty")?.remove();
   const el = document.createElement("div");
   el.className = `bubble ${kind}`;
-  el.innerHTML = html + (meta ? `<span class="meta">${esc(meta)}</span>` : "");
+  el.innerHTML = html + metaHtml(meta, detail);
   $("#chat-log").appendChild(el);
   $("#chat-log").scrollTop = 1e9;
   return el;
@@ -249,7 +252,7 @@ function chatTyping(on) {
   $("#chat-typing")?.remove();
   if (on) chatMsg("alfred typing", "<span class=\"dots\"><i></i><i></i><i></i></span>").id = "chat-typing";
 }
-const chatAnswer = (text, meta) => chatMsg("alfred", `<div class="md">${renderMd(text, "")}</div>`, meta);
+const chatAnswer = (text, meta, detail) => chatMsg("alfred", `<div class="md">${renderMd(text, "")}</div>`, meta, detail);
 function sendChat(text) {
   if (text.trim()) ws.send(JSON.stringify({ type: "text", text, mode: "chat" }));
 }
@@ -261,9 +264,11 @@ $("#chat-form").onsubmit = (e) => {
 $("#chat-text").onkeydown = (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#chat-form").requestSubmit(); }
 };
+let hello = "Cześć";                               // "Cześć, <his name>" once the persona is read
 $("#chat-new").onclick = async () => {
+  go("chat");
   await api("/api/session/close", { method: "POST" });
-  $("#chat-log").innerHTML = '<div class="chat-empty">Nowa rozmowa. Poprzednia jest zapisana w pamięci Alfreda.</div>';
+  $("#chat-log").innerHTML = `<div class="chat-empty"><h2 class="hello">${esc(hello)}</h2><p>Nowa rozmowa — poprzednia jest zapisana w pamięci.</p></div>`;
 };
 async function loadChat() {                        // after a reload: this session's chat
   const sid = status.session?.id;
@@ -277,9 +282,10 @@ $("#no").onclick = () => ws.send(JSON.stringify({ type: "confirm", approved: fal
 
 // ------------------------------------------------------------------ graph
 async function loadGraph() {
-  Brain3D?.init(await api("/api/graph"), { openPage: (p) => { setView("tasks"); openMapPage(p); }, openMemory: openMemoryPage });
+  Brain3D?.init(await api("/api/graph"), { openPage: openMapPage, openMemory: openMemoryPage });
 }
 $("#demo").onclick = () => Brain3D?.demo();
+$("#alfred").onclick = () => go("brain");             // Alfred on every page leads back to his network
 
 // ---------------------------------------------------------------- events
 function onEvent(ev) {
@@ -289,8 +295,8 @@ function onEvent(ev) {
     case "transcript":
       said[ev.request_id] = d.text;
       if (!d.confirmation) { thinking = true; mood(); }
-      if (d.source === "proactive") addMsg("system", "⏰ Alfred zaczyna sam (zadanie zaplanowane)");
-      else if (d.source === "routine") { addMsg("system", `🔁 Rutyna: ${d.text}`); loadRoutines(); }
+      if (d.source === "proactive") { /* only the answer shows, marked "sam" */ }
+      else if (d.source === "routine") loadRoutines();
       else if (d.mode === "chat") { addMsg("user", d.text); chatReq.add(ev.request_id); chatMsg("user", esc(d.text)); chatTyping(true); }
       else { addMsg("user", d.text); lastSaid = d.text; if (!d.confirmation) subtitle("…", "ack", d.text); }
       break;
@@ -318,26 +324,25 @@ function onEvent(ev) {
     case "answer": {
       if (!d.interim) { thinking = false; mood(); }  // interim = welcome-back line, the real answer is coming
       const u = d.usage || {};
-      // Alfred speaking first (maybe while the UI was closed): show when it happened.
-      const at = d.source && d.source !== "user" ? `${ev.ts.slice(11, 16)} · ` : "";
-      const meta = `${at}${d.model || ""} · ${tokens(u)} tok. (in ${u.input || 0} · cache ${u.cache_read || 0}` +
+      // Shown: the time (+ "rutyna" / "sam" when Alfred spoke first). Model, tokens and cost: a tooltip.
+      const meta = ev.ts.slice(11, 16) + ({ routine: " · rutyna", proactive: " · sam" }[d.source] || "");
+      const detail = `${d.model || ""} · ${tokens(u)} tok. (in ${u.input || 0} · cache ${u.cache_read || 0}` +
         ` odczyt / ${u.cache_write || 0} zapis · out ${u.output || 0}${u.router ? ` · router ${u.router}` : ""})` +
         (d.cost_usd != null ? ` · ${usd(d.cost_usd)}` : "") + (d.tools?.length ? ` · ${d.tools.join(", ")}` : "");
-      addMsg("alfred", d.text, meta);
+      addMsg("alfred", d.text, meta, detail);
       loadStatus();                         // session total in the low bar
-      if (d.mode === "chat" || chatReq.has(ev.request_id)) { chatTyping(false); chatAnswer(d.text, meta); }
+      if (d.mode === "chat" || chatReq.has(ev.request_id)) { chatTyping(false); chatAnswer(d.text, meta, detail); }
       else { subtitle(d.text, "say", d.source === "user" ? lastSaid : ""); speak(d.text, d.audio_b64, d.language); }
       if (d.source === "routine") showBrief(d.text, ev.ts.slice(11, 16), "rutyna");
       refreshLeft();                        // Alfred may have changed the tasks or the calendar
       if (view === "tasks") refreshDay();
       if (view === "tasks" && $("main").dataset.sub === "diet" && d.tools?.some((t) => t.startsWith("nutrition__"))) loadDiet().catch(warn);
+      if (training && d.tools?.some((t) => /^(strava|google-calendar)__/.test(t))) loadTraining().catch(warn);   // a session moved, a workout synced
       break;
     }
     case "error": thinking = false; mood(); addMsg("system", `⚠ ${d.message}`);
       if (chatReq.has(ev.request_id)) { chatTyping(false); chatMsg("system", `⚠ ${esc(d.message)}`); } subtitle(`⚠ ${d.message}`, "system"); loadRoutines(); break;
-    case "voice_error": addMsg("system", `🔇 Głos ElevenLabs nie zadziałał (${d.message}) — mówi głos przeglądarki`); break;
-    case "session_closed": addMsg("system", `Sesja zapisana: ${d.title || ""}`); loadBriefing(); break;
-    case "proactive_gate": if (!d.fired) addMsg("system", `Pominięto przypomnienie „${d.task}” (bramka ${Math.round(d.probability * 100)}%)`); break;
+    case "session_closed": loadBriefing(); break;
   }
   if (!$("#tab-log").classList.contains("hidden")) appendLog(ev);
 }
@@ -363,8 +368,7 @@ async function loadStatus() {
   // Split per service: Claude (subscription = API-equivalent, not a bill), Jev and ElevenLabs (real money).
   const claudeTok = ["input", "output", "cache_read", "cache_write"].reduce((s, k) => s + (u[k] || 0), 0);
   const paid = (u.jev_usd || 0) + (u.elevenlabs_usd || 0);
-  $("#session-cost").innerHTML = `<b>Płacisz ${cash(paid)}</b> · Jev ${cash(u.jev_usd)} · ` +
-    `ElevenLabs ${cash(u.elevenlabs_usd)} · Claude ${usd(u.cost_usd || 0)}`;
+  $("#session-cost").textContent = cash(paid);
   $("#session-cost").title = [
     `Sesja: ${status.session?.turns || 0} tur`,
     `Claude: ${num(claudeTok)} tok. · ${usd(u.cost_usd || 0)} — subskrypcja: równowartość API, nie rachunek (zużywa limit planu)`,
@@ -380,23 +384,34 @@ const num = (n) => Math.round(+n || 0).toLocaleString("pl-PL");
 const usd = (v) => `≈$${v.toFixed(4)}`;
 
 // --------------------------------------------------------------------- views
+// One nav (on the left). data-go = "brain" | "chat" | "tasks:<page>" (they share main[data-sub]) | "panel:<page>" (one tab of #drawer).
 let view = "brain";
 function setView(v) {
   view = v;
   $("main").dataset.view = v;
   document.body.dataset.view = v;
   if (v === "chat") $("#chat-text").focus();
-  document.querySelectorAll(".views button").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
-  try { localStorage.setItem("view", v); } catch { /* private mode */ }
   if (v === "tasks") refreshDay();
 }
-document.querySelectorAll(".views button").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
+const navButtons = [...document.querySelectorAll("#nav [data-go]")];
+function go(target) {
+  const [v, page] = target.split(":");
+  setView(v);
+  if (v === "tasks") setSub(page);
+  if (v === "panel") openTab(page);
+  const button = navButtons.find((b) => b.dataset.go === target);
+  navButtons.forEach((b) => b.classList.toggle("active", b === button));
+  $("#page-title").textContent = button?.querySelector(".lbl-t").textContent || "";
+  document.body.classList.remove("nav-open");
+  try { localStorage.setItem("page", target); } catch { /* private mode */ }
+}
+navButtons.forEach((b) => (b.onclick = () => go(b.dataset.go)));
+// the menu button: icons only on a wide screen, the nav slides in on a narrow one
+$("#menu").onclick = () => document.body.classList.toggle(innerWidth < 900 ? "nav-open" : "nav-mini");
 
 // Tasks tabs: Przegląd (board + small calendar + panels) or Kanban / Kalendarz over the whole page.
 function setSub(s) {
   $("main").dataset.sub = s;
-  document.querySelectorAll(".subviews button").forEach((b) => b.classList.toggle("active", b.dataset.sub === s));
-  try { localStorage.setItem("tasksub", s); } catch { /* private mode */ }
   delete $("#calendar").dataset.scrolled;             // taller hours on the full page: scroll to "now" again
   renderCalendar();
   if (s === "goals") loadGoals().catch(warn);
@@ -429,6 +444,8 @@ function renderProducts() {
     <input name="url" type="url" value="${esc(p.url)}" placeholder="https://…" aria-label="Link">
     <input name="grams" type="number" min="1" max="5000" step="any" value="${p.grams ?? ""}" placeholder="porcja g" aria-label="Zwykła porcja w gramach" title="Zwykła porcja w gramach — gdy powiesz inną gramaturę, liczy się ta powiedziana">
     <input name="note" value="${esc(p.note)}" placeholder="Notatka: smak, rozmiar, co ile kupuję" aria-label="Notatka">
+    <span class="label muted" title="Etykieta na 100 g (z linku) — z niej Alfred liczy ten produkt">${p.kcal != null
+      ? `${p.kcal} kcal · B ${p.protein_g} · W ${p.carbs_g} · T ${p.fat_g} /100 g` : "brak etykiety"}</span>
     <a class="open" target="_blank" rel="noopener" title="Otwórz link">↗</a>
     <button class="del" type="button" title="Usuń">✕</button></div>`).join("")
     || '<div class="sub">Brak produktów — dodaj pierwszy przyciskiem „+ Dodaj produkt”.</div>';
@@ -512,7 +529,7 @@ function renderDiet(d) {
     <span class="sub">${num(x.calories)} kcal · B ${num(x.protein_g)} · W ${num(x.carbs_g)} · T ${num(x.fat_g)} g</span></div>`).join("");
 }
 // Per product: what each one gave (Claude writes it into the meal's notes; the backend reads the lines)
-const mealItems = (items) => `<details class="items"><summary>Produkty (${items.length}) — kcal i makro każdego</summary>${itemsTable(items)}</details>`;
+const mealItems = (items) => `<div class="items"><div class="sub">Produkty (${items.length}) — kcal i makro każdego</div>${itemsTable(items)}</div>`;
 function itemsTable(items) {
   const g = (v) => (v == null ? "—" : num(Math.round(v * 10) / 10));
   const sum = (k) => items.reduce((s, i) => s + (i[k] || 0), 0);
@@ -526,13 +543,11 @@ function itemsTable(items) {
 // One of today's meals from Nutrition MCP: totals, then each product - or a button that asks Alfred to split it
 function mealCard(m) {
   const n = (v) => (v == null ? "—" : num(v));
-  return `<details class="meal"><summary><span><b>${esc((m.time || "").slice(11, 16))}</b> · ${esc(MEAL_PL[m.type] || m.type || "")}
-      <span class="muted">${esc(m.description.length > 70 ? `${m.description.slice(0, 70)}…` : m.description)}</span></span>
-    <span class="nowrap"><b>${n(m.calories)} kcal</b> <span class="muted">· B ${n(m.protein_g)} · W ${n(m.carbs_g)} · T ${n(m.fat_g)} g</span>
-      ${m.items.length ? `<span class="chip">${m.items.length} prod.</span>` : ""}</span></summary>
+  return `<div class="meal"><div class="meal-head"><span><b>${esc((m.time || "").slice(11, 16))}</b> · ${esc(MEAL_PL[m.type] || m.type || "")}</span>
+    <span class="nowrap"><b>${n(m.calories)} kcal</b> <span class="muted">· B ${n(m.protein_g)} · W ${n(m.carbs_g)} · T ${n(m.fat_g)} g</span></span></div>
     <div class="what">${esc(m.description)}</div>
     ${m.items.length ? itemsTable(m.items) : `<div class="row"><span class="sub">bez rozbicia na produkty</span>
-      <button class="mini" data-split="${esc(m.id)}" title="Alfred policzy kcal i makro każdego produktu i dopisze to do notatki posiłku">Rozbij na produkty</button></div>`}</details>`;
+      <button class="mini" data-split="${esc(m.id)}" title="Alfred policzy kcal i makro każdego produktu i dopisze to do notatki posiłku">Rozbij na produkty</button></div>`}</div>`;
 }
 // Discipline over 30 days: tiles, one bar per day (kcal against the goal, coloured by how the day went), weekly scores
 const DISC_PL = { hit: "na celu", partial: "połowicznie", miss: "poza celem", empty: "nic nie zapisano", today: "dziś — w toku" };
@@ -599,53 +614,104 @@ const SPORT_COLOR = { swim: "var(--cyan)", bike: "var(--blue)", run: "var(--gree
 const columns = (items, line, lineLabel) => `<div class="cols" style="--line:${Math.min(100, line)}">${items.map((c) => `<div class="bar-col ${c.cls || ""}" title="${esc(c.title || "")}">
   <span class="v">${esc(c.value)}</span><div class="plot"><i style="height:${Math.max(3, Math.min(100, c.h))}%"></i></div><span class="l">${esc(c.label)}</span></div>`).join("")}
   ${line ? `<div class="goal-line" data-label="${esc(lineLabel)}"></div>` : ""}</div>`;
-const ring = (el, p, html, over) => { el.style.setProperty("--p", Math.min(100, p * 100)); el.classList.toggle("over", !!over); el.innerHTML = `<div>${html}</div>`; };
+// ---- Treningi: the week as 7 days (calendar sessions + Strava), the chosen day in full, the week's progress ----
+let trDay = null;                                          // the day open under the week (ISO), today by default
+const sportOf = (s) => SPORT_PL[s] || SPORT_PL.other;
+const colorOf = (s) => SPORT_COLOR[s] || SPORT_COLOR.other;
+const plusDays = (iso, n) => { const d = new Date(`${iso}T00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const mmss = (s) => `${Math.floor(Math.round(s) / 60)}:${String(Math.round(s) % 60).padStart(2, "0")}`;
+const actKey = (a) => a.id ?? a.start_date_local;
+const TR_STATUS = { done: "✓ zrobione", missed: "✗ brak w Stravie", planned: "zaplanowane" };
+// how to do a session of this kind - modules/training/prompt.md in one line
+const howTo = (kind, hr) => ({
+  spokojnie: `Z1–2, średnie tętno do ${hr} — możesz swobodnie rozmawiać.`,
+  technika: `Ćwiczenia techniczne i czysty ruch, tętno do ${hr}.`,
+  jakość: "Odcinki w progu (RPE 7–8) między spokojną rozgrzewką a schłodzeniem.",
+  brick: "Rower, a od razu po nim bieg — pierwsze minuty biegu luźno.",
+  siła: "Najpierw technika, potem ciężar (RPE 7–8); nie dzień przed długim biegiem.",
+  mobilność: "Spokojnie i bez bólu.",
+}[kind] || "");
+// a Strava workout: time, distance, pace (run /km, swim /100 m, bike km/h), heart rate, kcal
+function actChips(a) {
+  const km = (a.distance || 0) / 1000, s = a.moving_time || 0;
+  const pace = !km || !s ? "" : a.sport === "run" ? `${mmss(s / km)} /km` : a.sport === "swim" ? `${mmss(s / (km * 10))} /100 m`
+    : a.sport === "bike" ? `${(km / (s / 3600)).toFixed(1).replace(".", ",")} km/h` : "";
+  return `<div class="chips start"><span class="chip">⏱ ${dur(s)}</span>${km ? `<span class="chip">📏 ${km.toFixed(1).replace(".", ",")} km</span>` : ""}${pace ? `<span class="chip">${pace}</span>` : ""}${a.average_heartrate ? `<span class="chip" title="średnie tętno">♥ ${Math.round(a.average_heartrate)}</span>` : ""}${a.kcal ? `<span class="chip" title="szacunek: ${esc(a.kcal_source)}">🔥 ~${num(a.kcal)} kcal</span>` : ""}</div>`;
+}
+// one session in full: when, how, Alfred's description from the calendar, what Strava recorded, what to do with it
+function sessionCard(x, hr) {
+  const at = `${dm(x.date || "")}${x.time ? ` ${x.time}` : ""}`;
+  const ask = x.status === "planned" ? ["Przełóż z Alfredem", `Przełóż trening „${x.name}” z ${at} — zaproponuj inny termin w kalendarzu.`]
+    : x.status === "missed" ? ["Nadrobić?", `Nie zrobiłem treningu „${x.name}” z ${at} — czy i kiedy go nadrobić w tym tygodniu?`] : null;
+  return `<article class="wo ${x.status || ""}" style="--c:${colorOf(x.sport)}">
+    <header><span class="icon">${sportOf(x.sport)[0]}</span>
+      <div><div class="title">${esc(x.name)}</div><div class="sub">${x.time ? `${esc(x.time)}${x.end ? `–${esc(x.end)}` : ""} · ` : ""}${x.minutes} min · <span class="kind ${esc(x.kind)}">${esc(x.kind)}</span></div></div>
+      ${x.status ? `<span class="st ${x.status}">${TR_STATUS[x.status]}</span>` : ""}</header>
+    <div class="how">${esc(howTo(x.kind, hr))}</div>
+    ${x.note ? `<div class="note">${esc(x.note)}</div>` : ""}
+    ${x.activity ? `<div class="did"><span class="muted">Strava: ${esc(x.activity.name)}</span>${actChips(x.activity)}</div>` : ""}
+    ${x.link || ask ? `<div class="actions">${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Otwórz w kalendarzu ↗</a>` : ""}
+      ${ask ? `<button class="mini" data-ask="${esc(ask[1])}">${ask[0]}</button>` : ""}</div>` : ""}
+  </article>`;
+}
+function renderWeek(t) {
+  const days = [...Array(7)].map((_, i) => plusDays(t.weeks[0].start, i)), hr = t.plan.easy_hr_max;
+  if (!days.includes(trDay)) trDay = days.includes(t.today) ? t.today : days[0];
+  const used = new Set(t.planned.filter((x) => x.activity).map((x) => actKey(x.activity)));
+  const extra = t.activities.filter((a) => days.includes(a.start_date_local.slice(0, 10)) && !used.has(actKey(a)));
+  const on = (day) => [t.planned.filter((x) => x.date === day), extra.filter((a) => a.start_date_local.startsWith(day))];
+  $("#tr-week").innerHTML = days.map((day) => {
+    const [ss, ex] = on(day);
+    return `<button class="tr-day${day === t.today ? " today" : ""}${day === trDay ? " sel" : ""}${day < t.today ? " past" : ""}" data-day="${day}">
+      <span class="d">${esc(dm(day).split(",")[0])} <b>${+day.slice(8)}</b></span>
+      ${ss.map((x) => `<span class="wchip ${x.status}" style="--c:${colorOf(x.sport)}" title="${esc(x.name)} · ${TR_STATUS[x.status]}">${sportOf(x.sport)[0]} ${x.minutes}′</span>`).join("")}
+      ${ex.map((a) => `<span class="wchip extra" style="--c:${colorOf(a.sport)}" title="poza planem: ${esc(a.name)}">${sportOf(a.sport)[0]} ${Math.round((a.moving_time || 0) / 60)}′</span>`).join("")}
+      ${ss.length + ex.length ? "" : '<span class="free">wolne</span>'}</button>`;
+  }).join("");
+  const [ss, ex] = on(trDay), mins = ss.reduce((s, x) => s + x.minutes, 0);
+  const label = trDay === t.today ? "Dziś · " : trDay === plusDays(t.today, 1) ? "Jutro · " : "";
+  const extras = ex.map((a) => `<article class="wo extra" style="--c:${colorOf(a.sport)}"><header><span class="icon">${sportOf(a.sport)[0]}</span>
+    <div><div class="title">${esc(a.name)}</div><div class="sub">${esc(a.start_date_local.slice(11, 16))} · poza planem</div></div></header>${actChips(a)}</article>`).join("");
+  let body;
+  if (!t.planned.length) {                                 // the week is not in the calendar yet: the phase's template
+    const tw = t.roadmap[0]?.this_week;
+    body = tw?.sessions.length ? `<div class="tr-empty"><span>Ten tydzień nie jest jeszcze rozpisany w kalendarzu — szablon fazy <b>${esc(tw.phase_pl)}</b>:</span>
+      <button class="primary" data-ask="Rozpisz mi treningi na ten tydzień w kalendarzu według planu (training_status) — uwzględnij pracę i moją porę treningu.">Rozpisz tydzień w kalendarzu</button></div>
+      ${tw.sessions.map((x) => sessionCard(x, hr)).join("")}`
+      : '<div class="tr-empty">Ustaw datę zawodów w „Zmień plan” na dole, żeby zobaczyć plan na ten tydzień.</div>';
+  } else if (ss.length) body = ss.map((x) => sessionCard(x, hr)).join("");
+  else {
+    const next = t.planned.find((x) => x.date > trDay && x.status === "planned");
+    body = `<div class="tr-empty">${ex.length ? "Bez planu na ten dzień." : "Dzień wolny — regeneracja, spacer, sen."}${next ? `<span>Następny trening: <b>${esc(next.name)}</b> · ${esc(dm(next.date))}${next.time ? ` ${esc(next.time)}` : ""}</span>` : ""}</div>`;
+  }
+  $("#tr-detail").innerHTML = `<header><h3>${label}${esc(new Date(`${trDay}T12:00`).toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" }))}</h3>
+    <span class="muted">${ss.length ? `${ss.length} ${ss.length === 1 ? "trening" : ss.length < 5 ? "treningi" : "treningów"} · ${mins} min` : ""}</span></header>${body}${extras}`;
+}
 function renderTraining(t) {
   const w = t.weeks[0], r = t.race;
   $("#tr-status").textContent = `odświeżone ${hhmm(new Date())}`;
   $("#tr-note").textContent = t.strava.error ? `Strava: ${t.strava.error}` : "";
   $("#tr-note").classList.toggle("hidden", !t.strava.error);
   const when = r.date ? new Date(`${r.date}T12:00`).toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" }) : "";
-  $("#tr-race").innerHTML = `<div class="race-name">🏁 ${esc(r.name || DIST_PL[r.distance] || "Zawody")}</div>
-    <div class="race-when">${r.date ? `${esc(when)} · <b>za ${r.days_to} dni</b>` : "Ustaw datę zawodów w planie na dole"}</div>
-    <span class="pill">faza: <b>${esc(w.phase_pl)}</b> · objętość ${Math.round(w.volume * 100)}% planu</span>`;
+  $("#tr-top").innerHTML = `<div><div class="race">🏁 ${esc(r.name || DIST_PL[r.distance] || "Zawody")}</div>
+    <div class="muted">${r.date ? `${esc(when)} · faza <b>${esc(w.phase_pl)}</b> · objętość ${Math.round(w.volume * 100)}% planu` : "Ustaw datę zawodów w „Zmień plan” na dole"}</div></div>
+    ${r.date ? `<div class="count"><b>${r.days_to}</b> dni do startu</div>` : ""}`;
   const total = t.timeline.reduce((s, x) => s + x.days, 0);
   $("#tr-timeline").innerHTML = t.timeline.map((x, i) => `<span class="${x.phase}${i === 0 ? " now" : ""}" style="flex:${x.days}"
     title="${esc(x.phase_pl)} od ${esc(x.start)} · ${Math.round(x.days / 7)} tyg.">${x.days / total > 0.08 ? `${esc(x.phase_pl)} · ${Math.round(x.days / 7)} tyg` : ""}</span>`).join("");
-  ring($("#tr-ring"), w.target_h ? w.done_h / w.target_h : 0, `<b>${w.pct ?? 0}%</b><span>${hrs(w.done_h)} z ${hrs(w.target_h)}</span>
-    <small>${w.target_h > w.done_h ? `zostało ${hrs(w.target_h - w.done_h)}` : "plan zrobiony 🎉"}</small>`, w.pct > 100);
-  const steps = t.steps.days, today = steps[steps.length - 1].steps, goal = t.steps.goal;
-  ring($("#tr-steps-ring"), today ? today / goal : 0, `<b>${today == null ? "—" : num(today)}</b><span>z ${num(goal)}</span>
-    <small>${today == null ? "powiedz Alfredowi" : today >= goal ? "cel zrobiony 🎉" : `brakuje ${num(goal - today)}`}</small>`);
-  const work = t.work;
-  $("#tr-advice").className = `advice${work.busy ? " busy" : ""}`;
-  $("#tr-advice").innerHTML = work.busy ? `🧠 <b>Ciężki tydzień w pracy</b> — ${hrs(work.meeting_h)} spotkań, ${work.work_tasks_due} zadań zawodowych z terminem. ${esc(work.advice)}`
-    : `💼 Praca w normie: ${hrs(work.meeting_h)} spotkań i ${work.work_tasks_due} zadań zawodowych z terminem w tym tygodniu — trenuj według planu.`;
-  const tw = t.roadmap[0]?.this_week, doneLeft = Object.fromEntries(Object.entries(w.sports).map(([s, v]) => [s, v.done_sessions]));
-  $("#tr-week-phase").textContent = tw ? `faza: ${tw.phase_pl}` : "";
-  $("#tr-plan-week").innerHTML = (tw?.sessions || []).map((x) => {
-    const done = doneLeft[x.sport]-- > 0;               // the first N sessions of a sport count as done (N from Strava)
-    return `<div class="session${done ? " done" : ""}" style="--c:${SPORT_COLOR[x.sport] || SPORT_COLOR.other}">
-      <span class="icon">${(SPORT_PL[x.sport] || SPORT_PL.other)[0]}</span>
-      <div><div>${esc(x.name)}</div><span class="kind ${esc(x.kind)}">${esc(x.kind)}</span></div><span class="min">${x.minutes} min</span></div>`;
-  }).join("") || '<div class="sub">Ustaw datę zawodów w planie na dole, żeby zobaczyć sesje na ten tydzień.</div>';
-  $("#tr-road").innerHTML = t.roadmap.map((p, i) => `<div class="road-step ${p.phase}${i === 0 ? " now" : ""}">
-    <div class="row between"><b>${i + 1}. ${esc(p.phase_pl)}${i === 0 ? " · teraz" : ""}</b><span class="when">${p.weeks} tyg.</span></div>
-    <span class="when">${esc(dm(p.start))} – ${esc(dm(p.end))}</span><div class="sub">${esc(p.focus)}</div>
-    <ul>${p.milestones.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>`).join("");
-  $("#tr-sports").innerHTML = Object.entries(w.sports).map(([s, v]) => {
-    const p = v.target_h ? v.done_h / v.target_h : 0, todo = v.target_sessions - v.done_sessions;
-    const rest = todo > 0 ? `zostało ${todo}× po ~${Math.max(15, Math.round(((v.target_h - v.done_h) * 60) / todo))} min` : "✓ zrobione na ten tydzień";
-    return `<div class="sport-card${todo <= 0 ? " done" : ""}" style="--c:${SPORT_COLOR[s] || SPORT_COLOR.other}">
-      <div class="row between"><span class="icon">${(SPORT_PL[s] || SPORT_PL.other)[0]}</span><span class="pct">${Math.round(p * 100)}%</span></div>
-      <b>${esc((SPORT_PL[s] || [, s])[1])}</b><div class="bar-lg${p > 1 ? " over" : ""}"><i style="width:${Math.min(100, p * 100)}%"></i></div>
-      <span class="sub">${v.done_sessions}/${v.target_sessions} jednostki · ${hrs(v.done_h)} / ${hrs(v.target_h)}</span><span class="sub">${rest}</span></div>`;
-  }).join("");
-  $("#tr-stats").innerHTML = [
-    tile("green", w.easy_share == null ? "—" : `${Math.round(w.easy_share * 100)}%`, `spokojnie (cel ${Math.round(t.easy_target * 100)}%)`, "wg średniego tętna treningów"),
-    tile("blue", w.kcal ? `~${num(w.kcal)}` : "0", "kcal spalone w tym tygodniu", t.weight_kg ? `szacunek dla ${t.weight_kg} kg` : "podaj wagę, żeby liczyć kcal"),
-    tile("purple", hrs(w.other_h), "inne aktywności", "spacery, joga… poza planem"),
-  ].join("");
+  renderWeek(t);
+  const work = t.work, steps = t.steps.days, today = steps[steps.length - 1].steps, goal = t.steps.goal;
+  $("#tr-prog").innerHTML = `<div class="row between"><span><span class="big">${w.pct ?? 0}%</span> tygodnia · ${hrs(w.done_h)} z ${hrs(w.target_h)}</span>
+    <span class="muted">${w.source === "calendar" ? "cel z kalendarza" : "cel z planu"}${w.target_h > w.done_h ? ` · zostało ${hrs(w.target_h - w.done_h)}` : " · zrobione 🎉"}</span></div>
+    ${Object.entries(w.sports).map(([s, v]) => `<div class="tr-sport" style="--c:${colorOf(s)}"><span>${sportName(s)}</span>
+      <div class="tr-bar"><i style="width:${v.target_h ? Math.min(100, (v.done_h / v.target_h) * 100) : 0}%"></i></div>
+      <span class="muted">${v.done_sessions}/${v.target_sessions} · ${hrs(v.done_h)} z ${hrs(v.target_h)}</span></div>`).join("")}
+    <div class="tr-facts"><span title="wg średniego tętna treningów">80/20: <b>${w.easy_share == null ? "—" : `${Math.round(w.easy_share * 100)}%`}</b> spokojnie (cel ${Math.round(t.easy_target * 100)}%)</span>
+      <span title="${t.weight_kg ? `szacunek dla ${t.weight_kg} kg` : "podaj wagę, żeby liczyć kcal"}">🔥 <b>~${num(w.kcal)}</b> kcal</span>
+      ${w.other_h ? `<span>poza planem <b>${hrs(w.other_h)}</b></span>` : ""}
+      <span title="${today == null ? "powiedz Alfredowi, ile kroków zrobiłeś" : ""}">👣 <b>${today == null ? "—" : num(today)}</b> / ${num(goal)} kroków dziś</span>
+      <span>💼 <b>${hrs(work.meeting_h)}</b> spotkań · ${work.work_tasks_due} zadań z terminem</span></div>
+    ${work.busy ? `<div class="tr-warn">🧠 ${esc(work.advice)}</div>` : ""}`;
   const maxSteps = Math.max(goal * 1.2, ...steps.map((d) => d.steps || 0));
   $("#tr-steps").innerHTML = columns(steps.map((d) => ({ h: ((d.steps || 0) / maxSteps) * 100, value: d.steps == null ? "—" : `${Math.round(d.steps / 100) / 10}k`,
     label: dm(d.date).split(",")[0], cls: d.steps == null ? "empty" : d.steps >= goal ? "hit" : "", title: `${d.date}: ${d.steps ?? "brak"} kroków` })),
@@ -671,12 +737,15 @@ function renderTraining(t) {
     <input name="${esc(s)}.hours" type="number" min="0" max="40" step="0.1" value="${+v.hours}" aria-label="godziny"> h</span></label>`).join("");
 }
 $("#tr-refresh").onclick = () => loadTraining().catch(warn);
+$("#tr-week").onclick = (e) => { const b = e.target.closest("[data-day]"); if (b && training) { trDay = b.dataset.day; renderWeek(training); } };
+// a session's button asks Alfred in the Chat (move it, make it up, plan the week)
+$("#tr-detail").onclick = (e) => { const b = e.target.closest("[data-ask]"); if (b) { go("chat"); sendChat(b.dataset.ask); } };
 // "I want to change something": a fixed opening so Jev reads it as a plan change; the proposals come in the Chat
 $("#tr-change").onsubmit = (e) => {
   e.preventDefault();
   const text = e.target.elements.text.value.trim();
   if (!text) return;
-  setView("chat");
+  go("chat");
   sendChat(`Chcę zmienić plan treningowy: ${text}`);
   e.target.reset();
 };
@@ -732,7 +801,6 @@ $("#goals-save").onclick = async () => {
   await api("/api/goals", { method: "PUT", body: JSON.stringify({ goals: $("#goals-text").value, resolutions: $("#resolutions-text").value }) });
   $("#goals-saved").textContent = `zapisane ${hhmm(new Date())} — Alfred już je zna`;
 };
-document.querySelectorAll(".subviews button").forEach((b) => (b.onclick = () => setSub(b.dataset.sub)));
 const warn = (e) => addMsg("system", `⚠ ${e.message}`);
 const refreshLeft = () => Promise.all([refreshTasks(), loadRoutines()]).catch(warn);
 const refreshDay = () => Promise.all([loadCalendar(), loadSessions(), loadSummary()]).catch(warn);
@@ -850,7 +918,7 @@ function renderStats() {
   $("#sum-open").innerHTML = `<span class="sub">Otwarte teraz:</span>` +
     Object.entries(byCat).map(([c, n]) => `<button class="chip on" data-c="${esc(c === "bez kategorii" ? NO_CAT : c)}" title="Pokaż na Kanbanie">${esc(c)} <span class="muted">${n}</span></button>`).join("") +
     (overdue.length ? `<span class="chip late">po terminie <span class="muted">${overdue.length}</span></span>` : "");
-  $("#sum-open").querySelectorAll("button").forEach((b) => (b.onclick = () => { setFilter(b.dataset.c); setSub("kanban"); }));
+  $("#sum-open").querySelectorAll("button").forEach((b) => (b.onclick = () => { setFilter(b.dataset.c); go("tasks:kanban"); }));
   $("#greeting").textContent = `${now.getHours() < 18 && now.getHours() >= 5 ? "Dzień dobry" : "Dobry wieczór"} · ` +
     now.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" });
 }
@@ -934,10 +1002,10 @@ async function refreshTasks() {
   const recent = (t) => isOpen(t) || now - new Date(t.updated) < 14 * DAY_MS;   // finished cards leave after 2 weeks
   const card = (t) => {
     const due = t.due && new Date(t.due), late = due && due < now && isOpen(t);
-    const sub = [due && due.toLocaleString("pl-PL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }),
-      t.schedule && `co ${t.schedule}`].filter(Boolean).map(esc).join(" · ");
-    return `<div class="kcard${late ? " overdue" : ""}" data-id="${esc(t.id)}"><div class="title">${esc(t.title)}</div>
-      ${sub ? `<div class="sub">${sub}</div>` : ""}${t.goal ? `<div class="sub goal" title="Jak przybliża do celu">🎯 ${esc(t.goal)}</div>` : ""}
+    const dueText = due ? due.toLocaleString("pl-PL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "+ termin";
+    return `<div class="kcard${late ? " overdue" : ""}" data-id="${esc(t.id)}"><button class="title" data-edit="${esc(t.id)}" title="Otwórz zadanie">${esc(t.title)}</button>
+      ${t.description ? `<div class="sub desc">${esc(t.description.split("\n")[0])}</div>` : ""}
+      <div class="sub"><button class="due" data-due="${esc(t.id)}" title="Zmień termin">${esc(dueText)}</button>${t.schedule ? ` · co ${esc(t.schedule)}` : ""}</div>${t.goal ? `<div class="sub goal" title="Jak przybliża do celu">🎯 ${esc(t.goal)}</div>` : ""}
       <button class="tag c${fixed.indexOf(t.category)}" data-cat="${esc(t.id)}" title="Zmień kategorię">🏷 ${esc(t.category || "kategoria")}</button></div>`;
   };
   $("#board").innerHTML = Object.entries(STATUS_PL).map(([s, label]) => {
@@ -952,14 +1020,53 @@ async function refreshTasks() {
     await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ category: c.trim() }) }).catch(warn);
     refreshTasks();
   }));
+  $("#board").querySelectorAll("[data-due]").forEach((b) => (b.onclick = () => editDue(b, day.tasks.find((x) => x.id === b.dataset.due))));
+  $("#board").querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => editTask(day.tasks.find((x) => x.id === b.dataset.edit))));
   const Sortable = await sortable;
   $("#board").querySelectorAll(".cards").forEach((list) => Sortable?.create(list, {
-    group: "tasks", sort: false, animation: 150, ghostClass: "ghost",
+    group: "tasks", sort: false, animation: 150, ghostClass: "ghost", filter: "input", preventOnFilter: false,
     onAdd: (e) => setTaskStatus(e.item.dataset.id, e.to.dataset.status),
   }));
   renderStats();
   renderCalendar();
 }
+// The browser's own date-time picker in place of the date. Saved on Enter or leaving the field; emptied = no due date; Esc = cancel.
+function editDue(el, t) {
+  const old = t.due ? localIso(new Date(t.due)).slice(0, 16) : "";
+  const input = Object.assign(document.createElement("input"), { type: "datetime-local", value: old, className: "due-in" });
+  const done = async (save) => {
+    input.onblur = null;
+    if (save && input.value !== old) {
+      await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ due: input.value ? new Date(input.value).toISOString() : "" }) }).catch(warn);
+    }
+    refreshTasks().catch(warn);
+  };
+  input.onblur = () => done(true);
+  input.onkeydown = (e) => { if (e.key === "Enter") done(true); if (e.key === "Escape") { e.stopPropagation(); done(false); } };
+  el.replaceWith(input);
+  input.focus();
+}
+// A task, all of it, in a dialog. Only what changed is saved (the history shows the change).
+function editTask(t) {
+  const f = $("#task-edit").elements, cats = [...new Set([...(status.task_categories || []), t.category].filter(Boolean))];
+  f.status.innerHTML = Object.entries(STATUS_PL).map(([s, l]) => `<option value="${s}">${l}</option>`).join("");
+  f.category.innerHTML = `<option value="">bez kategorii</option>` + cats.map((c) => `<option>${esc(c)}</option>`).join("");
+  const due = t.due ? localIso(new Date(t.due)).slice(0, 16) : "";
+  f.title.value = t.title; f.description.value = t.description || "";
+  f.status.value = t.status; f.category.value = t.category || ""; f.due.value = due; f.schedule.value = t.schedule || "";
+  $("#task-edit").dataset.id = t.id; $("#task-edit").dataset.due = due;
+  $("#task-dlg").returnValue = "";                    // Esc keeps the last value - it must not mean "save"
+  $("#task-dlg").showModal();
+}
+$("#task-dlg").onclose = async () => {
+  if ($("#task-dlg").returnValue !== "save") return;
+  const form = $("#task-edit"), f = form.elements;
+  const patch = { title: f.title.value.trim(), description: f.description.value, status: f.status.value,
+    category: f.category.value, schedule: f.schedule.value.trim() };
+  if (f.due.value !== form.dataset.due) patch.due = f.due.value ? new Date(f.due.value).toISOString() : "";
+  await api(`/api/tasks/${form.dataset.id}`, { method: "PATCH", body: JSON.stringify(patch) }).catch(warn);
+  refreshTasks().catch(warn);
+};
 async function setTaskStatus(id, value) {
   await api(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ status: value }) });
   refreshTasks();
@@ -1103,12 +1210,14 @@ function showEvent(i) {
   card.innerHTML = `<button class="x" aria-label="Zamknij">×</button><span class="crumb">${t ? "zadanie" : "Google Calendar"}</span><b>${esc(i.title)}</b>
     <p>${esc(time)}${e.location ? ` · ${esc(e.location)}` : ""}</p>
     ${e.description ? `<p>${esc(e.description.slice(0, 400))}</p>` : ""}
-    ${t ? `<p>${esc(STATUS_PL[t.status])}${t.description ? ` · ${esc(t.description)}` : ""}</p><button class="link" data-done>✓ Oznacz jako zrobione</button>` : ""}
+    ${t ? `<p>${esc(STATUS_PL[t.status])}${t.description ? ` · ${esc(t.description)}` : ""}</p><button class="link" data-done>✓ Oznacz jako zrobione</button><button class="link" data-edit>Edytuj</button>` : ""}
     ${/^https:\/\//.test(e.htmlLink || "") ? `<a class="link" href="${esc(e.htmlLink)}" target="_blank" rel="noopener">Otwórz w Google Calendar →</a>` : ""}`;
   card.classList.remove("hidden");
   card.querySelector(".x").onclick = () => card.classList.add("hidden");
   const done = card.querySelector("[data-done]");
   if (done) done.onclick = () => { card.classList.add("hidden"); setTaskStatus(t.id, "done"); };
+  const edit = card.querySelector("[data-edit]");
+  if (edit) edit.onclick = () => { card.classList.add("hidden"); editTask(t); };
 }
 
 // Session summaries
@@ -1161,29 +1270,18 @@ async function loadSessions() {
 // ============================================================== tasks view: the panel that slides out of the rail
 const TAB_LOAD = { chat: () => ($("#tab-chat").scrollTop = 1e9), memory: loadBriefing, map: loadMap,
   persona: loadPersona, modules: loadModules, log: loadLog, settings: loadSettings };
-function openTab(name) {
-  const button = document.querySelector(`.rail button[data-tab="${name}"]`);
-  document.querySelectorAll(".rail button").forEach((b) => b.classList.toggle("active", b === button));
+function openTab(name) {                          // only through go("panel:<name>")
   document.querySelectorAll("#drawer .tab").forEach((t) => t.classList.toggle("hidden", t.id !== `tab-${name}`));
-  $("#drawer-title").textContent = button.title;
-  $("#drawer").classList.add("open");
+  $("#drawer").dataset.tab = name;
   TAB_LOAD[name]();
 }
-function closeDrawer() {
-  $("#drawer").classList.remove("open");
-  document.querySelectorAll(".rail button").forEach((b) => b.classList.remove("active"));
-}
-document.querySelectorAll(".rail button").forEach((b) => (b.onclick = () => (b.classList.contains("active") ? closeDrawer() : openTab(b.dataset.tab))));
-$("#drawer-x").onclick = closeDrawer;
-document.addEventListener("keydown", (e) => e.key === "Escape" && closeDrawer());
 
 // Memory
 async function loadBriefing() { $("#briefing").textContent = (await api("/api/memory/briefing")).briefing; }
 $("#close-session").onclick = async () => { await api("/api/session/close", { method: "POST" }); loadBriefing(); };
 async function openMemoryPage(path) {
   const page = await api(`/api/memory/page?path=${encodeURIComponent(path)}`);
-  if (view !== "tasks") setView("tasks");
-  openTab("memory");
+  go("panel:memory");
   $("#mem-page").textContent = page.content;
   $("#mem-page").classList.remove("hidden");
 }
@@ -1273,7 +1371,7 @@ async function openMapPage(path) {
   $("#map-crumbs").innerHTML = [`<a data-page="index.md">brain_map</a>`, ...path.split("/").map((x) => esc(x))].join(" / ");
   $("#map-page").innerHTML = renderMd(page.content, path);
   document.querySelectorAll("#map-page a[data-page], #map-crumbs a[data-page]").forEach((a) => (a.onclick = () => openMapPage(a.dataset.page)));
-  if (!document.querySelector('.rail button[data-tab="map"]').classList.contains("active")) openTab("map");
+  if (view !== "panel" || $("#drawer").dataset.tab !== "map") go("panel:map");
   const id = page.content.match(/\nid: (.+)/)?.[1]?.trim();
   if (id) ["module:", "cap:", "skill:", "tool:", "mcp:", ""].forEach((p) => Brain3D?.flash(p + id));
 }
@@ -1342,7 +1440,7 @@ const FIELDS = [
   ["models.executor", "Model wykonawczy"], ["models.executor_effort", "Wysiłek (low/medium/high)"],
   ["models.light", "Model lekki"], ["router.confident_at", "Próg pewności routera"],
   ["router.ask_below", "Dopytaj poniżej"], ["voice.voice_id", "ElevenLabs voice ID"],
-  ["voice.tts_model", "Model TTS"], ["memory.session_idle_minutes", "Zamknij sesję po (min)"],
+  ["voice.tts_model", "Model TTS"], ["voice.max_chars", "Mówione znaki na odpowiedź (reszta na ekranie)"], ["memory.session_idle_minutes", "Zamknij sesję po (min)"],
   ["proactive.reminders.lead_minutes", "Przypomnienie przed terminem (min, 0 = o czasie)"],
 ];
 const renderCats = () => ($("#cat-list").innerHTML = (status.task_categories || []).map((c) => `<span class="chip on">${esc(c)}</span>`).join(""));
@@ -1381,15 +1479,53 @@ $("#settings-form").onsubmit = async (e) => {
   loadSettings();                                   // what is saved now becomes the new "unchanged"
 };
 
+// ---------------------------------------------------------------- first run
+// The keys Alfred needs before he can talk (Claude Code login, Jev); then the chat, where he runs the setup himself.
+function renderSetup() {
+  const f = $("#setup-form");
+  $("#setup-claude-ok").className = `dot ${status.keys.anthropic ? "on" : "bad"}`;
+  $("#setup-claude").innerHTML = status.keys.anthropic ? "Gotowe."
+    : `${esc(status.claude?.detail || "Nie widzę Claude Code.")} Zainstaluj Claude Code, w terminalu uruchom
+       <code>claude</code> i zaloguj się, potem kliknij „Sprawdź ponownie”.`;
+  $("#setup-jev-ok").className = `dot ${status.keys.jev ? "on" : "bad"}`;
+  f.elements.jev.placeholder = status.keys.jev ? "zapisany — wpisz, żeby zmienić" : "JEV_API_KEY";
+  f.elements.elevenlabs.placeholder = status.keys.elevenlabs ? "zapisany — wpisz, żeby zmienić" : "ELEVENLABS_API_KEY";
+  $("#setup-go").disabled = !status.keys.anthropic || !(status.keys.jev || f.elements.jev.value.trim());
+}
+$("#setup").oncancel = (e) => e.preventDefault();       // Esc does not skip it
+$("#setup-form").elements.jev.oninput = renderSetup;
+$("#setup-recheck").onclick = async () => {
+  $("#setup-claude").textContent = "Sprawdzam…";
+  status = { ...status, ...(await api("/api/setup/check", { method: "POST" })) };
+  renderSetup();
+};
+$("#setup-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  status = { ...status, ...(await api("/api/setup/keys", { method: "POST",
+    body: JSON.stringify({ jev: f.elements.jev.value, elevenlabs: f.elements.elevenlabs.value }) })) };
+  f.reset();
+  if (!status.keys.jev) return renderSetup();
+  $("#setup").close();
+  loadStatus();
+  go("chat");
+  const greet = () => (ws.readyState === 1 ? sendChat("Cześć Alfred, skonfigurujmy cię.") : setTimeout(greet, 300));
+  greet();
+};
+
 // ---------------------------------------------------------------- boot
 (async () => {
   await loadStatus();
   connect();
+  if (status.setup?.done === false) { renderSetup(); $("#setup").showModal(); }
   let saved = null;
-  try { saved = localStorage.getItem("view"); } catch { /* private mode */ }
-  setView(["tasks", "chat"].includes(saved) ? saved : "brain");
-  try { saved = localStorage.getItem("tasksub"); } catch { saved = null; }
-  setSub(["kanban", "calendar", "goals", "training", "diet", "products"].includes(saved) ? saved : "overview");
+  try { saved = localStorage.getItem("page"); } catch { /* private mode */ }
+  go("brain");                                      // always start on Alfred's network
+  api("/api/persona").then((p) => {
+    if (p.meta?.user_name) hello = `Cześć, ${p.meta.user_name}`;
+    const h = $(".chat-empty .hello");
+    if (h) h.textContent = hello;
+  }).catch(() => {});
   renderCalModes();
   loadChat().catch(() => {});
   refreshLeft();

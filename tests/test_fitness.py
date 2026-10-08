@@ -44,6 +44,30 @@ def test_week_realisation_from_strava():
     assert r["race"]["days_to"] == (RACE - today).days
 
 
+def test_this_weeks_target_comes_from_the_calendar():
+    today = date(2026, 10, 8)                                       # Thursday
+    mark = "Spokojnie.\nPlan treningowy Alfreda."
+    ev = lambda title, day, start, end, desc=mark: {"summary": title, "description": desc,
+                                                    "start": {"dateTime": f"2026-10-{day}T{start}:00+02:00"},
+                                                    "end": {"dateTime": f"2026-10-{day}T{end}:00+02:00"}}
+    events = [ev("Basen - technika", "07", "17:00", "17:45"), ev("Siłownia w domu - gumy oporowe", "07", "16:10", "16:35"),
+              ev("Bieg z Maurycym - 35 min spokojnie", "06", "07:00", "07:35"), ev("Długi bieg - 45 min", "10", "09:00", "09:45"),
+              ev("MojaFirma Sesja", "06", "19:00", "21:00", "")]
+    acts = [{"sport": "run", "start_date_local": "2026-10-06T07:02:00Z", "moving_time": 2100}]
+    r = fitness.report(acts, CFG, today, weeks=2, events=events)
+    assert [(s["name"][:5], s["sport"], s["status"]) for s in r["planned"]] == [
+        ("Bieg ", "run", "done"), ("Siłow", "strength", "missed"), ("Basen", "swim", "missed"), ("Długi", "run", "planned")]
+    assert r["planned"][2] | {"kind": "technika", "minutes": 45, "date": "2026-10-07", "time": "17:00", "end": "17:45",
+                              "note": "Spokojnie.", "activity": None} == r["planned"][2]
+    assert r["planned"][0]["activity"]["moving_time"] == 2100                          # the Strava workout behind "done"
+    this, last = r["weeks"]
+    assert this["source"] == "calendar" and set(this["sports"]) == {"run", "strength", "swim"}
+    assert this["sports"]["run"] == {"target_h": 1.3, "target_sessions": 2, "done_h": 0.6, "done_sessions": 1}
+    assert last["source"] == "plan" and last["sports"]["swim"]["target_sessions"] == 2   # past weeks keep the plan
+    assert fitness.work_load(events, 0, CFG)["meeting_h"] == 2.0                        # training is not a meeting
+    assert fitness.report(acts, CFG, today, events=[])["weeks"][0]["source"] == "plan"   # an empty calendar -> the plan
+
+
 def test_a_heavy_work_week_means_less_training():
     meeting = lambda h: {"start": {"dateTime": "2026-10-05T09:00:00+02:00"},
                          "end": {"dateTime": f"2026-10-05T{9 + h:02d}:00:00+02:00"}}
@@ -277,7 +301,9 @@ def test_products_list_is_a_memory_page(make_brain, monkeypatch):
     assert client.get("/api/products").json() == []
     items = [{"name": "Odżywka białkowa", "url": "https://sklep.example/whey", "note": "wanilia, co 6 tygodni", "grams": 30},
              {"name": "Żele energetyczne", "url": "http://sklep.example/gel", "note": "", "grams": None}]
-    assert client.put("/api/products", json=items).json() == items
+    items[0] |= {"kcal": 433, "protein_g": 76.7, "carbs_g": 9, "fat_g": 8, "fiber_g": None, "sugar_g": 4.3}
+    items[1] |= dict.fromkeys(("kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g"))
+    assert client.put("/api/products", json=items).json() == items                   # the label per 100 g is kept
     assert client.get("/api/products").json() == items
     assert brain.store.search("odżywka wanilia")[0]["path"] == "products.md"      # Alfred finds it via memory_search
     assert client.put("/api/products", json=[{"name": "x", "url": "javascript:alert(1)"}]).status_code == 422
@@ -285,51 +311,58 @@ def test_products_list_is_a_memory_page(make_brain, monkeypatch):
     assert client.put("/api/products", json=[]).json() == [] and brain.store.products() == []
 
 
-async def test_jev_matches_his_regular_product_or_says_other(make_brain):
-    from brain.router import OTHER_PRODUCT, Router
+async def test_jev_names_his_regular_products_and_their_labels_set_the_numbers(make_brain):
+    from brain.router import Router
     from test_router import FakeJev
 
-    assert [meals.grams_said(t) for t in ("150 g skyru", "0,5 kg ryżu", "250ml mleka", "30 gramów odżywki",
-                                          "jeden baton")] == [150, 500, 250, 30, None]
-
     brain, _ = make_brain()
-    whey = {"name": "Odżywka białkowa", "url": "https://sklep.example/whey", "note": "wanilia, 30 g porcja"}
-    jev = FakeJev({"module": {"choice": "weight", "probabilities": {"weight": 0.9}}, "product": {"choice": whey["name"]}})
+    milk = {"name": "Mleko Pilos", "url": "https://sklep.example/mleko", "note": "", "grams": 250, "kcal": 54.2,
+            "protein_g": 8, "carbs_g": 4.7, "fat_g": 0.5, "fiber_g": 0, "sugar_g": 4.7}
+    ham = {"name": "Szynka z kurczaka Pikok", "url": "https://sklep.example/szynka", "note": "", "grams": None,
+           "kcal": 107, "protein_g": 20, "carbs_g": 2, "fat_g": 2, "fiber_g": 0.5, "sugar_g": 1.8}
+    jev = FakeJev({"module": {"choice": "weight", "probabilities": {"weight": 0.9}},
+                   "product_0": {"noul": 0.92}, "product_1": {"noul": 0.81}})
     router = Router(brain.map, jev, brain.settings)
-    router.products = lambda: [whey]
-    assert (await router.classify("wypiłem shake'a z odżywką")).product == whey["name"]
-    assert set(jev.sent["product"]["criteria"]) == {whey["name"], OTHER_PRODUCT}       # his products + other
-    jev.answers["product"] = {"choice": OTHER_PRODUCT}
-    assert (await router.classify("zjadłem schabowego")).product == OTHER_PRODUCT
+    router.products = lambda: [milk, ham]
+    route = await router.classify("mleko Pilos pięćdziesiąt gramów i szynka Peacock czterdzieści")
+    assert route.products == [milk["name"], ham["name"]]                               # several in one meal
+    assert jev.sent["product_1"]["type"] == "noul" and ham["name"] in jev.sent["product_1"]["instructions"]
+    jev.answers |= {"product_0": {"noul": 0.1}, "product_1": {"noul": 0.2}}
+    assert (await router.classify("zjadłem schabowego")).products == []                # none of his products
     router.products = lambda: []
-    assert "product" not in router.questions()                                         # no products, no question
+    assert not any(k.startswith("product") for k in router.questions())               # no products, no question
 
-    brain.store.save_products([whey])
-    assert brain.router.products() == [whey]                                          # Jev reads the Produkty list
+    brain.store.save_products([milk, ham])
+    assert brain.router.products() == [milk, ham]                                     # Jev reads the Produkty list
+    assert meals.regular_products(brain.store, [ham["name"]]) == [ham]
+    assert meals.regular_products(brain.store, None) is None                          # Jev did not answer
+    note = meals.product_note([milk, ham | {"kcal": None}])
+    assert "54.2 kcal" in note and "usual portion 250 g" in note and "web_fetch https://sklep.example/szynka" in note
 
     async def snack(request, meal, now):
         return "snack"
 
     async def jev_down(request, meal, now):
         raise RuntimeError("Jev is down")
-    args = {"description": "shake 1 porcja", "meal_type": "dinner", "calories": 120}
-    assert await meals.fill_in(args, "wypiłem shake'a", whey, snack) == "jev"
+    args = {"description": "mleko, szynka, kajzerka", "meal_type": "dinner", "calories": 999, "fiber_g": 9,
+            "notes": "- MLEKO PILOS (50 g): 10 kcal, B 1 g, W 1 g, T 1 g\n"
+                     "- Szynka z kurczaka Pikok (40 g): 10 kcal, B 1 g, W 1 g, T 1 g\n"
+                     "- Kajzerka (~60 g): 165 kcal, B 5.4 g, W 33 g, T 1.2 g\nUzupełnienie śniadania"}
+    assert await meals.fill_in(args, "...", [milk, ham], snack) == "jev"
     assert args["meal_type"] == "snack"                                                # Jev's meal type, not Claude's
-    assert args["description"] == "Odżywka białkowa - shake 1 porcja" and args["notes"] == "Stały produkt: https://sklep.example/whey"
-    note = meals.product_note(whey, "x")
-    assert whey["url"] in note and "wanilia" in note
+    assert args["notes"].splitlines() == ["- Mleko Pilos (50 g): 27 kcal, B 4.0 g, W 2.4 g, T 0.2 g",   # the label
+                                          "- Szynka z kurczaka Pikok (40 g): 43 kcal, B 8.0 g, W 0.8 g, T 0.8 g",
+                                          "- Kajzerka (~60 g): 165 kcal, B 5.4 g, W 33 g, T 1.2 g",     # Claude's
+                                          "Uzupełnienie śniadania"]
+    assert (args["calories"], args["protein_g"], args["carbs_g"], args["fat_g"]) == (235, 17.4, 36.2, 2.2)  # sums
+    assert args["fiber_g"] == 9 and args["description"] == "mleko, szynka, kajzerka"   # Claude's estimate stays
 
-    skyr = {"name": "Skyr naturalny", "url": "https://sklep.example/skyr", "note": "", "grams": 150}
-    args = {"description": "skyr", "meal_type": "snack"}
-    await meals.fill_in(args, "zjadłem 200 g skyru", skyr, snack)
-    assert args["description"] == "Skyr naturalny (200 g)"                             # what he said wins
-    await meals.fill_in(args, "zjadłem skyr", skyr, snack)
-    assert args["description"] == "Skyr naturalny (150 g)"                             # else his usual portion
-    assert "exactly 200 g" in meals.product_note(skyr, "zjadłem 200 g skyru")
-    assert "ask him how many grams" in meals.product_note(skyr | {"grams": None}, "zjadłem skyr")
+    args = {"description": "mleko", "notes": "- Mleko Pilos (200 g): 1 kcal, B 1 g, W 1 g, T 1 g"}
+    assert meals.recount(args, [milk]) == ["Mleko Pilos"]
+    assert (args["calories"], args["fiber_g"], args["sugar_g"]) == (108, 0, 9.4)       # only his products: all exact
 
     args = {"description": "Schabowy z ziemniakami", "meal_type": "dinner"}
-    assert await meals.fill_in(args, "zjadłem schabowego z ziemniakami i surówką", OTHER_PRODUCT, jev_down) == "claude"
+    assert await meals.fill_in(args, "zjadłem schabowego z ziemniakami i surówką", [], jev_down) == "claude"
     assert args == {"description": "zjadłem schabowego z ziemniakami i surówką", "meal_type": "dinner"}  # his words
 
 

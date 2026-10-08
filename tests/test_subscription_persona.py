@@ -21,8 +21,8 @@ async def test_executor_gives_claude_code_only_the_routed_tools(make_brain):
 def test_persona_file_drives_prompt_and_phrases(settings, tmp_path, monkeypatch):
     path = tmp_path / "persona.md"
     monkeypatch.setattr(persona, "PERSONA_FILE", path)
-    persona.save({"name": "Jarvis", "user_name": "Tony", "address": {"pl": "panie", "en": "sir"},
-                  "confirm": {"pl": "Czy mogę: {summary}?", "en": "May I: {summary}?"}},
+    settings.data["assistant"].update(name="Jarvis", user_name="Tony", address={"pl": "panie", "en": "sir"})
+    persona.save({"confirm": {"pl": "Czy mogę: {summary}?", "en": "May I: {summary}?"}},
                  "# Role\nYou are {name}, assistant of {user}. Say {addr_en}. Keep {unknown} as is.", path)
     load = persona.load
     monkeypatch.setattr(persona, "load", lambda path=path: load(path))

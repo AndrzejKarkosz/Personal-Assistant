@@ -1,5 +1,6 @@
-"""Logging what he eats in Nutrition MCP. Jev decides - the meal type, and which of his regular products the food is
-(or "other") - the system writes those decisions into the nutrition__log_meal call, Claude only estimates the numbers.
+"""Logging what he eats in Nutrition MCP. Jev decides first - which of his regular products he named (one yes/no per
+product) and the meal type - and the system writes those decisions into the nutrition__log_meal call: his products'
+numbers come from their labels (per 100 g in products.md, from the product links), Claude only estimates the rest.
 After every logged meal comes the meal routine: today's intake against the goals, raised by today's training.
 
 The executor calls fill_in() before the call and after_meal() after it.
@@ -7,58 +8,76 @@ The executor calls fill_in() before the call and after_meal() after it.
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 from . import fitness
-from .router import OTHER_PRODUCT
 
 log = logging.getLogger("alfred.meals")
+PER_100G = ("kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g")     # a product's label, per 100 g
+TOTALS = {"kcal": "calories", "protein_g": "protein_g", "carbs_g": "carbs_g", "fat_g": "fat_g",
+          "fiber_g": "fiber_g", "sugar_g": "sugar_g"}
 
 
-def grams_said(text: str) -> float | None:
-    """The amount he gave in digits: "150 g", "0,5 kg", "250 ml" (ml counted as grams). None if he gave none.
-    ponytail: digits only and the first amount; "sto pięćdziesiąt gramów" or two products in one sentence fall back
-    to the product's usual portion / Claude."""
-    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(kg|kilo\w*|g|gr|gram\w*|ml|mililitr\w*)\b", text, re.I)
-    if not m:
-        return None
-    value = float(m.group(1).replace(",", "."))
-    return value * 1000 if m.group(2).lower().startswith("k") else value
+def regular_products(store, named: list[str] | None) -> list[dict] | None:
+    """Jev's product answer (Route.products) as his products themselves; [] = none of them, None = Jev did not answer."""
+    return None if named is None else [p for p in store.products() if p["name"] in named]
 
 
-def regular_product(store, picked: str | None) -> dict | str | None:
-    """Jev's product answer (Route.product): his regular product itself, "other", or None (no answer / no products)."""
-    if picked == OTHER_PRODUCT:
-        return OTHER_PRODUCT
-    return next((p for p in store.products() if p["name"] == picked), None)
+def _label(p: dict) -> str:
+    if p.get("kcal") is None:
+        return f"no label values stored - web_fetch {p['url']} for its values per 100 g"
+    return (f"per 100 g: {p['kcal']:g} kcal, B {p['protein_g']:g} g, W {p['carbs_g']:g} g, T {p['fat_g']:g} g"
+            + "".join(f", {k[:-2]} {p[k]:g} g" for k in ("fiber_g", "sugar_g") if p.get(k) is not None))
 
 
-def product_note(product: dict | str, said: str) -> str:
-    """Fixed templates for Claude: his regular product with its grams, or "other" = log exactly what he said.
-    Claude only adds the calories and macros."""
-    if product == OTHER_PRODUCT:
-        return ("<product jev=\"other\">None of his regular products. For nutrition__log_meal the description is "
-                "exactly what he said (the system puts his words in); estimate the nutrition from it.</product>")
-    told, usual = grams_said(said), product.get("grams")
-    grams = told or usual
-    head = (f"<product jev=\"{product['name']}\">His regular product: {product['name']}"
-            + (f" ({product['note']})" if product.get("note") else "") + f", {product['url']}.")
-    if not grams:
-        return (head + " He gave no amount and the product has no usual portion - ask him how many grams before "
-                       "nutrition__log_meal.</product>")
-    return (head + f" Amount: {grams:g} g ({'he said it' if told else 'his usual portion'}). For "
-            f"nutrition__log_meal the system sets the description to \"{product['name']} ({grams:g} g)\"; you fill "
-            f"in calories, protein, carbs, fat, fiber and sugars for exactly {grams:g} g - per 100 g from the "
-            "product page (web_fetch the link if you can) or its label, scaled to the grams.</product>")
+def product_note(products: list[dict]) -> str:
+    """The fixed template for Claude: the regular products Jev heard, with their label values."""
+    lines = "\n".join(f"- {p['name']}" + (f" ({p['note']})" if p.get("note") else "") + f": {_label(p)}"
+                      + (f"; his usual portion {p['grams']:g} g" if p.get("grams") else "") for p in products)
+    return ("<regular_products jev=\"named\">Jev heard these of his regular products in what he said. In the notes of "
+            "nutrition__log_meal / update_meal write one line for each, with EXACTLY this name and the grams he said "
+            "(no amount said -> his usual portion; no usual portion -> ask him how many grams first): "
+            "`- <name> (<grams> g): <kcal> kcal, B <protein> g, W <carbs> g, T <fat> g`. The system recomputes these "
+            "lines and the meal's totals from the labels below - you estimate only the other foods.\n"
+            f"{lines}\n</regular_products>")
 
 
-async def fill_in(args: dict[str, Any], said: str, product: dict | str | None,
+def recount(args: dict[str, Any], products: list[dict]) -> list[str]:
+    """His regular products' lines in the notes get their numbers from the label (per 100 g x the grams in the line),
+    and the meal's calories / protein / carbs / fat become the sum of all product lines. Fiber and sugar too, but only
+    when every line is a labelled product (the lines carry no fiber or sugar for Claude's estimates).
+    Returns the products recounted."""
+    labelled = {p["name"].casefold(): p for p in products if p.get("kcal") is not None}
+    lines, done, extra = [], [], {"fiber_g": 0.0, "sugar_g": 0.0}
+    for line in str(args.get("notes") or "").splitlines():
+        m = fitness._ITEM.match(line)
+        if m and (p := labelled.get(m["name"].strip().casefold())):
+            grams = float(m["grams"].replace(",", "."))
+            v = {k: (p.get(k) or 0) * grams / 100 for k in PER_100G}
+            line = (f"- {p['name']} ({grams:g} g): {v['kcal']:.0f} kcal, B {v['protein_g']:.1f} g, "
+                    f"W {v['carbs_g']:.1f} g, T {v['fat_g']:.1f} g")
+            done.append(p["name"])
+            for k in extra:
+                extra[k] = None if extra[k] is None or p.get(k) is None else extra[k] + v[k]
+        lines.append(line)
+    if not done:
+        return done
+    args["notes"] = "\n".join(lines)
+    items = fitness.meal_items(args["notes"])
+    args["calories"] = round(sum(i["kcal"] for i in items))
+    for k in ("protein_g", "carbs_g", "fat_g"):
+        args[k] = round(sum(i[k] or 0 for i in items), 1)
+    if len(done) == len(items):          # only his products: fiber and sugar are exact too
+        args |= {k: round(v, 1) for k, v in extra.items() if v is not None}
+    return done
+
+
+async def fill_in(args: dict[str, Any], said: str, products: list[dict] | None,
                   classify_meal: Callable[[str, str, str], Awaitable[str | None]]) -> str:
-    """Jev's decisions into a nutrition__log_meal call: the meal type, and the description - his own words for
-    "other", his regular product with its grams. Returns who picked the meal type: "jev", or "claude" (Claude's own
-    value stays when Jev cannot answer)."""
+    """Jev's decisions into a nutrition__log_meal call: the meal type; none of his products -> the description is his
+    own words; his products -> their lines and the totals from the labels (recount). Returns who picked the meal
+    type: "jev", or "claude" (Claude's own value stays when Jev cannot answer)."""
     try:
         kind = await classify_meal(said, str(args.get("description", "")), f"{datetime.now():%A %H:%M}")
     except Exception as exc:
@@ -66,16 +85,10 @@ async def fill_in(args: dict[str, Any], said: str, product: dict | str | None,
         kind = None
     if kind:
         args["meal_type"] = kind
-    if product == OTHER_PRODUCT:
+    if products == []:
         args["description"] = said
-    elif isinstance(product, dict):
-        name = product["name"]
-        grams = grams_said(said) or product.get("grams")
-        if grams:                                    # the template: product + grams; Claude only adds the numbers
-            args["description"] = f"{name} ({grams:g} g)"
-        elif name.lower() not in str(args.get("description", "")).lower():
-            args["description"] = f"{name} - {args.get('description', '')}".rstrip(" -")
-        args["notes"] = "\n".join(filter(None, [args.get("notes"), f"Stały produkt: {product['url']}"]))
+    elif products:
+        recount(args, products)
     return "jev" if kind else "claude"
 
 

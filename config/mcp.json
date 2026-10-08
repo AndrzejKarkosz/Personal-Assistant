@@ -1,46 +1,45 @@
 {
   "mcpServers": {
-    "knowledge-base": {
-      "enabled": true,
-      "type": "stdio",
-      "command": "python",
-      "args": ["server/kb_server.py", "--bundle", "wiki"],
-      "cwd": "E:/Knowledge-Base",
-      "description": "Andrzej's personal library (OKF wiki). Read-only from the brain."
-    },
     "google-calendar": {
-      "enabled": true,
+      "enabled": false,
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@cocal/google-calendar-mcp"],
-      "env": { "GOOGLE_OAUTH_CREDENTIALS": "C:/Users/andrz/.config/google-calendar-mcp/gcp-oauth.keys.json", "NODE_OPTIONS": "--use-system-ca" },
-      "description": "Google Calendar. Needs an OAuth client JSON - see README.",
+      "env": { "GOOGLE_OAUTH_CREDENTIALS": "<path to your gcp-oauth.keys.json>" },
+      "description": "Google Calendar. Needs Node.js and an OAuth client JSON - see README.",
       "drop_fields": ["etag", "kind", "htmlLink", "iCalUID", "sequence", "creator", "created", "updated",
                       "eventType", "reminders", "conferenceData", "guestsCanInviteOthers",
                       "guestsCanSeeOtherGuests", "guestsCanModify", "privateCopy", "locked", "backgroundColor",
                       "foregroundColor", "defaultReminders", "notificationSettings", "conferenceProperties"]
     },
     "strava": {
-      "enabled": true,
+      "enabled": false,
       "type": "stdio",
-      "command": "python",
-      "args": ["server/strava_server.py"],
-      "cwd": "C:/Users/andrz/PycharmProjects/Personal-Assistant",
-      "description": "Strava - your activities (swim, bike, run). Once: uv run python server/strava_server.py --login"
+      "command": "uv",
+      "args": ["run", "python", "server/strava_server.py"],
+      "cwd": ".",
+      "description": "Strava - your activities (swim, bike, run). STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET in .env, then once: uv run python server/strava_server.py --login"
     },
     "nutrition": {
-      "enabled": true,
+      "enabled": false,
       "type": "http",
       "url": "https://nutrition-mcp.com/mcp",
       "oauth": true,
-      "description": "Nutrition MCP (nutrition-mcp.com): meals, macros, weight, body measurements, nutrition goals. The first start opens the browser to log in - use the same account as the claude.ai connector."
+      "description": "Nutrition MCP (nutrition-mcp.com): meals, macros, weight, body measurements, nutrition goals. Log in once: uv run alfred mcp-login nutrition"
+    },
+    "knowledge-base": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "<your knowledge-base MCP server command>",
+      "args": [],
+      "description": "Your own notes / knowledge library as an MCP server (tools kb_find, kb_read, kb_list ...). Read-only from the brain."
     },
     "browser": {
       "enabled": false,
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@playwright/mcp@latest"],
-      "description": "Browser automation for bookings (restaurants, appointments)."
+      "description": "Browser automation for bookings (restaurants, appointments). Needs Node.js."
     }
   }
 }

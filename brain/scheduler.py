@@ -1,7 +1,7 @@
 """Alfred speaking first. Runs inside the brain (APScheduler):
 
 - every minute: tasks whose due time has passed -> Jev decides "worth interrupting?" -> Alfred tells you;
-- recurring tasks (cron) and routines (config/routines.yaml) as scheduled jobs;
+- recurring tasks (cron) and routines (data/routines.yaml) as scheduled jobs;
 - "@start" routines once when the app starts; idle sessions closed.
 
 What already fired is remembered in data/proactive_state.json, so a restart does not repeat it.

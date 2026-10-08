@@ -87,7 +87,7 @@ class ExecResult:
     untrusted: bool = False                             # outside content (MCP / web results) entered this request
     task_category: str | None = None                    # what Jev heard: the task's category and status
     task_status: str | None = None
-    product: dict | str | None = None                   # Jev: his regular product ({name, url, note}) or "other"
+    products: list[dict] | None = None                  # Jev: his regular products he named; None = no answer
 
 
 def _describe(name: str, args: dict[str, Any]) -> str:
@@ -125,7 +125,7 @@ class Executor:
             parts.append(fitness.plan_change_procedure(route.plan_change, route.plan_sport, route.adds_load,
                                                        self.settings.get("training") or {}))
         if routines := [f"- {r['id']} ({r['schedule']}): {r['prompt']}" for r in valid_routines(self.routines_file)]:
-            parts.append("## Your routines (config/routines.yaml)\nYour own scheduled prompts, NOT the user's tasks: "
+            parts.append("## Your routines (data/routines.yaml)\nYour own scheduled prompts, NOT the user's tasks: "
                          "never list them among his tasks or in his plan for today; mention them only when he asks "
                          "about routines.\n" + "\n".join(routines))
         return "\n\n".join(parts) or "No module instructions."
@@ -156,9 +156,9 @@ class Executor:
                          f"if the user wants it, via {ADD_CATEGORY}, which asks him)")
             hints += [f"{k}={v}" for k, v in (("task category", route.task_category),
                                                ("task status", route.task_status)) if v]
-        logs_meals = any(n.endswith("__log_meal") for n in self.tool_names(route))
-        if logs_meals and (product := meals.regular_product(self.store, route.product)):
-            blocks.append(meals.product_note(product, text))
+        logs_meals = any(n.endswith(("__log_meal", "__update_meal")) for n in self.tool_names(route))
+        if logs_meals and (products := meals.regular_products(self.store, route.products)):
+            blocks.append(meals.product_note(products))
         blocks += [self._plan(route), f"<routing>{'; '.join(hints)}</routing>"]
         if chat:
             blocks.append(CHAT_NOTE)
@@ -206,7 +206,7 @@ class Executor:
         model = (lead and lead.model) or self.settings.get("models.executor")
         effort = (lead and lead.effort) or self.settings.get("models.executor_effort")
         result = ExecResult(text="", model=model, request=text, task_category=route.task_category,
-                            task_status=route.task_status, product=meals.regular_product(self.store, route.product))
+                            task_status=route.task_status, products=meals.regular_products(self.store, route.products))
 
         names = self.tool_names(route)
         live = self.hub.all_tools()
@@ -300,7 +300,9 @@ class Executor:
         elif name == "task_update" and result.task_status and not (set(args) - {"task_id", "note"}):
             args["status"] = result.task_status                  # "zrobione" said about a task
         elif name.endswith("__log_meal"):
-            meal_type_by = await meals.fill_in(args, result.request, result.product, self.router.classify_meal)
+            meal_type_by = await meals.fill_in(args, result.request, result.products, self.router.classify_meal)
+        elif name.endswith("__update_meal") and result.products and args.get("notes"):
+            meals.recount(args, result.products)                 # "Rozbij na produkty", a fixed portion
 
         # Alfred's own tools act on the user's own (already checked) words - they are checked only once outside
         # content has entered this request and could have planted instructions.
@@ -316,7 +318,7 @@ class Executor:
                        else f"dodam nową kategorię zadań „{args.get('name', '')}”" if name == ADD_CATEGORY
                        else "") or _describe(name, args)
             question = persona.confirm_prompt(session.language, summary.rstrip("."))
-            audio = await self.tts.synthesize(question) if self.tts else None
+            audio = await self.tts.synthesize(question, whole=True) if self.tts else None
             if not await self.guard.confirm(request_id, session.id, name, question, audio):
                 return DECLINED, False
             result.actions.append(f"approved: {summary}")

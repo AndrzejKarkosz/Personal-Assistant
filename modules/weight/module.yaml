@@ -38,4 +38,4 @@ capabilities:
     examples: ["popraw ostatni posiłek", "usuń dzisiejszą wagę"]
     confirm: true
 uses: [training.status, memory.recall, memory.remember]
-enabled: true
+enabled: false      # on once its MCP server is set up (first-run setup or the Moduły tab)

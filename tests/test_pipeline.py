@@ -46,9 +46,9 @@ async def test_fixed_task_categories_and_a_new_one_only_after_a_yes(make_brain, 
     from brain.tools import make_handlers
     store = MemoryStore(tmp_path / "mem")
     h = make_handlers(store, None, settings)
-    await h["task_create"]({"tasks": [{"title": "Przejrzeć MR", "category": "smart meet"}]}, "s")
-    assert store.list_tasks("open")[0].category == "SmartMeet"          # said loosely -> the fixed name
-    with pytest.raises(ValueError, match="not a task category. Categories: SmartMeet, Praca, Reszta"):
+    await h["task_create"]({"tasks": [{"title": "Przejrzeć MR", "category": "moja firma"}]}, "s")
+    assert store.list_tasks("open")[0].category == "MojaFirma"          # said loosely -> the fixed name
+    with pytest.raises(ValueError, match="not a task category. Categories: MojaFirma, Praca, Reszta"):
         await h["task_create"]({"tasks": [{"title": "Odkurzyć", "category": "Dom"}]}, "s")
     assert len(store.list_tasks("open")) == 1                           # nothing invented, nothing created
 
@@ -60,7 +60,7 @@ async def test_fixed_task_categories_and_a_new_one_only_after_a_yes(make_brain, 
     assert "Dom" not in brain.settings.get("tasks.categories")          # not before the yes
     brain.guard.resolve(True)
     await asked
-    assert list(brain.settings.get("tasks.categories")) == ["SmartMeet", "Praca", "Reszta", "Dom"]
+    assert list(brain.settings.get("tasks.categories")) == ["MojaFirma", "Praca", "Reszta", "Dom"]
 
 
 async def test_jev_plan_reaches_claude(make_brain):

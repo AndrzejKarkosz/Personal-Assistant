@@ -43,26 +43,27 @@ def test_status_graph_modules_and_map(api):
 
 def test_tasks_from_the_ui_use_the_fixed_categories(api):
     client, brain, _ = api
-    assert client.get("/api/status").json()["task_categories"] == ["SmartMeet", "Praca", "Reszta"]
-    task = client.post("/api/tasks", json={"title": "Demo", "category": "smart meet"}).json()
-    assert task["category"] == "SmartMeet"
+    assert client.get("/api/status").json()["task_categories"] == ["MojaFirma", "Praca", "Reszta"]
+    task = client.post("/api/tasks", json={"title": "Demo", "category": "moja firma"}).json()
+    assert task["category"] == "MojaFirma"
     assert client.post("/api/tasks", json={"title": "Odkurzyć", "category": "Dom"}).status_code == 400
     assert client.patch(f"/api/tasks/{task['id']}", json={"category": "Sport"}).status_code == 400
     assert client.patch(f"/api/tasks/{task['id']}", json={"category": ""}).json()["category"] is None
     # you add one yourself in Ustawienia - no yes/no needed, you are the one asking
     assert client.post("/api/task-categories", json={"name": " Dom ", "description": "Sprawy domowe"}).json() == \
-        ["SmartMeet", "Praca", "Reszta", "Dom"]
+        ["MojaFirma", "Praca", "Reszta", "Dom"]
     assert client.post("/api/tasks", json={"title": "Odkurzyć", "category": "dom"}).json()["category"] == "Dom"
 
 
-def test_disabling_a_module_is_saved_in_its_manifest(api, tmp_path):
+def test_disabling_a_module_is_saved_in_your_settings(api, tmp_path):
     client, brain, _ = api
-    shutil.copytree(ROOT / "modules", tmp_path / "modules")
-    brain.registry = ModuleRegistry(tmp_path / "modules")
+    manifest = (ROOT / "modules" / "research" / "module.yaml").read_text(encoding="utf-8")
     assert client.post("/api/modules/research/enabled", json={"enabled": False}).json() == \
         {"id": "research", "enabled": False}
-    assert "enabled: false" in (tmp_path / "modules" / "research" / "module.yaml").read_text(encoding="utf-8")
+    assert json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))["modules"] == {"research": False}
+    assert (ROOT / "modules" / "research" / "module.yaml").read_text(encoding="utf-8") == manifest   # as shipped
     assert brain.map.modules["research"]["enabled"] is False
+    assert ModuleRegistry(ROOT / "modules", brain.settings).get("research").enabled is False         # after a restart
     assert client.post("/api/modules/ghost/enabled", json={"enabled": True}).status_code == 404
     assert client.post("/api/modules/reload").status_code == 200
 
@@ -77,7 +78,8 @@ def test_persona_roundtrip(api, tmp_path, monkeypatch):
     assert client.get("/api/persona").json()["preview"] == "You are Alfred."
     saved = client.put("/api/persona", json={"meta": {"name": "Jarvis"}, "body": "You are {name}."}).json()
     assert saved["preview"] == "You are Jarvis." and saved["meta"]["type"] == "Persona"
-    assert "Jarvis" in path.read_text(encoding="utf-8")
+    assert brain.settings.get("assistant.name") == "Jarvis"           # who he is: the settings, not the file
+    assert "Jarvis" not in path.read_text(encoding="utf-8")
     assert any(r["kind"] == "persona_updated" for r in brain.bus.log.read())
 
 
@@ -100,6 +102,8 @@ def test_tasks_rest(api):
     client, _, _ = api
     created = client.post("/api/tasks", json={"title": "Faktura", "due": "2030-01-01T09:00:00+01:00"}).json()
     assert [t["id"] for t in client.get("/api/tasks").json()] == [created["id"]]
+    edited = client.patch(f"/api/tasks/{created['id']}", json={"title": "Faktura VAT", "description": "  do 10.  "}).json()
+    assert (edited["title"], edited["description"]) == ("Faktura VAT", "do 10.")
     assert client.patch(f"/api/tasks/{created['id']}", json={"status": "done"}).json()["status"] == "done"
     assert client.get("/api/tasks").json() == []
     assert len(client.get("/api/tasks", params={"status": "all"}).json()) == 1

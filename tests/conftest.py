@@ -17,7 +17,7 @@ ROUTED = {"module": "tasks", "second_module": "none", "capabilities": ["tasks.ma
           "topic": "none", "confidence": 0.9, "urgency": 1, "acts_on_world": False, "needs_history": False}
 SUMMARY = {"title": "Test session", "summary": "User asked for a reminder.", "domains": ["tasks"],
            "done": ["created reminder"], "changed": [], "open_threads": ["call mum"],
-           "facts": [{"category": "people", "title": "Mum", "content": "Andrzej calls mum on Sundays"}]}
+           "facts": [{"category": "people", "title": "Mum", "content": "Ola calls mum on Sundays"}]}
 
 
 def result(text: str = "", structured: dict | None = None, cost: float = 0.002, **extra) -> sdk.ResultMessage:
@@ -106,7 +106,12 @@ def settings(tmp_path: Path, monkeypatch) -> Settings:
     monkeypatch.setattr(config, "OVERRIDES_FILE", tmp_path / "settings.json")
     s = Settings.load()
     s.data["models"]["executor"] = "claude-opus-5"
-    s.data["assistant"].update(reply_language="", context_capabilities=[])   # tests opt in to these
+    s.data["assistant"].update(reply_language="", context_capabilities=[], user_name="Ola")   # tests opt in to these
+    s.data["setup"] = {"done": True}            # the first-run setup has its own tests
+    s.data["tasks"]["categories"] = {"MojaFirma": "Zadanie dotyczy mojej firmy", "Praca": "Inna praca zawodowa",
+                                     "Reszta": "Wszystko poza pracą"}
+    s.data["training"]["race"] = {"name": "Gdynia 70.3", "date": "2027-09-02", "distance": "half"}
+    s.data["modules"] = {"calendar": True, "knowledge": True, "training": True, "weight": True}
     s.data["map"] = {"dir": str(tmp_path / "brain_map"), "topic_sources": []}
     s.data["memory"]["dir"] = str(tmp_path / "memory")
     s.data["proactive"]["routines"] = str(tmp_path / "routines.yaml")

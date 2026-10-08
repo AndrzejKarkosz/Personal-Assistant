@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 from datetime import timedelta
 from typing import Any
 
@@ -31,9 +32,12 @@ class Brain:
         s = self.settings = settings or Settings.load()
         llm.hide_api_key()
         self.bus = EventBus(ActivityLog(s.path("logging.dir")))
-        self.registry = ModuleRegistry(ROOT / "modules")
+        self.registry = ModuleRegistry(ROOT / "modules", s)
         self.store = MemoryStore(s.path("memory.dir"))
         self.sessions = SessionManager(self.store, s, self.bus)
+        if not hub and not s.path("mcp_config").exists():     # first start: your copy of the template, all off
+            s.path("mcp_config").parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / "config" / "mcp.json", s.path("mcp_config"))
         self.hub = hub or MCPHub(s.path("mcp_config"))
         self.map = BrainMap(s.path("map.dir"))
         jev = JevClient(s.jev_key, s.get("router.jev_url"), s.get("router.jev_model"),
@@ -152,6 +156,10 @@ class Brain:
         idle = self.proactive.idle()
         self.proactive.touch()
 
+        # 2b. First run: until the setup is done, everything he says is the setup conversation (modules/setup).
+        if from_user and not self.settings.get("setup.done"):
+            module_hint = "setup"
+
         # 3. Shield and routing ask Jev at the same time (the routing only classifies - it acts on nothing), so the
         #    plan for Claude is ready the moment the shield passes. Breach or Jev down -> routing cancelled, no action.
         routing = asyncio.create_task(self._route(text, session, module_hint))
@@ -183,6 +191,8 @@ class Brain:
         # 5. Claude does the work.
         result = await self.executor.run(text, route, session, request_id, chat=chat)
         self.executor.acted.discard(request_id)
+        if route.module == "setup":          # modules switched on or off -> Jev's categories change
+            self.rebuild_map()
 
         # 6. Remember, speak, report.
         session.add("user", text if from_user else f"(proactive) {text[:200]}", route.module)
@@ -243,9 +253,10 @@ class Brain:
                       {"source": f"routine:{r['id']}", "target": f"module:{r.get('module')}", "rel": "runs in"}]
 
         meta, body = persona.load()
-        facets = [("Tożsamość", "Imię", meta.get("name")), ("Tożsamość", "Szef", meta.get("user_name")),
-                  ("Tożsamość", "Zwrot PL", (meta.get("address") or {}).get("pl")),
-                  ("Tożsamość", "Zwrot EN", (meta.get("address") or {}).get("en")),
+        me = persona.identity(self.settings)
+        facets = [("Tożsamość", "Imię", me["name"]), ("Tożsamość", "Szef", me["user_name"]),
+                  ("Tożsamość", "Zwrot PL", (me["address"] or {}).get("pl")),
+                  ("Tożsamość", "Zwrot EN", (me["address"] or {}).get("en")),
                   ("Zwroty", "Pytanie o zgodę", (meta.get("confirm") or {}).get("pl"))]
         for section in re.split(r"^# ", body, flags=re.M)[1:]:     # each "# Heading" of the persona body
             title, _, text = section.partition("\n")

@@ -1,10 +1,11 @@
 import base64
 import functools
+import json
 
 import httpx
 
 from brain import persona
-from brain.voice import ElevenLabs
+from brain.voice import ElevenLabs, spoken
 
 
 async def test_voice_is_off_without_a_key(settings, tmp_path):
@@ -14,6 +15,7 @@ async def test_voice_is_off_without_a_key(settings, tmp_path):
 
 async def test_speech_is_cached_and_transcripts_parsed(settings, tmp_path, monkeypatch, http):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "xi")
+    settings.data["voice"]["tts_enabled"] = True             # off by default: the browser speaks for free
     calls = []
 
     def handler(request):
@@ -53,5 +55,31 @@ def test_language_detection_and_persona_defaults(settings, tmp_path, monkeypatch
     path = tmp_path / "persona.md"
     persona.save({}, "", path)
     monkeypatch.setattr(persona, "load", functools.partial(persona.load, path))
-    assert persona.system_prompt(settings) == "You are Alfred, the personal assistant of Andrzej."
+    assert persona.system_prompt(settings) == "You are Alfred, the personal assistant of Ola."
     assert persona.confirm_prompt("pl", "wyślę maila") == "Zanim to zrobię: wyślę maila. Potwierdzasz?"
+
+
+async def test_only_the_start_is_spoken_and_quota_stops_calls(settings, tmp_path, monkeypatch, http):
+    long = "Zrobione, szefie. " + "Bardzo długie wyjaśnienie, którego nikt nie słucha. " * 10
+    assert spoken(long, 200) == "Zrobione, szefie. Bardzo długie wyjaśnienie, którego nikt nie słucha. " \
+                                "Bardzo długie wyjaśnienie, którego nikt nie słucha. Bardzo długie wyjaśnienie, " \
+                                "którego nikt nie słucha."
+    assert spoken("słowo " * 100, 20) == "słowo słowo słowo…"   # one endless sentence: cut at a word
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "xi")
+    settings.data["voice"]["tts_enabled"] = True             # off by default: the browser speaks for free
+    sent = []
+
+    def handler(request):
+        sent.append(request.content)
+        return httpx.Response(401, json={"detail": {"code": "quota_exceeded"}}) if len(sent) > 2 else \
+            httpx.Response(200, content=b"mp3")
+
+    http(handler)
+    voice = ElevenLabs(settings, tmp_path)
+    await voice.synthesize(long)
+    assert len(json.loads(sent[0])["text"]) <= 200
+    question = "Zanim to zrobię: " + "x " * 120 + ". Potwierdzasz?"
+    await voice.synthesize(question, whole=True)                     # a yes/no question is spoken whole
+    assert json.loads(sent[1])["text"] == question
+    assert await voice.synthesize("Pierwsze.") is None and await voice.synthesize("Drugie.") is None
+    assert len(sent) == 3                                             # out of quota: no more calls for an hour

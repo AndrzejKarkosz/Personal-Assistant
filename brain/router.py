@@ -36,7 +36,6 @@ TASK_STATUS_CRITERIA = {        # the only task statuses (brain/memory.py TASK_S
     "done": "Zrobione - skończone, załatwione, gotowe",
     "cancelled": "Anulowane - nieaktualne, rezygnuje, nie będzie robione",
 }
-OTHER_PRODUCT = "other"         # Jev's answer when the food is none of his regular products
 MEAL_TYPES = {                  # nutrition-mcp log_meal meal_type, as Jev's options
     "breakfast": "Śniadanie - pierwszy posiłek dnia, rano",
     "lunch": "Obiad / lunch - główny posiłek w środku dnia",
@@ -110,7 +109,7 @@ class Route:
     plan_change: str | None = None                           # the change he wants in his training plan (Jev)
     plan_sport: str | None = None                            # which discipline that change is about (Jev)
     adds_load: float = 0.0                                   # the change means more training load (Jev)
-    product: str | None = None                               # his regular product the food is (Jev); "other" = none
+    products: list[str] | None = None                        # his regular products he named (Jev); None = no answer
     multi_step: float = 0.0                                  # several separate things asked at once (Jev)
     changes_existing: float = 0.0                            # fixing / moving something that exists (Jev)
     tool_probabilities: dict[str, float] = field(default_factory=dict)   # per tool, asked one by one (Jev)
@@ -258,10 +257,11 @@ class Router:
             qs["adds_load"] = noul("Would doing what the user wants add training load (more hours, more intensity or an "
                                    "extra activity) on top of his current plan?",
                                    true="More load than now", false="The same or less load, or not about training")
-        if products := self.products():
-            qs["product"] = choice("Which of the user's regular products is the food or drink he talks about?",
-                                   {p["name"]: p["name"] + (f" - {p['note']}" if p.get("note") else "") for p in products}
-                                   | {OTHER_PRODUCT: "None of these products - other food or drink, or not about food"})
+        for i, p in enumerate(self.products()):      # one yes/no per product: a meal can have several of them
+            qs[f"product_{i}"] = noul(f"Does the user say he ate or drank this regular product of his: {p['name']}"
+                                      + (f" ({p['note']})" if p.get("note") else "") + "?",
+                                      true="Yes - he names this product (maybe misheard, shortened or mispronounced)",
+                                      false="No - he does not mention this product")
         return qs
 
     async def _classify_jev(self, text: str, context: str) -> Route:
@@ -291,9 +291,9 @@ class Router:
         for key, value in picked.items():
             setattr(route, key, None if value in (None, NONE) else value)
         route.adds_load = float((a.get("adds_load") or {}).get("noul", 0.0))
-        product = (a.get("product") or {}).get("choice")
-        names = {p["name"] for p in self.products()}
-        route.product = product if product in names or product == OTHER_PRODUCT else None
+        at = self._setting("product_at", 0.5)
+        route.products = [p["name"] for i, p in enumerate(self.products())
+                          if float((a.get(f"product_{i}") or {}).get("noul", 0.0)) >= at]
         return route
 
     async def _classify_llm(self, text: str, context: str) -> Route:

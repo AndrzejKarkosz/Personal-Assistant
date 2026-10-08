@@ -5,7 +5,7 @@ did so the next session picks up where this one ended.
 
 ```
  mic ─► Ears (ElevenLabs Scribe) ─► Shield + Router (Jev) ─► Executor (Claude + only this module's tools)
-                                                                        │        ├─ MCP: Knowledge-Base, Calendar, Browser…
+                                                                        │        ├─ MCP: Calendar, Strava, Nutrition, Browser…
                                                                         │        ├─ built-in: tasks, memory
                                                                         │        └─ Guard: spoken "yes" before booking/sending
                                                                         ▼
@@ -14,30 +14,43 @@ did so the next session picks up where this one ended.
                           Proactive scheduler (due tasks, cron) ─► Jev gate "worth interrupting?" ─► Alfred speaks first
 ```
 
-The original design and roadmap (historical - this README describes the code as it is) is in
-[docs/PLAN.md](docs/PLAN.md).
-
 ## Quick start
 
-1. Install dependencies (Python 3.11+, [uv](https://docs.astral.sh/uv/)):
-   ```bash
-   uv sync --native-tls
-   ```
-2. Make sure Claude Code is logged in with your subscription (`claude auth status` shows `claude.ai`). Alfred
-   runs Claude through it, so there is no per-token billing.
-3. Paste `JEV_API_KEY` and `ELEVENLABS_API_KEY` (optionally `ELEVENLABS_VOICE_ID`) into `.env`.
-4. Run it:
-   ```bash
-   uv run alfred serve
-   ```
-   Open http://127.0.0.1:8765. Hold **Space** (or click the mic) to talk, or type.
+You need [uv](https://docs.astral.sh/uv/) and [Claude Code](https://claude.com/claude-code), logged in with your
+Claude subscription (run `claude` once). Then, in the cloned folder:
 
-Other entry points: `uv run alfred chat` (terminal conversation) and `uv run alfred classify "zarezerwuj stolik"`
-(see how the router classifies a sentence). Tests: `uv run pytest`.
+```bash
+uv run alfred
+```
 
-`JEV_API_KEY` is required: the shield asks only Jev, so without it Alfred does nothing with what you say (the
-log says why). If Jev's routing fails, Claude Haiku routes; if that fails too, Alfred asks what you mean.
-Without ElevenLabs the UI uses the browser's speech recognition and voice.
+That is the only command. It installs what is missing, starts Alfred on http://127.0.0.1:8765 and, on the first
+start, opens your browser. A start screen checks Claude Code and asks for the `JEV_API_KEY` (required - Jev is the
+shield and the router) and optionally `ELEVENLABS_API_KEY` (Alfred's voice; without it the browser's voice is used);
+it saves them in `.env`. Then Alfred walks you through the rest in the chat: your name, how he addresses you,
+language, timezone, task categories, goals, which modules and integrations you want, and his first routines. You
+can change all of it later - just tell him ("zmień moje kategorie", "włącz moduł treningów") or use the tabs.
+
+Other entry points: `uv run alfred chat` (terminal conversation), `uv run alfred classify "zarezerwuj stolik"` (see
+how the router classifies a sentence), `uv run alfred serve --port 9000 --no-browser`. Tests: `uv run pytest`.
+
+If Jev's routing fails, Claude Haiku routes; if that fails too, Alfred asks what you mean. Without a Jev key the
+shield lets nothing through, so Alfred does nothing with what you say (the log says why).
+
+## Yours vs. the repository
+
+The repository holds only defaults and templates. Everything that is yours lives in `data/` (git-ignored) and `.env`:
+
+| File | What | Template |
+|---|---|---|
+| `data/settings.json` | your settings - only what differs from `config/brain.yaml` (the setup, the UI and Alfred write it) | `config/brain.yaml` |
+| `data/persona.md` | Alfred's character, once you edit it in the Osobowość tab | `config/persona.md` |
+| `data/mcp.json` | your MCP servers (copied from the template on the first start, all off) | `config/mcp.json` |
+| `data/routines.yaml` | Alfred's routines | - |
+| `data/memory/` | his diary: tasks, sessions, facts, your goals | - |
+| `data/brain_map/` | the brain map, rebuilt at every start | - |
+| `data/logs/` | every event, one JSONL file a day | - |
+
+To start over, stop Alfred and delete `data/` (and `.env` for the keys).
 
 ## How it thinks
 
@@ -60,8 +73,8 @@ The other files: `app.py` (web server + API for the UI), `cli.py` (command line)
 plan), `meals.py` (logging meals), `okf.py` (Markdown files with a YAML header). Each file starts with a short
 note saying what it does.
 
-Settings: `config/brain.yaml`, plus what you change in the UI, saved in `data/settings.json` (it wins over the
-yaml for those keys - the UI saves only the fields you actually changed).
+Settings: `config/brain.yaml` (defaults), plus yours in `data/settings.json` (it wins over the yaml for those keys -
+the UI saves only the fields you actually changed).
 
 ## Claude account: your subscription
 
@@ -71,14 +84,14 @@ editing…) are switched off; only WebSearch/WebFetch stay on, and only when the
 `CLAUDE.md`, hooks or settings are loaded. An `ANTHROPIC_API_KEY` in the environment is ignored, so the plan is
 always used. Each request starts a Claude Code process, which adds roughly 1–2 s.
 
-## Brain map: what the brain is connected to (`brain_map/`, OKF)
+## Brain map: what the brain is connected to (`data/brain_map/`, OKF)
 
 `brain/atlas.py` compiles `modules/*/module.yaml`, the skills, the **live** tool lists of the MCP servers and the
 topics of your knowledge library into an OKF bundle. It is rebuilt at every start, from the **Mapa** tab, or
 with `POST /api/map/rebuild`.
 
 ```
-brain_map/
+data/brain_map/
   index.md  log.md                     overview, and what changed between builds
   modules/<id>.md                      Module      --has--> capabilities, --uses--> other modules' capabilities
   capabilities/<module>.<name>.md      Capability  --includes--> tools   (Jev's routing categories)
@@ -108,28 +121,28 @@ capabilities:
 uses: [tasks.manage, memory.recall]                                     # borrowed from other modules
 ```
 
-Note: `brain_map/topics/` lists the titles and descriptions of your knowledge-base topics. If this repository
-is public, add `brain_map/topics/` to `.gitignore`.
+## Personality and role (`config/persona.md` → `data/persona.md`)
 
-## Personality and role (`config/persona.md`)
-
-Who Alfred is lives in one OKF file that you can edit directly or in the **Osobowość** tab:
-- **Frontmatter:** his name, your name, how he addresses you (PL/EN) and the confirmation question.
+Who Alfred is lives in one OKF file that you can edit in the **Osobowość** tab (saved to `data/persona.md`; until
+then the template `config/persona.md` is used):
+- **Frontmatter:** the confirmation question (PL/EN).
 - **Markdown body:** the system prompt, with sections *Role*, *Character*, *How you speak* and *How you work*.
-  `{name}`, `{user}`, `{addr_pl}` and `{addr_en}` are filled in.
+  `{name}`, `{user}`, `{addr_pl}` and `{addr_en}` are filled in from the settings (`assistant.name`,
+  `assistant.user_name`, `assistant.address`), which the setup asks you for.
 
 Changes apply from the next request.
 
 ## Session memory (separate from the Knowledge-Base)
 
-`E:\Knowledge-Base` is the **library** of what Alfred knows. He reads it through its MCP server, read-only.
-`data/memory/` is **his own diary** of what he does, stored as an OKF bundle:
+Your knowledge library (if you connect one as the `knowledge-base` MCP server) is what Alfred knows; he reads it
+read-only. `data/memory/` is **his own diary** of what he does, stored as an OKF bundle:
 
 ```
 data/memory/
   index.md                   entry point, regenerated on every change
   log.md                     append-only change log (task.created, task.updated, fact.created, session.closed …)
   profile.md
+  goals.md                   your goals and resolutions (Cele)
   tasks/<id>.md              type: Task — status todo | in_progress | done | cancelled, due, cron schedule
   sessions/YYYY/MM/<id>.md   type: Session — summary, done, changed, open threads, token usage
   facts/<category>/*.md      type: Fact — people, places, preferences, projects
@@ -158,10 +171,13 @@ modules/bookings/
   skills/*.md      procedures (frontmatter name + description become the Jev skill criteria)
 ```
 
-Included modules: `calendar`, `knowledge`, `tasks`, `memory`, `research` (web search), `bookings`
+Included modules: `setup` (the first-run setup, later changes to it), `calendar`, `knowledge`, `tasks`, `memory`,
+`research` (web search), `bookings`
 (restaurant-table skill), `training` (triathlon plan from Strava, planned around work - training-week skill),
 `weight` (meals, weigh-ins and goals in Nutrition MCP; Jev picks each logged meal's type - weight-goal skill) and
-`smalltalk`. To add a capability, add a folder and press reload, or restart.
+`smalltalk`. Modules that need an outside service (`calendar`, `knowledge`, `training`, `weight`, `bookings`)
+ship switched off; the setup or the **Moduły** tab switches them on (saved in `data/settings.json → modules`). To add
+a capability, add a folder and press reload, or restart.
 
 **Treningi** (Zadania → Treningi, `GET /api/training`, `brain/fitness.py`): the plan from `config/brain.yaml →
 training` (race, weekly hours per sport, 80/20 heart-rate limit) scaled by the season phase (base / build / peak /
@@ -170,7 +186,8 @@ tasks due: a heavy week = 20-30% less training), estimated kcal per workout (pow
 else MET) and the daily steps you tell Alfred (`steps_log`, `data/memory/steps.json`, goal `training.steps_goal`).
 
 **Droga do startu** (Treningi): the season's phases with focus, milestones and this week's concrete sessions
-(minutes from your weekly hours; strength periodised per `docs/triathlon-motor-prep.md`). **Plan changes**: say
+(minutes from your weekly hours; strength periodised per `docs/triathlon-motor-prep.md`). Training events Alfred
+puts in the calendar end with `training.mark` - that is how they are found again. **Plan changes**: say
 what you want (or use "Chcę coś zmienić w planie") - Jev classifies the change type, the discipline and whether it
 adds load, each answer picks a fixed procedure block in the prompt (`fitness.PLAN_*`, the race taken from the plan):
 research, 3 options, a recommendation; `training_plan_update` changes the plan only after your yes, and the change
@@ -182,22 +199,26 @@ and what was saved (`nutrition_logged` events). The meal routine: after every `l
 the day and the week's training sessions left and hands it to Claude in the same answer (`brain/meals.py`). The
 base goals Alfred raises live in `data/nutrition_sync.json`.
 
-## MCP servers — `config/mcp.json`
+## MCP servers — `data/mcp.json`
 
-- **knowledge-base**: enabled, runs `E:/Knowledge-Base/server/kb_server.py` read-only.
-- **google-calendar**: disabled. Create a Google Cloud OAuth client (Desktop app, Calendar API enabled, your
-  e-mail added as a test user), save the JSON to the path in `GOOGLE_OAUTH_CREDENTIALS`, sign in once with
-  `npx @cocal/google-calendar-mcp auth` (with that variable set), then set `"enabled": true` and restart. The
-  same connection feeds Claude's calendar tools and the calendar in the **Dzień** view (`GET /api/calendar`).
-  In test mode Google tokens expire after 7 days; run the `auth` command again.
-- **browser**: disabled. Playwright MCP for bookings. Needs Node.js; set `"enabled": true`.
-- **strava**: `server/strava_server.py`, a small stdio server of our own (standalone - it can move to its own
-  repository). Put `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` of your Strava API app in `.env` (callback domain
-  `localhost`) and log in once: `uv run python server/strava_server.py --login`. The token lives in
+Your copy of `config/mcp.json`, made on the first start with every server off. Alfred switches one on when you ask
+for it in the setup (or set `"enabled": true` yourself); it connects after a restart.
+
+- **google-calendar** (module `calendar`): needs Node.js. Create a Google Cloud OAuth client (Desktop app, Calendar
+  API enabled, your e-mail added as a test user), save the JSON and put its path in `GOOGLE_OAUTH_CREDENTIALS`, sign
+  in once with `npx @cocal/google-calendar-mcp auth` (with that variable set). The same connection feeds the
+  **Kalendarz** page (`GET /api/calendar`). In test mode Google tokens expire after 7 days; run `auth` again.
+- **strava** (module `training`): `server/strava_server.py`, a small stdio server of our own. Put
+  `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` of your [Strava API app](https://www.strava.com/settings/api) in `.env`
+  (callback domain `localhost`) and log in once: `uv run python server/strava_server.py --login`. The token lives in
   `~/.config/strava-mcp/token.json` and refreshes itself.
-- **nutrition**: the remote [Nutrition MCP](https://github.com/akutishevsky/nutrition-mcp) with `"oauth": true`:
-  the first start opens the browser to log in (same account as the claude.ai connector); tokens are kept in
-  `data/oauth/nutrition.json`. Claude.ai connectors themselves are not visible to Alfred (`strict_mcp_config`).
+- **nutrition** (module `weight`): the remote [Nutrition MCP](https://github.com/akutishevsky/nutrition-mcp). Log in
+  once with `uv run alfred mcp-login nutrition` (the browser opens); tokens are kept in `data/oauth/nutrition.json`.
+- **knowledge-base** (module `knowledge`): your own notes as an MCP server with `kb_find`, `kb_read`, `kb_list` …
+  tools - put its command in. Its topics can go on the brain map: `map.topic_sources` in your settings.
+- **browser** (module `bookings`): Playwright MCP. Needs Node.js.
+
+Claude.ai connectors themselves are not visible to Alfred (`strict_mcp_config`).
 
 ## Proactive
 
@@ -210,7 +231,7 @@ Before Claude is woken, Jev answers one question: is this worth interrupting you
 your quiet hours (`23:00–07:00`) and when you last spoke into account. Only a "yes" calls Claude, and every
 decision is logged. To try it, say *"przypomnij mi za 2 minuty, żeby się napić wody"* and keep the UI open.
 
-**Routines** (`config/routines.yaml`) are things Alfred does on his own, without the gate: at a set time
+**Routines** (`data/routines.yaml`) are things Alfred does on his own, without the gate: at a set time
 (`schedule: "0 8 * * 1-5"`, cron) or once every time the app starts (`schedule: "@start"`). Each one is a
 `prompt` written as if you said it, plus an optional `module`. Edits apply within a minute. Whatever
 Alfred says while the UI is closed waits for you, and you get it when you open the app.

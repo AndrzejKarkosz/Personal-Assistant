@@ -6,6 +6,7 @@
   <title>Alfred</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0&display=block" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <script type="importmap">
     { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
@@ -14,13 +15,38 @@
   </script>
 </head>
 <body>
-<header>
-  <div class="brand"><span class="dot" id="live-dot"></span> Alfred <small>asystent</small></div>
-  <nav class="views" aria-label="Widok">
-    <button data-view="brain" class="active">Mózg 3D</button>
-    <button data-view="tasks">Zadania</button>
-    <button data-view="chat">Chat</button>
+<!-- Left: every page, grouped by what it is about. data-go = "chat" | "tasks:<page>" | "panel:<Alfred's page>" -->
+<aside class="sidenav" aria-label="Nawigacja">
+  <div class="nav-brand"><span class="lbl-t">Alfred</span><span class="dot" id="live-dot" title="Połączenie z Alfredem"></span></div>
+  <button id="chat-new" class="nav-new" title="Zamyka sesję (Alfred zapisuje ją w pamięci) i zaczyna od nowa">
+    <span class="ms">edit_square</span><span class="lbl-t">Nowa rozmowa</span></button>
+  <nav id="nav">
+    <button data-go="brain"><span class="ms">hub</span><span class="lbl-t">Sieć Alfreda</span></button>
+    <button data-go="chat"><span class="ms">chat</span><span class="lbl-t">Chat</span></button>
+    <button data-go="tasks:overview"><span class="ms">dashboard</span><span class="lbl-t">Przegląd</span></button>
+    <h6>Planowanie</h6>
+    <button data-go="tasks:kanban"><span class="ms">checklist</span><span class="lbl-t">Zadania</span></button>
+    <button data-go="tasks:calendar"><span class="ms">calendar_month</span><span class="lbl-t">Kalendarz</span></button>
+    <button data-go="tasks:goals"><span class="ms">flag</span><span class="lbl-t">Cele i nawyki</span></button>
+    <h6>Zdrowie</h6>
+    <button data-go="tasks:training"><span class="ms">directions_run</span><span class="lbl-t">Treningi</span></button>
+    <button data-go="tasks:diet"><span class="ms">restaurant</span><span class="lbl-t">Dieta</span></button>
+    <h6>Moje rzeczy</h6>
+    <button data-go="tasks:products"><span class="ms">shopping_bag</span><span class="lbl-t">Produkty</span></button>
+    <button data-go="panel:memory"><span class="ms">bookmarks</span><span class="lbl-t">Pamięć</span></button>
+    <h6>Alfred</h6>
+    <button data-go="panel:chat"><span class="ms">record_voice_over</span><span class="lbl-t">Rozmowa głosowa</span></button>
+    <button data-go="panel:persona"><span class="ms">face</span><span class="lbl-t">Osobowość</span></button>
+    <button data-go="panel:modules"><span class="ms">extension</span><span class="lbl-t">Moduły</span></button>
+    <button data-go="panel:map"><span class="ms">map</span><span class="lbl-t">Mapa</span></button>
+    <button data-go="panel:log"><span class="ms">receipt_long</span><span class="lbl-t">Log</span></button>
+    <button data-go="panel:settings" class="nav-end"><span class="ms">settings</span><span class="lbl-t">Ustawienia</span></button>
   </nav>
+</aside>
+
+<div class="app">
+<header>
+  <div class="row"><button id="menu" class="icon" aria-label="Menu"><span class="ms">menu</span></button><h1 id="page-title"></h1></div>
   <div class="row">
     <div class="pills" id="pills"></div>
     <button id="speaking" class="speaking" title="Alfred mówi — kliknij, żeby przerwać" aria-live="polite">
@@ -31,51 +57,26 @@
 </header>
 
 <main data-view="brain">
-  <!-- Brain: 3D map, Alfred's universe (bottom left), the path to the answer (right) -->
-  <section class="panel graph-panel brain-only">
+  <!-- Alfred's network (the start page): each cluster of neurons is a part of him and lights up while it works -->
+  <section id="brain" class="panel graph-panel brain-only" aria-label="Sieć Alfreda">
     <div class="panel-title row between">
-      <span>Mapa mózgu <span class="muted" id="route-info"></span></span>
+      <span class="muted" id="route-info"></span>
       <button id="demo" title="Pokaż przepływ informacji na przykładowej rezerwacji">▶ Pokaż przepływ</button>
     </div>
     <div class="stage">
       <div id="graph"></div>
-      <ol id="levels" class="levels" aria-label="Poziomy mózgu"></ol>
+      <ol id="levels" class="levels" aria-label="Części sieci"></ol>
       <div id="tip" class="tip hidden"></div>
       <div id="node-info" class="node-info hidden"></div>
       <div class="flow">
         <div class="flow-title row between"><span>Droga do odpowiedzi</span><span id="flow-total"></span></div>
-        <ol id="flow-steps"><li class="hint"><span>Powiedz coś albo kliknij „Pokaż przepływ”. Każdy poziom mózgu to część Alfreda — świeci, gdy pracuje. Kliknij kulę albo poziom, żeby zobaczyć, co robi. Przeciągnij, żeby obrócić.</span></li></ol>
-      </div>
-      <div class="alfred" id="alfred" data-state="idle" aria-live="polite">
-        <canvas id="universe" width="340" height="340" aria-hidden="true"></canvas>
-        <div class="who"><b>Alfred</b><small id="alfred-state">czeka</small></div>
+        <ol id="flow-steps"><li class="hint"><span>Powiedz coś albo kliknij „Pokaż przepływ”. Każda grupa neuronów to część Alfreda — świeci, gdy pracuje. Kliknij węzeł albo część, żeby zobaczyć, co robi. Przeciągnij, żeby obrócić.</span></li></ol>
       </div>
     </div>
   </section>
 
-  <!-- Tasks, left: a rail of panels; a click slides the panel out over the board -->
-  <nav class="rail tasks-only" aria-label="Panele">
-    <button data-tab="chat" title="Rozmowa"><i aria-hidden="true">💬</i>Rozmowa</button>
-    <button data-tab="memory" title="Pamięć"><i aria-hidden="true">🧠</i>Pamięć</button>
-    <button data-tab="map" title="Mapa"><i aria-hidden="true">🗺️</i>Mapa</button>
-    <button data-tab="persona" title="Osobowość"><i aria-hidden="true">🎭</i>Osobowość</button>
-    <button data-tab="modules" title="Moduły"><i aria-hidden="true">🧩</i>Moduły</button>
-    <button data-tab="log" title="Log"><i aria-hidden="true">📜</i>Log</button>
-    <button data-tab="settings" title="Ustawienia"><i aria-hidden="true">⚙️</i>Ustawienia</button>
-  </nav>
-
-  <!-- Tasks, middle: Przegląd = summary of tasks and costs + routines; Kanban (drag a card to another column to
-       change its status) and Kalendarz each over the whole page; Cele = goals + the productivity routine. -->
+  <!-- Planning, health and my-things pages share this column; main[data-sub] says which one shows -->
   <div class="col tasks-only">
-    <nav class="subviews" aria-label="Zadania">
-      <button data-sub="overview" class="active">Przegląd</button>
-      <button data-sub="kanban">Kanban</button>
-      <button data-sub="calendar">Kalendarz</button>
-      <button data-sub="goals">Cele</button>
-      <button data-sub="training">Treningi</button>
-      <button data-sub="diet">Dieta</button>
-      <button data-sub="products">Produkty</button>
-    </nav>
     <!-- Przegląd: tasks and costs of a period (‹ › = earlier / later), then the routines -->
     <section class="panel overview-panel">
       <div class="panel-title row between"><span>Podsumowanie zadań i kosztów <span class="muted" id="sum-range"></span></span>
@@ -102,7 +103,7 @@
       <div id="routines" class="tab"></div>
     </section>
     <section class="panel board-panel">
-      <div class="panel-title row between"><span class="row">Zadania
+      <div class="panel-title row between"><span class="row">
         <span id="board-who" class="seg" aria-label="Czyja tablica"><button data-who="me">Moje</button><button data-who="alfred" title="Przypomnienia i to, co Alfred robi sam o danej porze">Alfreda</button></span>
         <span id="board-range" class="seg" aria-label="Zakres"><button data-range="all">Wszystkie</button><button data-range="today" title="Termin dziś, zaległe i zrobione dziś">Dzisiaj</button></span></span>
         <div id="cat-filter" class="chips" aria-label="Kategoria"></div></div>
@@ -117,7 +118,7 @@
     </section>
     <section class="panel cal-panel">
       <div class="panel-title row between">
-        <span>Kalendarz <span class="muted" id="cal-range"></span></span>
+        <span class="muted" id="cal-range"></span>
         <span class="row"><span id="cal-status" class="pill"></span>
           <span id="cal-modes" class="seg" aria-label="Widok kalendarza"></span>
           <button id="cal-prev" aria-label="Wcześniej">‹</button><button id="cal-today">Dziś</button><button id="cal-next" aria-label="Później">›</button></span>
@@ -127,7 +128,7 @@
     </section>
     <!-- Produkty tab: products he uses regularly, with links - an editable list; a memory page Alfred reads too -->
     <section class="panel products-panel">
-      <div class="panel-title row between"><span>Stałe produkty <span class="muted">to, czego używasz regularnie — Alfred też to widzi</span></span>
+      <div class="panel-title row between"><span class="muted">To, czego używasz regularnie — Alfred też to widzi</span>
         <span class="row"><span id="products-saved" class="muted"></span><button id="product-add" class="primary">+ Dodaj produkt</button></span></div>
       <div class="tab"><div id="products" class="product-list"></div></div>
     </section>
@@ -137,7 +138,7 @@
         <span class="row"><span id="goals-saved" class="muted"></span><button id="goals-save" class="primary">Zapisz</button></span></div>
       <div class="goals-cols">
         <label class="field">Moje cele<span class="sub">Do czego dążę — np. jeden cel na linię. Alfred łączy z nimi zadania.</span>
-          <textarea id="goals-text" placeholder="- Wrócić do biegania do wiosny&#10;- Skończyć MVP SmartMeet"></textarea></label>
+          <textarea id="goals-text" placeholder="- Wrócić do biegania do wiosny&#10;- Skończyć kurs angielskiego"></textarea></label>
         <label class="field">Moje postanowienia<span class="sub">Jak chcę działać na co dzień.</span>
           <textarea id="resolutions-text" placeholder="- Bez telefonu po 22&#10;- Trening 3 razy w tygodniu"></textarea></label>
       </div>
@@ -167,39 +168,37 @@
         <div id="prod-routines" class="stack"></div>
       </div>
     </section>
-    <!-- Treningi tab: the triathlon plan and how it goes (Strava), the work week, diet and weight (Nutrition MCP) -->
+    <!-- Treningi tab, one section each: the race, this week as 7 days (calendar + Strava), the chosen day's sessions in
+         full, the week's progress, the road to the race, history, changing the plan -->
     <section class="panel training-panel">
-      <div class="panel-title row between"><span>Treningi <span class="muted">Strava · plan · praca · kroki</span></span>
+      <div class="panel-title row between"><span class="muted">plan · kalendarz · Strava</span>
         <span class="row"><span id="tr-status" class="muted"></span><button id="tr-refresh" class="mini" aria-label="Odśwież">↻</button></span></div>
       <div class="tab">
         <div id="tr-note" class="cal-note hidden"></div>
-        <div class="tr-hero">
-          <div class="card race-card"><div id="tr-race"></div><div id="tr-timeline" class="timeline"></div></div>
-          <div class="card ring-card"><div id="tr-ring" class="ring"></div><span class="sub">plan tygodnia</span></div>
-          <div class="card ring-card"><div id="tr-steps-ring" class="ring steps"></div><span class="sub">kroki dziś</span></div>
-        </div>
-        <div id="tr-advice" class="advice"></div>
-        <h4>Ten tydzień — co trenować <span class="muted" id="tr-week-phase"></span></h4>
-        <div id="tr-plan-week" class="session-list"></div>
-        <h4>Realizacja tygodnia</h4>
-        <div id="tr-sports" class="sport-cards"></div>
-        <div id="tr-stats" class="stats wide"></div>
-        <div class="tr-charts">
-          <div><h4>Kroki — 7 dni</h4><div id="tr-steps"></div></div>
-          <div><h4>Realizacja planu — 8 tygodni</h4><div id="tr-weeks"></div></div>
-        </div>
-        <h4>Droga do startu <span class="muted">fazy, cele i kamienie milowe</span></h4>
-        <div id="tr-road" class="road"></div>
-        <div class="card change-box">
-          <span class="title">Chcę coś zmienić w planie</span>
+        <section class="tr-sec"><div id="tr-top" class="tr-top"></div><div id="tr-timeline" class="timeline"></div></section>
+        <section class="tr-sec"><header><h3>Ten tydzień</h3><span class="muted">kliknij dzień, żeby zobaczyć jego treningi</span></header>
+          <div id="tr-week" class="tr-week"></div></section>
+        <section id="tr-detail" class="tr-sec tr-detail"></section>
+        <section class="tr-sec"><header><h3>Postęp tygodnia</h3><span class="muted">Strava wobec planu</span></header>
+          <div id="tr-prog" class="tr-prog"></div></section>
+        <section class="tr-sec"><header><h3>Droga do startu</h3><span class="muted">fazy, cele i kamienie milowe</span></header>
+          <div id="tr-road" class="road"></div></section>
+        <section class="tr-sec"><header><h3>Historia</h3><span class="muted">8 tygodni · kroki · Strava 14 dni</span></header>
+          <div class="tr-charts">
+            <div><h4>Realizacja planu — 8 tygodni</h4><div id="tr-weeks"></div></div>
+            <div><h4>Kroki — 7 dni</h4><div id="tr-steps"></div></div>
+          </div>
+          <h4>Ostatnie treningi</h4>
+          <div id="tr-acts" class="act-list"></div></section>
+        <section class="tr-sec"><header><h3>Zmień plan</h3><span class="muted">z Alfredem albo ręcznie</span></header>
+        <div class="change-box">
+          <h4>Chcę coś zmienić</h4>
           <div class="sub">Napisz, co chciałbyś zrobić. Jev rozpozna rodzaj zmiany, a Alfred zrobi research, da 3 propozycje
             z dowodami i zmieni plan dopiero po Twoim „tak”. Odpowiedź przyjdzie w Chacie.</div>
           <form id="tr-change" class="row"><input name="text" class="grow" required placeholder="np. chcę dodać crossfit raz w tygodniu, w marcu jadę na narty, mam mniej czasu w listopadzie">
             <button class="primary">Zbadaj i zaproponuj</button></form>
         </div>
-        <h4>Ostatnie treningi <span class="muted">Strava, 14 dni</span></h4>
-        <div id="tr-acts" class="act-list"></div>
-        <details class="plan-box"><summary>Plan, zawody i cel krokowy</summary>
+        <h4>Zawody, godziny w tygodniu, cel kroków</h4>
         <form id="tr-plan" class="plan-grid">
           <label class="field">Zawody<input name="race_name" placeholder="np. Gdynia 70.3"></label>
           <label class="field">Data zawodów<input name="race_date" type="date"></label>
@@ -209,13 +208,12 @@
           <label class="field">Cel kroków dziennie<input name="steps_goal" type="number" min="1000" max="50000" step="500" required></label>
           <div id="tr-weekly" class="wide plan-grid"></div>
           <div class="row wide"><button class="primary">Zapisz plan</button><span id="tr-saved" class="muted"></span></div>
-        </form>
-        </details>
+        </form></section>
       </div>
     </section>
     <!-- Dieta tab: today's macros against the goals (raised by today's training), what you said -> how it was saved -->
     <section class="panel diet-panel">
-      <div class="panel-title row between"><span>Dieta <span class="muted" id="dt-sub"></span></span>
+      <div class="panel-title row between"><span class="muted" id="dt-sub"></span>
         <span class="row"><span id="dt-status" class="muted"></span><button id="dt-refresh" class="mini" aria-label="Odśwież">↻</button></span></div>
       <div class="tab">
         <div id="dt-note" class="cal-note hidden"></div>
@@ -224,8 +222,8 @@
           <div id="dt-macros" class="macros"></div>
         </div>
         <div id="dt-stats" class="stats wide"></div>
-        <details id="dt-meals-box" class="meals-box" open><summary>Posiłki dziś <span id="dt-meals-sum" class="muted"></span></summary>
-          <div id="dt-meals" class="stack"></div></details>
+        <h4>Posiłki dziś <span id="dt-meals-sum" class="muted"></span></h4>
+        <div id="dt-meals" class="stack"></div>
         <h4>Dyscyplina — 30 dni <span class="muted">dzień na celu = kcal ±10% celu i białko ≥ 90% celu</span></h4>
         <div id="dt-disc" class="disc"></div>
         <h4>Co powiedziałeś → jak to zapisano</h4>
@@ -236,7 +234,7 @@
     </section>
   </div>
 
-  <!-- Tasks, right: the day at a glance -->
+  <!-- Przegląd, right: the day at a glance -->
   <section class="panel side tasks-only">
     <div class="panel-title">Podsumowanie</div>
     <div class="tab" id="tab-summary">
@@ -250,9 +248,8 @@
     </div>
   </section>
 
-  <!-- The panel that slides out of the rail -->
-  <aside id="drawer" class="panel drawer tasks-only" aria-label="Panel">
-    <div class="panel-title row between"><span id="drawer-title"></span><button id="drawer-x" aria-label="Zamknij">×</button></div>
+  <!-- Alfred's pages (voice conversation, memory, map, persona...): one at a time, as a whole page -->
+  <section id="drawer" class="panel drawer panel-only" aria-label="Panel">
     <div class="tab hidden" id="tab-chat">
       <div id="messages" class="messages"></div>
     </div>
@@ -315,24 +312,52 @@
           <input name="description" placeholder="Kiedy tu trafia zadanie (dla Jev)"><button>Dodaj</button></form></div>
       <form id="settings-form" class="stack"></form>
     </div>
-  </aside>
+  </section>
   <!-- Chat: a written conversation - full answers in Markdown, nothing spoken -->
   <section class="chat chat-only">
-    <div class="chat-head row between"><span><b>Chat z Alfredem</b> <span class="muted">pełne odpowiedzi na piśmie, bez głosu</span></span>
-      <button id="chat-new" title="Zamyka sesję (Alfred zapisuje ją w pamięci) i zaczyna od nowa">Nowa rozmowa</button></div>
     <div id="chat-log" class="chat-log">
-      <div class="chat-empty">Zapytaj o dowolny temat — Alfred odpowie wyczerpująco, z nagłówkami, listami i tabelami, jeśli pomogą.
-        Ma dostęp do tych samych narzędzi co w trybie głosowym: pamięci, zadań, kalendarza i wyszukiwania w sieci.</div>
+      <div class="chat-empty"><h2 class="hello">Cześć</h2><p>W czym mogę pomóc?</p></div>
     </div>
     <form id="chat-form" class="chat-form">
-      <textarea id="chat-text" rows="2" placeholder="Napisz do Alfreda… (Enter — wyślij, Shift+Enter — nowa linia)"></textarea>
-      <button type="button" id="chat-mic" class="mic" title="Mów do Alfreda — kliknij, żeby zacząć, i jeszcze raz, żeby wysłać. Odpowiedź przyjdzie tu, na piśmie." aria-label="Mów do Alfreda">
-        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
-      </button>
-      <button class="primary">Wyślij</button>
+      <textarea id="chat-text" rows="1" placeholder="Zapytaj Alfreda… (Enter — wyślij, Shift+Enter — nowa linia)"></textarea>
+      <button type="button" id="chat-mic" class="mic icon" title="Mów do Alfreda — kliknij, żeby zacząć, i jeszcze raz, żeby wysłać. Odpowiedź przyjdzie tu, na piśmie." aria-label="Mów do Alfreda">
+        <span class="ms">mic</span></button>
+      <button class="icon send" aria-label="Wyślij"><span class="ms">send</span></button>
     </form>
   </section>
 </main>
+
+<!-- Low bar: Alfred (click = his network) · talk to him · what Jev made of it · what the session cost -->
+<footer class="lowbar">
+  <button id="alfred" class="alfred" data-state="idle" title="Alfred — kliknij, żeby zobaczyć jego sieć" aria-live="polite">
+    <canvas id="universe" width="112" height="112" aria-hidden="true"></canvas><small id="alfred-state">czeka</small>
+  </button>
+  <div class="composer">
+    <form id="text-form"><input id="text" autocomplete="off" placeholder="Napisz do Alfreda albo przytrzymaj Spację i mów…"></form>
+    <button id="mic" class="mic icon" title="Kliknij albo przytrzymaj klawisz push-to-talk" aria-label="Mów"><span class="ms">mic</span></button>
+  </div>
+  <button id="jev-sum" class="jev-sum" aria-expanded="false" aria-controls="jev-dock" title="Szczegóły klasyfikacji Jev">Jev: czekam na pierwsze zapytanie</button>
+  <span id="session-cost" class="session-cost" title="Łączny koszt sesji"></span>
+  <section id="jev-dock" class="panel jev-dock hidden" aria-live="polite">
+    <p class="sub">Tu zobaczysz, jak Jev zaklasyfikował Twoje zapytanie: moduł, możliwości i sygnały — z prawdopodobieństwami.</p>
+  </section>
+</footer>
+</div>
+
+<!-- A task, all of it: click its title on the board (or "Edytuj" in the calendar) -->
+<dialog id="task-dlg" class="dlg" aria-label="Zadanie">
+  <form id="task-edit" method="dialog" class="stack">
+    <input name="title" required class="dlg-title" aria-label="Tytuł">
+    <label class="field">Opis<textarea name="description" rows="6" placeholder="Szczegóły, linki, co dokładnie trzeba zrobić…"></textarea></label>
+    <div class="dlg-grid">
+      <label class="field">Status<select name="status"></select></label>
+      <label class="field">Kategoria<select name="category"></select></label>
+      <label class="field">Termin<input name="due" type="datetime-local"></label>
+      <label class="field">Powtarzanie (cron)<input name="schedule" placeholder="np. 0 8 * * 1-5"></label>
+    </div>
+    <div class="row dlg-actions"><button value="cancel" formnovalidate>Anuluj</button><button class="primary" value="save">Zapisz</button></div>
+  </form>
+</dialog>
 
 <!-- What Alfred says: subtitles in the middle of the screen -->
 <div id="subtitle" class="subtitle hidden" role="status" aria-live="polite">
@@ -341,21 +366,28 @@
   <div id="sub-text" class="sub-text"></div>
   <div id="confirm" class="row confirm hidden"><button id="yes" class="primary">Tak</button><button id="no">Nie</button></div>
 </div>
+<!-- First run: the keys Alfred needs before he can talk; the rest he asks himself in the chat (modules/setup) -->
+<dialog id="setup" class="setup" aria-labelledby="setup-title">
+  <form method="dialog" id="setup-form">
+    <h2 id="setup-title">Cześć, jestem Alfred</h2>
+    <p class="sub">Zanim porozmawiamy, potrzebuję dwóch rzeczy. Resztę ustawimy razem w rozmowie — zajmie to kilka minut.</p>
+    <div class="setup-step">
+      <h3><span id="setup-claude-ok" class="dot"></span> Claude Code, zalogowany Twoją subskrypcją</h3>
+      <p class="sub" id="setup-claude">Sprawdzam…</p>
+      <button type="button" id="setup-recheck" class="mini">Sprawdź ponownie</button>
+    </div>
+    <label class="field setup-step"><span><span id="setup-jev-ok" class="dot"></span> Klucz Jev
+      (<a href="https://typesafe.ai" target="_blank" rel="noopener">typesafe.ai</a>) — wymagany: Jev pilnuje
+      bezpieczeństwa i wybiera, czym zajmie się Alfred</span>
+      <input name="jev" type="password" autocomplete="off" placeholder="JEV_API_KEY"></label>
+    <label class="field setup-step"><span>Klucz ElevenLabs — opcjonalny: głos Alfreda i rozpoznawanie mowy
+      (bez niego: głos przeglądarki)</span>
+      <input name="elevenlabs" type="password" autocomplete="off" placeholder="ELEVENLABS_API_KEY"></label>
+    <p class="sub">Klucze zapisuję w pliku <code>.env</code> na tym komputerze.</p>
+    <button class="primary" id="setup-go">Zaczynamy</button>
+  </form>
+</dialog>
 
-<!-- Low bar: talk to Alfred + what Jev made of it + what the session cost -->
-<footer class="lowbar">
-  <div class="composer">
-    <button id="mic" class="mic" title="Kliknij albo przytrzymaj klawisz push-to-talk">
-      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
-    </button>
-    <form id="text-form"><input id="text" autocomplete="off" placeholder="Napisz do Alfreda albo przytrzymaj Spację i mów…"></form>
-  </div>
-  <button id="jev-sum" class="jev-sum" aria-expanded="false" aria-controls="jev-dock" title="Szczegóły klasyfikacji Jev">Jev: czekam na pierwsze zapytanie</button>
-  <span id="session-cost" class="session-cost" title="Łączny koszt sesji"></span>
-  <section id="jev-dock" class="panel jev-dock hidden" aria-live="polite">
-    <p class="sub">Tu zobaczysz, jak Jev zaklasyfikował Twoje zapytanie: moduł, możliwości i sygnały — z prawdopodobieństwami.</p>
-  </section>
-</footer>
 <script type="module" src="/static/brain3d.js"></script>
 <script type="module" src="/static/app.js"></script>
 </body>

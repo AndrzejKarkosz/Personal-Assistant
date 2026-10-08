@@ -8,6 +8,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -17,6 +19,21 @@ import httpx
 log = logging.getLogger("alfred.voice")
 
 API = "https://api.elevenlabs.io/v1"
+SENTENCES = re.compile(r"(?<=[.!?…])\s+")
+
+
+def spoken(text: str, limit: int) -> str:
+    """The part of an answer worth paying ElevenLabs for: whole sentences up to `limit` characters (the first
+    sentence cut at a word when it alone is longer). The full text still goes to the screen."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    out = ""
+    for sentence in SENTENCES.split(text):
+        if len(out) + len(sentence) + 1 > limit:
+            break
+        out = f"{out} {sentence}".strip()
+    return out or text[:limit].rsplit(" ", 1)[0] + "…"
 
 
 @dataclass
@@ -33,6 +50,7 @@ class ElevenLabs:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.on_usage = on_usage   # tts_chars / stt_s of each billed call - the brain prices them
         self.on_error = on_error   # why there is no ElevenLabs voice (the UI falls back to the browser's)
+        self.off_until = 0.0       # quota used up -> no calls for an hour, the browser's voice speaks instead
 
     async def transcribe(self, audio: bytes, filename: str = "speech.webm",
                          language: str | None = None) -> Transcript | None:
@@ -44,17 +62,21 @@ class ElevenLabs:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(f"{API}/speech-to-text", headers={"xi-api-key": key}, data=form,
                                      files={"file": (filename, audio, "application/octet-stream")})
-        resp.raise_for_status()
+        if resp.is_error:          # the body says why (e.g. 401 quota_exceeded = the key's own credit limit)
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
         body = resp.json()
         # billed per second of audio; the last word's end time is the length of what was said
         self.on_usage(stt_s=max((float(w.get("end") or 0) for w in body.get("words") or []), default=0.0))
         return Transcript((body.get("text") or "").strip(), (body.get("language_code") or "")[:2].lower() or None)
 
-    async def synthesize(self, text: str) -> str | None:
-        """Speech for `text` as base64 mp3, or None (no key, voice switched off, or ElevenLabs failed)."""
+    async def synthesize(self, text: str, whole: bool = False) -> str | None:
+        """Speech for `text` as base64 mp3, or None (no key, voice switched off, out of quota or ElevenLabs failed).
+        Only the start of a long answer is spoken (voice.max_chars) unless `whole` (a yes/no question)."""
         key = self.settings.elevenlabs_key
-        if not key or not text.strip() or not self.settings.get("voice.tts_enabled", True):
+        if not key or not text.strip() or not self.settings.get("voice.tts_enabled", True)                 or time.monotonic() < self.off_until:
             return None
+        if not whole:
+            text = spoken(text, int(self.settings.get("voice.max_chars", 200)))
         voice, s = self.settings.voice_id, self.settings
         model, fmt = s.get("voice.tts_model", "eleven_multilingual_v2"), s.get("voice.output_format", "mp3_44100_128")
         tuning = s.get("voice.settings") or {}
@@ -74,6 +96,8 @@ class ElevenLabs:
             except httpx.HTTPError as exc:
                 error = f"{type(exc).__name__}: {exc}"
         if error:
+            if "quota_exceeded" in error:
+                self.off_until = time.monotonic() + 3600
             log.warning("ElevenLabs TTS failed: %s", error)
             self.on_error(error)
             return None

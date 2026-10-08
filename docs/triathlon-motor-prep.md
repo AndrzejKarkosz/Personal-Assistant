@@ -1,4 +1,4 @@
-# Przygotowanie motoryczne do 1/2 Ironmana
+# Przygotowanie motoryczne do triathlonu (dystans 1/2 i pełny)
 
 Research z 4 października 2026. Plan dla zawodnika amatora, który trenuje 4–6 h tygodniowo obok pracy na etacie i startuje
 2 września 2027. Alfred buduje na tej podstawie sesje w `brain/fitness.py`: mapę drogi do startu i sesje bieżącego tygodnia.
